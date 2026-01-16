@@ -1,0 +1,55 @@
+# ============================
+# HtoV - Horizontal to Vertical
+# ============================
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- IDE / Editor junk ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Logs ---
+*.log
+
+# --- Processing flags ---
+*.processing
+
+# --- Video files (input & output) ---
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.flv
+
+# --- Project folders (user-specific paths) ---
+Horizontal/
+Vertical/
+
+# --- FFmpeg temp files ---
+*.tmp
+*.part
+
+# --- Windows shell junk ---
+ehthumbs.db
+$RECYCLE.BIN/
+
+# --- Environment files ---
+.env
