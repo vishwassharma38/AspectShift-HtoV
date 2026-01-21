@@ -12,13 +12,14 @@ OUTPUT_DIR = r"E:\Projects\Vertical"
 PROCESSING_EXT = ".processing"
 SUPPORTED_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".m4v")
 
-WITH_LOGO = False            # <<< LOGO TOGGLE
+WITH_LOGO = False                 # <<< LOGO TOGGLE
 LOGO_NAME = "logo.png"
-LOGO_GAP = 32               # px gap below 4:5 frame
+LOGO_GAP = -260                  # px gap below 4:5 frame
+LOGO_OPACITY = 0.6               # <<< LOGO TRANSPARENCY (0.0–1.0)
 
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
-FG_HEIGHT = 1350            # 4:5 height
+FG_HEIGHT = 1350                 # 4:5 height
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -82,7 +83,7 @@ def convert_to_vertical(input_path):
         # -------------------------------
         filter_chain = []
 
-        # Background
+        # Background (blurred)
         filter_chain.append(
             "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,gblur=sigma=20[bg]"
@@ -94,7 +95,7 @@ def convert_to_vertical(input_path):
             "crop=1080:1350[fg]"
         )
 
-        # Place fg centered vertically
+        # Center foreground vertically
         fg_y = f"(H-{FG_HEIGHT})/2"
         filter_chain.append(
             f"[bg][fg]overlay=(W-w)/2:{fg_y}[v1]"
@@ -110,22 +111,26 @@ def convert_to_vertical(input_path):
 
             logo_y = f"({fg_y})+{FG_HEIGHT}+{LOGO_GAP}"
 
+            # Scale + apply opacity to logo
             filter_chain.append(
                 "[1:v]scale="
                 "min(iw\\,1080):"
                 "min(ih\\,(1920-1350-32)):"
-                "force_original_aspect_ratio=decrease[logo]"
+                "force_original_aspect_ratio=decrease,"
+                f"colorchannelmixer=aa={LOGO_OPACITY}[logo]"
             )
 
             filter_chain.append(
-                f"[v1][logo]overlay=(W-w)/2:{logo_y}"
+                f"[v1][logo]overlay=(W-w)/2:{logo_y}[vout]"
             )
 
             final_map = "[vout]"
-            filter_chain[-1] += final_map
         else:
             final_map = "[v1]"
 
+        # -------------------------------
+        # FFmpeg Command
+        # -------------------------------
         cmd = [
             "ffmpeg",
             "-y",
@@ -175,6 +180,7 @@ if __name__ == "__main__":
     print(f"📂 Watching: {INPUT_DIR}")
     print(f"💾 Output:   {OUTPUT_DIR}")
     print(f"🖼️  Logo:     {'ENABLED' if WITH_LOGO else 'DISABLED'}")
+    print(f"🌫️  Opacity:  {LOGO_OPACITY}")
     print("-----------------------------------------")
 
     observer = Observer()
