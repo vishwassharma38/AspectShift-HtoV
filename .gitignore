@@ -1,0 +1,67 @@
+# ===========================
+# Rust / Cargo
+# ===========================
+target/
+src-tauri/target/
+**/*.rs.bk
+Cargo.lock
+
+# ===========================
+# Node / Frontend
+# ===========================
+node_modules/
+dist/
+.cache/
+.parcel-cache/
+*.tsbuildinfo
+
+# ===========================
+# Tauri
+# ===========================
+~/.tauri/
+/gen/schemas
+src-tauri/resources/ffmpeg
+src-tauri/resources/ffmpeg.exe
+src-tauri/resources/whisper
+src-tauri/resources/whisper.exe
+src-tauri/resources/ggml-base.bin
+
+# ===========================
+# Environment & Secrets
+# ===========================
+.env
+.env.local
+.env.production
+*.pem
+*.key
+*.key.pub
+**/.tauri/*.key
+**/.tauri/*.key.pub
+
+# ===========================
+# OS junk
+# ===========================
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ===========================
+# IDE / Editor
+# ===========================
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+
+# ===========================
+# Logs & temp
+# ===========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
