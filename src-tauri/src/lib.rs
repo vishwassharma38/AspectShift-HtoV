@@ -1,20 +1,63 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+pub mod video;
+
 use tauri::Manager;
 
 #[tauri::command]
 fn get_ffmpeg_path(app: tauri::AppHandle) -> String {
   let resource_dir = app.path().resource_dir().unwrap();
-  #[cfg(target_os = "windows")]
-  let bin = resource_dir.join("resources/ffmpeg.exe");
-  #[cfg(not(target_os = "windows"))]
-  let bin = resource_dir.join("resources/ffmpeg");
-  bin.to_string_lossy().into_owned()
+
+  let ffmpeg = if cfg!(target_os = "windows") {
+    "ffmpeg.exe"
+  } else {
+    "ffmpeg"
+  };
+
+  resource_dir
+    .join(ffmpeg)
+    .to_string_lossy()
+    .into_owned()
+}
+
+#[tauri::command]
+fn get_whisper_paths(app: tauri::AppHandle) -> (String, String) {
+  let resource_dir = app.path().resource_dir().unwrap();
+
+  let whisper_bin = if cfg!(target_os = "windows") {
+    "whisper.exe"
+  } else {
+    "whisper"
+  };
+
+  let whisper_path = resource_dir
+    .join(whisper_bin)
+    .to_string_lossy()
+    .into_owned();
+
+  let model_path = resource_dir
+    .join("ggml-base.bin")
+    .to_string_lossy()
+    .into_owned();
+
+  (whisper_path, model_path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  tracing_subscriber::fmt()
+    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    .init();
+
   tauri::Builder::default()
     .plugin(tauri_plugin_updater::Builder::new().build())
+    .invoke_handler(tauri::generate_handler![
+      get_ffmpeg_path,
+      get_whisper_paths,
+      video::detect_orientation,
+      video::convert_to_ratio,
+      video::batch_convert,
+      video::check_file_ready,
+      video::release_processing_lock
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

@@ -28,12 +28,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "resources/ffmpeg",
-      "resources/ffmpeg.exe",
-      "resources/whisper.exe",
-      "resources/ggml-base.bin"
-    ],
+    "externalBin": ["bin/ffmpeg", "bin/ffprobe"],
+    "resources": ["resources/whisper.exe", "resources/ggml-base.bin"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
