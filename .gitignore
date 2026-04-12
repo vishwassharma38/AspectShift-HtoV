@@ -20,11 +20,10 @@ dist/
 # ===========================
 ~/.tauri/
 /gen/schemas
-src-tauri/resources/ffmpeg
-src-tauri/resources/ffmpeg.exe
-src-tauri/resources/whisper
-src-tauri/resources/whisper.exe
-src-tauri/resources/ggml-base.bin
+src-tauri/bin/*
+!src-tauri/bin/.gitkeep
+src-tauri/resources/*
+!src-tauri/resources/.gitkeep
 
 # ===========================
 # Environment & Secrets
