@@ -7,6 +7,7 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct VideoProgress {
+    pub job_id: String,
     pub file: String,
     pub ratio: String,
     pub percent: f32,
@@ -43,9 +44,11 @@ pub fn get_ffprobe_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
 pub fn run_ffmpeg(
     app: &AppHandle,
     args: &[&str],
+    job_id: &str,
     file_label: &str,
     ratio_label: &str,
-    duration_secs: f64
+    duration_secs: f64,
+    cancel_token: Option<tokio_util::sync::CancellationToken>
 ) -> Result<FfmpegOutput, VideoError> {
     let ffmpeg_path = get_ffmpeg_path(app)?;
     
@@ -68,32 +71,50 @@ pub fn run_ffmpeg(
         .spawn()?;
 
     let stdout = child.stdout.take().unwrap();
-    let reader = BufReader::new(stdout);
+    let mut reader = BufReader::new(stdout);
     let app_handle = app.clone();
+    let job_id = job_id.to_string();
     let file_label = file_label.to_string();
     let ratio_label = ratio_label.to_string();
 
     // Read progress in real-time
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            if l.starts_with("out_time_ms=") {
-                let time_ms = l.replace("out_time_ms=", "").parse::<f64>().unwrap_or(0.0);
-                let current_secs = time_ms / 1_000_000.0;
-                if duration_secs > 0.0 {
-                    let percent = (current_secs / duration_secs) * 100.0;
-                    let _ = app_handle.emit("video://progress", VideoProgress {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                let l = line.trim();
+                if l.starts_with("out_time_ms=") {
+                    let time_ms = l.replace("out_time_ms=", "").parse::<f64>().unwrap_or(0.0);
+                    let current_secs = time_ms / 1_000_000.0;
+                    if duration_secs > 0.0 {
+                        let percent = (current_secs / duration_secs) * 100.0;
+                        let _ = app_handle.emit("video://progress", VideoProgress {
+                            job_id: job_id.clone(),
+                            file: file_label.clone(),
+                            ratio: ratio_label.clone(),
+                            percent: percent as f32,
+                        });
+                    }
+                }
+                if l == "progress=end" {
+                     let _ = app_handle.emit("video://progress", VideoProgress {
+                        job_id: job_id.clone(),
                         file: file_label.clone(),
                         ratio: ratio_label.clone(),
-                        percent: percent as f32,
+                        percent: 100.0,
                     });
                 }
             }
-            if l == "progress=end" {
-                 let _ = app_handle.emit("video://progress", VideoProgress {
-                    file: file_label.clone(),
-                    ratio: ratio_label.clone(),
-                    percent: 100.0,
-                });
+            Err(_) => break,
+        }
+
+        // Check for cancellation
+        if let Some(ref token) = cancel_token {
+            if token.is_cancelled() {
+                let _ = child.kill();
+                return Err(VideoError::ProcessingFailed { stderr: "Cancelled by user".to_string() });
             }
         }
     }

@@ -49,15 +49,23 @@ pub fn run() {
 
   tauri::Builder::default()
     .plugin(tauri_plugin_updater::Builder::new().build())
+    .setup(|app| {
+      app.manage(video::queue::BatchManager::new());
+      Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
       get_ffmpeg_path,
       get_whisper_paths,
       video::detect_orientation,
       video::convert_to_ratio,
-      video::batch_convert,
       video::check_file_ready,
-      video::release_processing_lock
+      video::release_processing_lock,
+      video::start_batch,
+      video::cancel_batch,
+      video::get_batch_status,
+      video::clear_batch
     ])
+
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

@@ -40,6 +40,49 @@ pub struct ConversionOptions {
     pub output_format: OutputFormat,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchJobSettings {
+    pub ratios: Vec<AspectRatio>,
+    pub options: ConversionOptions,
+    pub output_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchJob {
+    pub id: String,
+    pub file_path: String,
+    pub settings: BatchJobSettings,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Pending,
+    Processing,
+    Completed,
+    #[serde(rename = "error")]
+    Failed(String),
+    Cancelled,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileProgress {
+    pub job_id: String,
+    pub file_path: String,
+    pub ratio: AspectRatio,
+    pub progress: f32,
+    pub status: JobStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchProgress {
+    pub total_jobs: usize,
+    pub completed_jobs: usize,
+    pub failed_jobs: usize,
+    pub percentage: f32,
+    pub current_job_id: Option<String>,
+}
+
 impl Default for ConversionOptions {
     fn default() -> Self {
         Self {
@@ -104,11 +147,6 @@ pub struct ConversionResult {
     pub output_path: String,
     pub ratio: AspectRatio,
     pub skipped: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BatchConversionResult {
-    pub results: Vec<Result<ConversionResult, String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

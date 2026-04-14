@@ -1,9 +1,12 @@
 use std::path::Path;
 use tauri::AppHandle;
-use crate::video::types::{AspectRatio, ConversionOptions, ConversionResult, VideoError, OrientationInfo};
+use crate::video::types::{AspectRatio, ConversionOptions, ConversionResult, VideoError};
 use crate::video::probe::{detect_orientation, check_file_ready};
 use crate::video::ffmpeg::run_ffmpeg;
 use crate::video::lock::ProcessingLock;
+use crate::video::preset_adapter::legacy_to_preset;
+use crate::video::filter_builder::build_filter_graph;
+use crate::video::ffmpeg_args_builder::build_ffmpeg_args;
 
 pub fn check_already_processed(input: &str, output_dir: &str, ratio: &AspectRatio, options: &ConversionOptions) -> bool {
     if !options.skip_existing {
@@ -22,10 +25,12 @@ pub fn check_already_processed(input: &str, output_dir: &str, ratio: &AspectRati
 
 pub fn convert_to_ratio(
     app: &AppHandle,
+    job_id: String,
     input: String,
     output_dir: String,
     ratio: AspectRatio,
-    options: ConversionOptions
+    options: ConversionOptions,
+    cancel_token: Option<tokio_util::sync::CancellationToken>
 ) -> Result<ConversionResult, VideoError> {
     // 1. File Readiness Check
     let readiness = check_file_ready(app, &input)?;
@@ -65,7 +70,10 @@ pub fn convert_to_ratio(
     let file_label = stem.to_string();
     let ratio_label = ratio.get_tag().to_string();
 
-    // 6. Passthrough Check
+    // 6. Bridge to Preset System
+    let preset = legacy_to_preset(ratio.clone(), options.clone());
+
+    // 7. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
@@ -77,7 +85,7 @@ pub fn convert_to_ratio(
              "-y",
              &output_path
          ];
-         run_ffmpeg(app, &args, &file_label, &ratio_label, duration)?;
+         run_ffmpeg(app, &args, &job_id, &file_label, &ratio_label, duration, cancel_token)?;
          return Ok(ConversionResult {
              output_path,
              ratio,
@@ -85,47 +93,14 @@ pub fn convert_to_ratio(
          });
     }
 
-    // 7. Filter Construction
-    let max_height = 1920;
-    let th = orientation.display_height.min(max_height);
-    let th = (th as f32 / 2.0).round() as u32 * 2;
-    let tw = ((th as f32 * target_ratio) / 2.0).round() as u32 * 2;
+    // 8. Filter Construction
+    let filter = build_filter_graph(&preset, &orientation);
 
-    let filter = if options.blur_background {
-        format!(
-            "[0:v]split[bg][fg];\
-             [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
-             [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
-             [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2",
-            tw = tw, th = th, sigma = options.blur_sigma
-        )
-    } else {
-        format!(
-            "scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th}",
-            tw = tw, th = th
-        )
-    };
+    // 9. FFmpeg Command Building
+    let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset);
+    let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
-    // 8. FFmpeg Command
-    let mut args = vec![
-        "-i", &input,
-        "-vf", &filter,
-    ];
-
-    if options.remove_audio {
-        args.push("-an");
-    } else {
-        args.extend_from_slice(&["-c:a", "aac", "-b:a", "128k"]);
-    }
-
-    let quality_args = options.quality.get_ffmpeg_args();
-    for arg in quality_args {
-        args.push(arg);
-    }
-
-    args.extend_from_slice(&["-y", &output_path]);
-
-    run_ffmpeg(app, &args, &file_label, &ratio_label, duration)?;
+    run_ffmpeg(app, &args, &job_id, &file_label, &ratio_label, duration, cancel_token)?;
 
     Ok(ConversionResult {
         output_path,

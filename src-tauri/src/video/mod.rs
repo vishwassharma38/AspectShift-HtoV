@@ -2,11 +2,18 @@ pub mod types;
 pub mod ffmpeg;
 pub mod probe;
 pub mod convert;
-pub mod batch;
+pub mod queue;
+pub mod batch_processor;
 pub mod lock;
+pub mod filter_builder;
+pub mod ffmpeg_args_builder;
+pub mod preset_adapter;
 
-use tauri::AppHandle;
-use types::{AspectRatio, ConversionOptions, ConversionResult, OrientationInfo, FileReadiness, VideoError};
+use tauri::{AppHandle, State};
+use types::{
+    AspectRatio, ConversionOptions, ConversionResult, OrientationInfo, 
+    FileReadiness, BatchJobSettings, BatchProgress
+};
 
 #[tauri::command]
 pub async fn detect_orientation(app: AppHandle, file_path: String) -> Result<OrientationInfo, String> {
@@ -21,18 +28,32 @@ pub async fn convert_to_ratio(
     ratio: AspectRatio,
     options: ConversionOptions
 ) -> Result<ConversionResult, String> {
-    convert::convert_to_ratio(&app, input, output_dir, ratio, options).map_err(|e| e.to_string())
+    convert::convert_to_ratio(&app, "single-job".to_string(), input, output_dir, ratio, options, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn batch_convert(
+pub async fn start_batch(
     app: AppHandle,
-    input: String,
-    output_dir: String,
-    ratios: Vec<AspectRatio>,
-    options: ConversionOptions
-) -> Result<types::BatchConversionResult, String> {
-    batch::batch_convert(app, input, output_dir, ratios, options).await.map_err(|e| e.to_string())
+    manager: State<'_, queue::BatchManager>,
+    files: Vec<String>,
+    settings: BatchJobSettings
+) -> Result<(), String> {
+    batch_processor::start_batch(app, manager, files, settings).await
+}
+
+#[tauri::command]
+pub async fn cancel_batch(manager: State<'_, queue::BatchManager>) -> Result<(), String> {
+    batch_processor::cancel_batch(manager).await
+}
+
+#[tauri::command]
+pub async fn get_batch_status(manager: State<'_, queue::BatchManager>) -> Result<BatchProgress, String> {
+    batch_processor::get_batch_status(manager).await
+}
+
+#[tauri::command]
+pub async fn clear_batch(manager: State<'_, queue::BatchManager>) -> Result<(), String> {
+    batch_processor::clear_batch(manager).await
 }
 
 #[tauri::command]
