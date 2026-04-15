@@ -38,6 +38,38 @@ pub struct ConversionOptions {
     pub skip_existing: bool,
     pub quality: QualityPreset,
     pub output_format: OutputFormat,
+    pub logo: Option<LogoOptions>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LogoOptions {
+    #[serde(default)]
+    pub enabled: bool,
+    pub position: LogoPosition,
+    pub opacity: f32,
+    pub gap: u32,
+    pub scale: f32,
+}
+
+impl Default for LogoOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            position: LogoPosition::BottomRight,
+            opacity: 1.0,
+            gap: 20,
+            scale: 0.15,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum LogoPosition {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,6 +124,7 @@ impl Default for ConversionOptions {
             skip_existing: true,
             quality: QualityPreset::Standard,
             output_format: OutputFormat::Mp4,
+            logo: None,
         }
     }
 }

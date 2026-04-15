@@ -70,15 +70,33 @@ pub fn convert_to_ratio(
     let file_label = stem.to_string();
     let ratio_label = ratio.get_tag().to_string();
 
-    // 6. Bridge to Preset System
-    let preset = legacy_to_preset(ratio.clone(), options.clone());
+    // 6. Logo Detection
+    let logo_path = if let Some(logo_opts) = &options.logo {
+        if logo_opts.enabled {
+            let input_path = Path::new(&input);
+            let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
+            let logo_file = parent.join("logo.png");
+            if logo_file.exists() {
+                Some(logo_file.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    // 7. Passthrough Check
+    // 7. Bridge to Preset System
+    let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path);
+
+    // 8. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
 
-    if orientation.is_vertical && ratio_diff < 0.02 && !options.blur_background && !options.remove_audio {
+    if orientation.is_vertical && ratio_diff < 0.02 && !options.blur_background && !options.remove_audio && preset.logo.is_none() {
          let args = [
              "-i", &input,
              "-c", "copy",
@@ -93,10 +111,10 @@ pub fn convert_to_ratio(
          });
     }
 
-    // 8. Filter Construction
+    // 9. Filter Construction
     let filter = build_filter_graph(&preset, &orientation);
 
-    // 9. FFmpeg Command Building
+    // 10. FFmpeg Command Building
     let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
