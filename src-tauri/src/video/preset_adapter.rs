@@ -1,4 +1,4 @@
-use crate::video::types::{AspectRatio, ConversionOptions, QualityPreset, LogoPosition};
+use crate::video::types::{AspectRatio, ConversionOptions, QualityPreset, LogoPosition, PlatformTarget};
 
 #[derive(Debug, Clone)]
 pub struct Preset {
@@ -8,6 +8,11 @@ pub struct Preset {
     pub quality: QualityPreset,
     pub remove_audio: bool,
     pub logo: Option<LogoPreset>,
+    pub custom_encoding_enabled: bool,
+    pub crf: Option<u8>,
+    pub preset: Option<String>,
+    pub audio_bitrate: Option<String>,
+    pub platform_target: Option<PlatformTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,5 +48,10 @@ pub fn legacy_to_preset(
         quality: options.quality,
         remove_audio: options.remove_audio,
         logo,
+        crf: options.crf,
+        preset: options.preset,
+        audio_bitrate: options.audio_bitrate,
+        platform_target: options.platform_target,
+        custom_encoding_enabled: options.custom_encoding_enabled,
     }
 }

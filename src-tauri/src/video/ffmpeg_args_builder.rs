@@ -8,6 +8,22 @@ fn uses_complex_graph(filter_graph: &str) -> bool {
     has_named_labels || has_multiple_stages || has_explicit_input_specifier
 }
 
+fn get_video_codec(output: &str) -> &'static str {
+    if output.to_lowercase().ends_with(".webm") {
+        "libvpx-vp9"
+    } else {
+        "libx264"
+    }
+}
+
+fn supports_crf(codec: &str) -> bool {
+    matches!(codec, "libx264" | "libx265" | "libvpx-vp9")
+}
+
+fn supports_preset(codec: &str) -> bool {
+    matches!(codec, "libx264" | "libx265")
+}
+
 pub fn build_ffmpeg_args(
     input: &str,
     output: &str,
@@ -47,16 +63,50 @@ pub fn build_ffmpeg_args(
     if preset.remove_audio {
         args.push("-an".to_string());
     } else {
+        let bitrate = preset.audio_bitrate.as_deref().unwrap_or("128k");
         args.extend_from_slice(&[
             "-c:a".to_string(), "aac".to_string(), 
-            "-b:a".to_string(), "128k".to_string()
+            "-b:a".to_string(), bitrate.to_string()
         ]);
     }
 
-    let quality_args = preset.quality.get_ffmpeg_args();
-    for arg in quality_args {
-        args.push(arg.to_string());
+    let codec = get_video_codec(output);
+    args.push("-c:v".to_string());
+    args.push(codec.to_string());
+
+    // Use custom quality settings if explicitly enabled and supported by codec
+    if preset.custom_encoding_enabled {
+        if let Some(crf) = preset.crf {
+            if supports_crf(codec) {
+                let clamped_crf = crf.clamp(0, 51);
+                args.push("-crf".to_string());
+                args.push(clamped_crf.to_string());
+            }
+        }
+        
+        if let Some(speed_preset) = &preset.preset {
+            if supports_preset(codec) {
+                args.push("-preset".to_string());
+                args.push(speed_preset.clone());
+            }
+        }
+    } else {
+        // Fallback to legacy quality preset system
+        let quality_args = preset.quality.get_ffmpeg_args();
+        for arg in quality_args {
+            args.push(arg.to_string());
+        }
     }
+
+    // Web optimization: fast start for MP4
+    if output.to_lowercase().ends_with(".mp4") {
+        args.push("-movflags".to_string());
+        args.push("+faststart".to_string());
+    }
+
+    // Force compatibility format
+    args.push("-pix_fmt".to_string());
+    args.push("yuv420p".to_string());
 
     args.extend_from_slice(&["-y".to_string(), output.to_string()]);
 

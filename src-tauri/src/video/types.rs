@@ -30,6 +30,14 @@ impl AspectRatio {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformTarget {
+    Youtube,
+    InstagramReels,
+    TikTok,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConversionOptions {
     pub blur_background: bool,
@@ -39,6 +47,11 @@ pub struct ConversionOptions {
     pub quality: QualityPreset,
     pub output_format: OutputFormat,
     pub logo: Option<LogoOptions>,
+    pub custom_encoding_enabled: bool,
+    pub crf: Option<u8>,
+    pub preset: Option<String>,
+    pub audio_bitrate: Option<String>,
+    pub platform_target: Option<PlatformTarget>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -125,6 +138,11 @@ impl Default for ConversionOptions {
             quality: QualityPreset::Standard,
             output_format: OutputFormat::Mp4,
             logo: None,
+            custom_encoding_enabled: false,
+            crf: Some(18),
+            preset: Some("medium".to_string()),
+            audio_bitrate: Some("128k".to_string()),
+            platform_target: None,
         }
     }
 }

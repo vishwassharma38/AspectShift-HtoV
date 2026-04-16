@@ -1,15 +1,29 @@
 use crate::video::preset_adapter::Preset;
-use crate::video::types::{OrientationInfo, LogoPosition};
+use crate::video::types::{OrientationInfo, LogoPosition, PlatformTarget};
 
 pub fn build_filter_graph(
     preset: &Preset,
     orientation: &OrientationInfo
 ) -> String {
-    let target_ratio = preset.ratio.get_ratio();
     let max_height = 1920;
-    let th = orientation.display_height.min(max_height);
-    let th = (th as f32 / 2.0).round() as u32 * 2;
-    let tw = ((th as f32 * target_ratio) / 2.0).round() as u32 * 2;
+    
+    // 1. Determine base dimensions and target ratio
+    let (mut tw, mut th) = if let Some(target) = &preset.platform_target {
+        match target {
+            PlatformTarget::Youtube => (1920, 1080),
+            PlatformTarget::InstagramReels | PlatformTarget::TikTok => (1080, 1920),
+        }
+    } else {
+        let target_ratio = preset.ratio.get_ratio();
+        let h = orientation.display_height.min(max_height);
+        let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
+        let w = (rounded_h as f32 * target_ratio) as u32;
+        (w, rounded_h)
+    };
+
+    // 2. Ensure ALL dimensions are even (FFmpeg requirement)
+    tw = (tw as f32 / 2.0).round() as u32 * 2;
+    th = (th as f32 / 2.0).round() as u32 * 2;
 
     let mut filter_stages = Vec::new();
     let uses_complex_graph = preset.blur_background || preset.logo.is_some();
