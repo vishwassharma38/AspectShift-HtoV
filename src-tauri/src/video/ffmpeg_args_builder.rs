@@ -1,4 +1,4 @@
-use crate::video::preset_adapter::Preset;
+use crate::video::preset_adapter::FfmpegPreset;
 
 fn uses_complex_graph(filter_graph: &str) -> bool {
     let has_named_labels = filter_graph.contains('[') && filter_graph.contains(']');
@@ -28,7 +28,7 @@ pub fn build_ffmpeg_args(
     input: &str,
     output: &str,
     filter_graph: &str,
-    preset: &Preset
+    preset: &FfmpegPreset
 ) -> Vec<String> {
     let mut args = vec![
         "-i".to_string(), input.to_string(),

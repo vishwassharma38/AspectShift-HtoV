@@ -63,7 +63,10 @@ pub fn run() {
       video::start_batch,
       video::cancel_batch,
       video::get_batch_status,
-      video::clear_batch
+      video::clear_batch,
+      video::presets::get_all_presets,
+      video::presets::save_preset,
+      video::presets::delete_preset
     ])
 
     .run(tauri::generate_context!())

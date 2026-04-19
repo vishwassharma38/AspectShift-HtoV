@@ -1,7 +1,7 @@
-use crate::video::types::{AspectRatio, ConversionOptions, QualityPreset, LogoPosition, PlatformTarget};
+use crate::video::types::{AspectRatio, ConversionOptions, QualityPreset, PlatformConfig, LogoPreset};
 
 #[derive(Debug, Clone)]
-pub struct Preset {
+pub struct FfmpegPreset {
     pub ratio: AspectRatio,
     pub blur_background: bool,
     pub blur_sigma: f32,
@@ -12,23 +12,15 @@ pub struct Preset {
     pub crf: Option<u8>,
     pub preset: Option<String>,
     pub audio_bitrate: Option<String>,
-    pub platform_target: Option<PlatformTarget>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LogoPreset {
-    pub path: String,
-    pub position: LogoPosition,
-    pub opacity: f32,
-    pub gap: u32,
-    pub scale: f32,
+    pub platform_config: Option<PlatformConfig>,
 }
 
 pub fn legacy_to_preset(
     ratio: AspectRatio,
     options: ConversionOptions,
-    logo_path: Option<String>
-) -> Preset {
+    logo_path: Option<String>,
+    platform_config: Option<PlatformConfig>,
+) -> FfmpegPreset {
     let logo = if let (Some(path), Some(logo_opts)) = (logo_path, options.logo) {
         Some(LogoPreset {
             path,
@@ -41,7 +33,7 @@ pub fn legacy_to_preset(
         None
     };
 
-    Preset {
+    FfmpegPreset {
         ratio,
         blur_background: options.blur_background,
         blur_sigma: options.blur_sigma,
@@ -51,7 +43,7 @@ pub fn legacy_to_preset(
         crf: options.crf,
         preset: options.preset,
         audio_bitrate: options.audio_bitrate,
-        platform_target: options.platform_target,
+        platform_config,
         custom_encoding_enabled: options.custom_encoding_enabled,
     }
 }

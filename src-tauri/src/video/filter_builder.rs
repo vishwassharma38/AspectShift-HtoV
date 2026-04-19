@@ -1,19 +1,28 @@
-use crate::video::preset_adapter::Preset;
-use crate::video::types::{OrientationInfo, LogoPosition, PlatformTarget};
+use crate::video::preset_adapter::FfmpegPreset;
+use crate::video::types::{OrientationInfo, LogoPosition, AspectRatio};
 
 pub fn build_filter_graph(
-    preset: &Preset,
+    preset: &FfmpegPreset,
     orientation: &OrientationInfo
 ) -> String {
     let max_height = 1920;
     
-    // 1. Determine base dimensions and target ratio
-    let (mut tw, mut th) = if let Some(target) = &preset.platform_target {
-        match target {
-            PlatformTarget::Youtube => (1920, 1080),
-            PlatformTarget::InstagramReels | PlatformTarget::TikTok => (1080, 1920),
+    // 1. Determine base dimensions from PRESET and ENFORCEMENT
+    let (mut tw, mut th) = if let Some(config) = &preset.platform_config {
+        if config.enforce_dimensions {
+            // Preset enforces specific platform dimensions
+            (config.target_width, config.target_height)
+        } else {
+            // Preset has platform config but DOES NOT enforce dimensions
+            // Fall back to dynamic scaling based on ratio
+            let target_ratio = preset.ratio.get_ratio();
+            let h = orientation.display_height.min(max_height);
+            let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
+            let w = (rounded_h as f32 * target_ratio) as u32;
+            (w, rounded_h)
         }
     } else {
+        // No platform config, use dynamic scaling based on target ratio
         let target_ratio = preset.ratio.get_ratio();
         let h = orientation.display_height.min(max_height);
         let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
@@ -71,4 +80,25 @@ pub fn build_filter_graph(
     }
 
     filter_stages.join(";")
+}
+
+pub fn validate_preset_consistency(preset: &FfmpegPreset) -> Result<(), String> {
+    if let Some(config) = &preset.platform_config {
+        if config.enforce_dimensions {
+            let config_ratio = config.target_width as f32 / config.target_height as f32;
+            let preset_ratio = preset.ratio.get_ratio();
+            
+            // Allow for small floating point differences
+            if (config_ratio - preset_ratio).abs() > 0.01 {
+                return Err(format!(
+                    "Ratio conflict: Preset ratio is {}, but platform requires {}x{} ({:.2})",
+                    preset.ratio.get_tag(),
+                    config.target_width,
+                    config.target_height,
+                    config_ratio
+                ));
+            }
+        }
+    }
+    Ok(())
 }

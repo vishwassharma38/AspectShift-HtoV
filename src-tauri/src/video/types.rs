@@ -3,11 +3,13 @@ use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
+#[derive(PartialEq)]
 pub enum AspectRatio {
     Ratio9x16,
     Ratio1x1,
     Ratio4x5,
     Ratio2x3,
+    Ratio16x9,
 }
 
 impl AspectRatio {
@@ -17,6 +19,7 @@ impl AspectRatio {
             AspectRatio::Ratio1x1 => 1.0 / 1.0,
             AspectRatio::Ratio4x5 => 4.0 / 5.0,
             AspectRatio::Ratio2x3 => 2.0 / 3.0,
+            AspectRatio::Ratio16x9 => 16.0 / 9.0,
         }
     }
 
@@ -26,16 +29,16 @@ impl AspectRatio {
             AspectRatio::Ratio1x1 => "1:1",
             AspectRatio::Ratio4x5 => "4:5",
             AspectRatio::Ratio2x3 => "2:3",
+            AspectRatio::Ratio16x9 => "16:9",
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum PlatformTarget {
-    Youtube,
-    InstagramReels,
-    TikTok,
+pub struct PlatformConfig {
+    pub target_width: u32,
+    pub target_height: u32,
+    pub enforce_dimensions: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -51,7 +54,6 @@ pub struct ConversionOptions {
     pub crf: Option<u8>,
     pub preset: Option<String>,
     pub audio_bitrate: Option<String>,
-    pub platform_target: Option<PlatformTarget>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -62,6 +64,7 @@ pub struct LogoOptions {
     pub opacity: f32,
     pub gap: u32,
     pub scale: f32,
+    pub path: Option<String>,
 }
 
 impl Default for LogoOptions {
@@ -72,6 +75,7 @@ impl Default for LogoOptions {
             opacity: 1.0,
             gap: 20,
             scale: 0.15,
+            path: None,
         }
     }
 }
@@ -89,6 +93,7 @@ pub enum LogoPosition {
 pub struct BatchJobSettings {
     pub ratios: Vec<AspectRatio>,
     pub options: ConversionOptions,
+    pub platform_config: Option<PlatformConfig>,
     pub output_dir: String,
 }
 
@@ -142,7 +147,6 @@ impl Default for ConversionOptions {
             crf: Some(18),
             preset: Some("medium".to_string()),
             audio_bitrate: Some("128k".to_string()),
-            platform_target: None,
         }
     }
 }
@@ -207,6 +211,27 @@ pub struct FileReadiness {
     pub file_size_bytes: u64,
     pub is_locked: bool,
     pub estimated_duration_secs: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VideoPreset {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub ratio: AspectRatio,
+    pub options: ConversionOptions,
+    pub logo_path: Option<String>,
+    pub platform_config: Option<PlatformConfig>,
+    pub is_builtin: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LogoPreset {
+    pub path: String,
+    pub position: LogoPosition,
+    pub opacity: f32,
+    pub gap: u32,
+    pub scale: f32,
 }
 
 #[derive(Error, Debug)]

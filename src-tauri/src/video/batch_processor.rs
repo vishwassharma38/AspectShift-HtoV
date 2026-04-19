@@ -94,6 +94,7 @@ pub async fn start_batch(
                 let file_path_inner = file_path.clone();
                 let ratio_inner = ratio.clone();
                 let options_inner = job.settings.options.clone();
+                let platform_config_inner = job.settings.platform_config.clone();
                 let output_dir_inner = job.settings.output_dir.clone();
                 let token_inner = token.clone();
 
@@ -106,6 +107,7 @@ pub async fn start_batch(
                         output_dir_inner,
                         ratio_inner,
                         options_inner,
+                        platform_config_inner,
                         Some(token_inner)
                     )
                 }).await;

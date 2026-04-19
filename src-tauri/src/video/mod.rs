@@ -8,11 +8,13 @@ pub mod lock;
 pub mod filter_builder;
 pub mod ffmpeg_args_builder;
 pub mod preset_adapter;
+pub mod presets;
 
 use tauri::{AppHandle, State};
+pub use presets::{get_all_presets, save_preset, delete_preset};
 use types::{
     AspectRatio, ConversionOptions, ConversionResult, OrientationInfo, 
-    FileReadiness, BatchJobSettings, BatchProgress
+    FileReadiness, BatchJobSettings, BatchProgress, PlatformConfig
 };
 
 #[tauri::command]
@@ -26,9 +28,10 @@ pub async fn convert_to_ratio(
     input: String,
     output_dir: String,
     ratio: AspectRatio,
-    options: ConversionOptions
+    options: ConversionOptions,
+    platform_config: Option<PlatformConfig>
 ) -> Result<ConversionResult, String> {
-    convert::convert_to_ratio(&app, "single-job".to_string(), input, output_dir, ratio, options, None).map_err(|e| e.to_string())
+    convert::convert_to_ratio(&app, "single-job".to_string(), input, output_dir, ratio, options, platform_config, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

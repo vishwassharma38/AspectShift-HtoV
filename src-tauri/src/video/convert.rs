@@ -1,11 +1,11 @@
 use std::path::Path;
 use tauri::AppHandle;
-use crate::video::types::{AspectRatio, ConversionOptions, ConversionResult, VideoError};
+use crate::video::types::{AspectRatio, ConversionOptions, ConversionResult, VideoError, PlatformConfig};
 use crate::video::probe::{detect_orientation, check_file_ready};
 use crate::video::ffmpeg::run_ffmpeg;
 use crate::video::lock::ProcessingLock;
 use crate::video::preset_adapter::legacy_to_preset;
-use crate::video::filter_builder::build_filter_graph;
+use crate::video::filter_builder::{build_filter_graph, validate_preset_consistency};
 use crate::video::ffmpeg_args_builder::build_ffmpeg_args;
 
 pub fn check_already_processed(input: &str, output_dir: &str, ratio: &AspectRatio, options: &ConversionOptions) -> bool {
@@ -30,6 +30,7 @@ pub fn convert_to_ratio(
     output_dir: String,
     ratio: AspectRatio,
     options: ConversionOptions,
+    platform_config: Option<PlatformConfig>,
     cancel_token: Option<tokio_util::sync::CancellationToken>
 ) -> Result<ConversionResult, VideoError> {
     // 1. File Readiness Check
@@ -73,13 +74,21 @@ pub fn convert_to_ratio(
     // 6. Logo Detection
     let logo_path = if let Some(logo_opts) = &options.logo {
         if logo_opts.enabled {
-            let input_path = Path::new(&input);
-            let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
-            let logo_file = parent.join("logo.png");
-            if logo_file.exists() {
-                Some(logo_file.to_string_lossy().to_string())
+            if let Some(path) = &logo_opts.path {
+                if Path::new(path).exists() {
+                    Some(path.clone())
+                } else {
+                    None
+                }
             } else {
-                None
+                let input_path = Path::new(&input);
+                let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
+                let logo_file = parent.join("logo.png");
+                if logo_file.exists() {
+                    Some(logo_file.to_string_lossy().to_string())
+                } else {
+                    None
+                }
             }
         } else {
             None
@@ -89,9 +98,12 @@ pub fn convert_to_ratio(
     };
 
     // 7. Bridge to Preset System
-    let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path);
+    let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path, platform_config);
 
-    // 8. Passthrough Check
+    // 8. Consistency Validation
+    validate_preset_consistency(&preset).map_err(|e| VideoError::InvalidInput(e))?;
+
+    // 9. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
@@ -111,10 +123,10 @@ pub fn convert_to_ratio(
          });
     }
 
-    // 9. Filter Construction
+    // 10. Filter Construction
     let filter = build_filter_graph(&preset, &orientation);
 
-    // 10. FFmpeg Command Building
+    // 11. FFmpeg Command Building
     let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
