@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 type AspectRatio =
@@ -95,17 +96,17 @@ function App() {
     }
   };
 
-  const selectedPreset = useMemo(() => 
-    presets.find((p) => p.id === selectedPresetId) || null,
-    [presets, selectedPresetId]
+  const selectedPreset = useMemo(
+    () => presets.find((p) => p.id === selectedPresetId) || null,
+    [presets, selectedPresetId],
   );
 
   const isDirty = useMemo(() => {
     if (!selectedPreset) return false;
-    
+
     // Check ratio
     if (ratio !== selectedPreset.ratio) return true;
-    
+
     // Check logo changes
     const logoChanged = (() => {
       const currentLogoEnabled = options.logo?.enabled || false;
@@ -136,7 +137,7 @@ function App() {
       "custom_encoding_enabled",
       "crf",
       "preset",
-      "audio_bitrate"
+      "audio_bitrate",
     ];
 
     for (const key of keysToCompare) {
@@ -147,6 +148,36 @@ function App() {
   }, [selectedPreset, ratio, options]);
 
   const isLocked = selectedPreset?.platform_config?.enforce_dimensions || false;
+
+  const handlePickFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [
+          { name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "webm"] },
+        ],
+      });
+      if (selected && typeof selected === "string") {
+        setInput(selected);
+      }
+    } catch (error) {
+      setStatus(`Error picking file: ${error}`);
+    }
+  };
+
+  const handlePickOutputDir = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: true,
+      });
+      if (selected && typeof selected === "string") {
+        setOutputDir(selected);
+      }
+    } catch (error) {
+      setStatus(`Error picking directory: ${error}`);
+    }
+  };
 
   const handlePresetChange = (presetId: string) => {
     setSelectedPresetId(presetId);
@@ -234,18 +265,24 @@ function App() {
       <h1>AspectShift HTOV</h1>
 
       <div className="row">
-        <input
-          type="text"
-          placeholder="Input file path"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Output directory"
-          value={outputDir}
-          onChange={(e) => setOutputDir(e.target.value)}
-        />
+        <div className="input-with-button">
+          <input
+            type="text"
+            placeholder="Input file path"
+            value={input}
+            readOnly
+          />
+          <button onClick={handlePickFile}>Browse File</button>
+        </div>
+        <div className="input-with-button">
+          <input
+            type="text"
+            placeholder="Output directory"
+            value={outputDir}
+            readOnly
+          />
+          <button onClick={handlePickOutputDir}>Browse Folder</button>
+        </div>
       </div>
 
       <div className="row">
@@ -261,7 +298,8 @@ function App() {
               .filter((p) => p.is_builtin)
               .map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}{selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                  {p.name}
+                  {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
                 </option>
               ))}
           </optgroup>
@@ -270,7 +308,8 @@ function App() {
               .filter((p) => !p.is_builtin)
               .map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}{selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                  {p.name}
+                  {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
                 </option>
               ))}
           </optgroup>
@@ -285,7 +324,14 @@ function App() {
 
       {isDirty && (
         <div className="warning">
-          ⚠️ Settings differ from preset. <button onClick={() => handlePresetChange(selectedPresetId)}>Reset</button> or <button onClick={() => setSelectedPresetId("")}>Switch to Custom</button>
+          ⚠️ Settings differ from preset.{" "}
+          <button onClick={() => handlePresetChange(selectedPresetId)}>
+            Reset
+          </button>{" "}
+          or{" "}
+          <button onClick={() => setSelectedPresetId("")}>
+            Switch to Custom
+          </button>
         </div>
       )}
 
@@ -304,12 +350,18 @@ function App() {
           <option value="ratio2x3">2:3</option>
           <option value="ratio16x9">16:9</option>
         </select>
-        {isLocked && <span className="lock-icon">🔒 Enforced by {selectedPreset?.name}</span>}
+        {isLocked && (
+          <span className="lock-icon">
+            🔒 Enforced by {selectedPreset?.name}
+          </span>
+        )}
       </div>
 
       {selectedPreset?.platform_config && (
         <div className="info-box">
-          <strong>Platform Requirements:</strong> {selectedPreset.platform_config.target_width}x{selectedPreset.platform_config.target_height}
+          <strong>Platform Requirements:</strong>{" "}
+          {selectedPreset.platform_config.target_width}x
+          {selectedPreset.platform_config.target_height}
         </div>
       )}
 
@@ -338,7 +390,9 @@ function App() {
               setOptions({
                 ...options,
                 burn_subtitles: e.target.checked,
-                generate_subtitles: e.target.checked ? true : options.generate_subtitles,
+                generate_subtitles: e.target.checked
+                  ? true
+                  : options.generate_subtitles,
               })
             }
           />
@@ -421,7 +475,10 @@ function App() {
       </div>
 
       <div className="row">
-        <button onClick={handleConvert} className={status === "Processing..." ? "loading" : ""}>
+        <button
+          onClick={handleConvert}
+          className={status === "Processing..." ? "loading" : ""}
+        >
           {status === "Processing..." ? "Converting..." : "Convert"}
         </button>
       </div>

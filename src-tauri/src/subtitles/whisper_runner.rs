@@ -108,11 +108,13 @@ fn parse_whisper_output(stdout: &str) -> Vec<SubtitleSegment> {
     segments
 }
 
+use crate::os_utils::OsUtils;
+
 async fn extract_audio_for_whisper(
     app: &AppHandle,
     video_path: &Path,
 ) -> Result<PathBuf, VideoError> {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = OsUtils::get_temp_dir(app);
     let wav_filename = format!("whisper_audio_{}.wav", Uuid::new_v4());
     let wav_path = temp_dir.join(wav_filename);
 

@@ -1,14 +1,9 @@
+use crate::os_utils::OsUtils;
 use crate::subtitles::positioning::get_subtitle_style;
 use crate::video::preset_adapter::FfmpegPreset;
 
-fn escape_filter_path(path: &str) -> String {
-    path.replace('\\', "/")
-        .replace(':', "\\:")
-        .replace('\'', "\\'")
-}
-
 fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str, subtitle_style: &str) -> String {
-    let escaped_path = escape_filter_path(subtitle_path);
+    let escaped_path = OsUtils::escape_filter_path(subtitle_path);
     let escaped_style = subtitle_style.replace('\'', "\\'");
     let subtitle_filter = format!("subtitles='{escaped_path}':force_style='{escaped_style}'");
 

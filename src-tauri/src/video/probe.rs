@@ -3,6 +3,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 use crate::video::types::{OrientationInfo, VideoError, FileReadiness};
 use crate::video::ffmpeg::run_ffprobe;
+use crate::os_utils::OsUtils;
 
 pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<OrientationInfo, VideoError> {
     let output = run_ffprobe(app, &[
@@ -72,11 +73,8 @@ pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadine
     // Check if readable by attempting to open it
     let is_readable = std::fs::File::open(path).is_ok();
 
-    // Check if locked by attempting to open (Windows behavior: read(true) is enough to check for some locks)
-    let is_locked = std::fs::OpenOptions::new()
-        .read(true)
-        .open(path)
-        .is_err();
+    // Check if locked using OS-specific logic
+    let is_locked = OsUtils::is_file_locked(path_buf);
 
     // Get duration via ffprobe
     let output = run_ffprobe(app, &[

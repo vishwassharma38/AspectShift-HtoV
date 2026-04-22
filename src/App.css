@@ -34,6 +34,17 @@
   gap: 10px;
 }
 
+.input-with-button {
+  display: flex;
+  gap: 5px;
+  flex: 1;
+}
+
+.input-with-button input {
+  flex: 1;
+  min-width: 0;
+}
+
 input, select, button {
   padding: 8px;
   border-radius: 4px;
