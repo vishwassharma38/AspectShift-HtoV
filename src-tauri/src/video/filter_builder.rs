@@ -1,5 +1,5 @@
 use crate::video::preset_adapter::FfmpegPreset;
-use crate::video::types::{OrientationInfo, LogoPosition, AspectRatio};
+use crate::video::types::{OrientationInfo, LogoPosition};
 
 pub fn build_filter_graph(
     preset: &FfmpegPreset,

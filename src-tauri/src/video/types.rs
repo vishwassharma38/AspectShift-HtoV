@@ -46,6 +46,10 @@ pub struct ConversionOptions {
     pub blur_background: bool,
     pub blur_sigma: f32,
     pub remove_audio: bool,
+    #[serde(default)]
+    pub generate_subtitles: bool,
+    #[serde(default)]
+    pub burn_subtitles: bool,
     pub skip_existing: bool,
     pub quality: QualityPreset,
     pub output_format: OutputFormat,
@@ -139,6 +143,8 @@ impl Default for ConversionOptions {
             blur_background: false,
             blur_sigma: 20.0,
             remove_audio: false,
+            generate_subtitles: false,
+            burn_subtitles: false,
             skip_existing: true,
             quality: QualityPreset::Standard,
             output_format: OutputFormat::Mp4,
@@ -248,6 +254,14 @@ pub enum VideoError {
     AlreadyProcessing(String),
     #[error("Processing failed: {stderr}")]
     ProcessingFailed { stderr: String },
+    #[error("Whisper binary not found")]
+    WhisperNotFound,
+    #[error("Whisper model not found")]
+    WhisperModelNotFound,
+    #[error("Whisper processing failed: {stderr}")]
+    WhisperFailed { stderr: String },
+    #[error("Subtitle parse error: {0}")]
+    SubtitleParseError(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
     #[error("Lock error: {0}")]

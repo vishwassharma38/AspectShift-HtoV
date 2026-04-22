@@ -1,17 +1,15 @@
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
-use crate::video::types::{
-    BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus
-};
-use crate::video::convert::convert_to_ratio;
+use crate::video::convert::{convert_to_ratio, prepare_subtitles};
 use crate::video::queue::{BatchManager, BatchState};
+use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
 
 pub async fn start_batch(
     app: AppHandle,
     manager: State<'_, BatchManager>,
     files: Vec<String>,
-    settings: BatchJobSettings
+    settings: BatchJobSettings,
 ) -> Result<(), String> {
     let mut jobs = Vec::new();
     for file in files {
@@ -23,22 +21,25 @@ pub async fn start_batch(
     }
 
     manager.add_jobs(jobs).await;
-    
+
     let mut state = manager.state.lock().await;
     if state.is_running {
         return Ok(());
     }
     state.is_running = true;
     state.cancellation_token = tokio_util::sync::CancellationToken::new();
-    
+
     // Fix 4: Emit batch progress at start
-    let _ = app.emit("batch://progress", BatchProgress {
-        total_jobs: state.total_jobs,
-        completed_jobs: state.completed_jobs,
-        failed_jobs: state.failed_jobs,
-        percentage: 0.0,
-        current_job_id: None,
-    });
+    let _ = app.emit(
+        "batch://progress",
+        BatchProgress {
+            total_jobs: state.total_jobs,
+            completed_jobs: state.completed_jobs,
+            failed_jobs: state.failed_jobs,
+            percentage: 0.0,
+            current_job_id: None,
+        },
+    );
 
     let state_clone = Arc::clone(&manager.state);
     let app_clone = app.clone();
@@ -71,8 +72,43 @@ pub async fn start_batch(
 
             let job_id = job.id.clone();
             let file_path = job.file_path.clone();
-            
+
             let mut job_failed = false;
+            let should_prepare_subtitles =
+                job.settings.options.generate_subtitles || job.settings.options.burn_subtitles;
+            let prepared_subtitle = if should_prepare_subtitles {
+                match prepare_subtitles(&app_clone, &file_path, &job.settings.output_dir).await {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        job_failed = true;
+                        let failure = e.to_string();
+                        for ratio in &job.settings.ratios {
+                            let _ = app_clone.emit(
+                                "batch://file-status",
+                                FileProgress {
+                                    job_id: job_id.clone(),
+                                    file_path: file_path.clone(),
+                                    ratio: ratio.clone(),
+                                    progress: 0.0,
+                                    status: JobStatus::Failed(failure.clone()),
+                                },
+                            );
+                        }
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            if should_prepare_subtitles && prepared_subtitle.is_none() {
+                {
+                    let mut s = state_clone.lock().await;
+                    s.failed_jobs += 1;
+                }
+                emit_batch_progress(&app_clone, &state_clone).await;
+                continue;
+            }
 
             // Process each ratio for the file
             for ratio in &job.settings.ratios {
@@ -81,13 +117,16 @@ pub async fn start_batch(
                 }
 
                 // Fix 1: Emit Processing for this ratio
-                let _ = app_clone.emit("batch://file-status", FileProgress {
-                    job_id: job_id.clone(),
-                    file_path: file_path.clone(),
-                    ratio: ratio.clone(),
-                    progress: 0.0,
-                    status: JobStatus::Processing,
-                });
+                let _ = app_clone.emit(
+                    "batch://file-status",
+                    FileProgress {
+                        job_id: job_id.clone(),
+                        file_path: file_path.clone(),
+                        ratio: ratio.clone(),
+                        progress: 0.0,
+                        status: JobStatus::Processing,
+                    },
+                );
 
                 let app_handle = app_clone.clone();
                 let job_id_inner = job_id.clone();
@@ -97,50 +136,45 @@ pub async fn start_batch(
                 let platform_config_inner = job.settings.platform_config.clone();
                 let output_dir_inner = job.settings.output_dir.clone();
                 let token_inner = token.clone();
+                let subtitle_inner = prepared_subtitle.clone();
 
-                // Fix 3: Per-ratio error isolation
-                let result = tokio::task::spawn_blocking(move || {
-                    convert_to_ratio(
-                        &app_handle,
-                        job_id_inner,
-                        file_path_inner,
-                        output_dir_inner,
-                        ratio_inner,
-                        options_inner,
-                        platform_config_inner,
-                        Some(token_inner)
-                    )
-                }).await;
+                let result = convert_to_ratio(
+                    &app_handle,
+                    job_id_inner,
+                    file_path_inner,
+                    output_dir_inner,
+                    ratio_inner,
+                    options_inner,
+                    platform_config_inner,
+                    subtitle_inner,
+                    Some(token_inner),
+                ).await;
 
                 match result {
-                    Ok(Ok(_)) => {
-                        let _ = app_clone.emit("batch://file-status", FileProgress {
-                            job_id: job_id.clone(),
-                            file_path: file_path.clone(),
-                            ratio: ratio.clone(),
-                            progress: 100.0,
-                            status: JobStatus::Completed,
-                        });
-                    },
-                    Ok(Err(e)) => {
-                        job_failed = true;
-                        let _ = app_clone.emit("batch://file-status", FileProgress {
-                            job_id: job_id.clone(),
-                            file_path: file_path.clone(),
-                            ratio: ratio.clone(),
-                            progress: 0.0,
-                            status: JobStatus::Failed(e.to_string()),
-                        });
-                    },
+                    Ok(_) => {
+                        let _ = app_clone.emit(
+                            "batch://file-status",
+                            FileProgress {
+                                job_id: job_id.clone(),
+                                file_path: file_path.clone(),
+                                ratio: ratio.clone(),
+                                progress: 100.0,
+                                status: JobStatus::Completed,
+                            },
+                        );
+                    }
                     Err(e) => {
                         job_failed = true;
-                        let _ = app_clone.emit("batch://file-status", FileProgress {
-                            job_id: job_id.clone(),
-                            file_path: file_path.clone(),
-                            ratio: ratio.clone(),
-                            progress: 0.0,
-                            status: JobStatus::Failed(format!("Task panicked: {}", e)),
-                        });
+                        let _ = app_clone.emit(
+                            "batch://file-status",
+                            FileProgress {
+                                job_id: job_id.clone(),
+                                file_path: file_path.clone(),
+                                ratio: ratio.clone(),
+                                progress: 0.0,
+                                status: JobStatus::Failed(e.to_string()),
+                            },
+                        );
                     }
                 }
             }
@@ -160,10 +194,10 @@ pub async fn start_batch(
                     s.completed_jobs += 1;
                 }
             }
-            
+
             emit_batch_progress(&app_clone, &state_clone).await;
         }
-        
+
         // Fix 4: Emit batch progress at end
         emit_batch_progress(&app_clone, &state_clone).await;
     });
@@ -212,11 +246,14 @@ async fn emit_batch_progress(app: &AppHandle, state_mutex: &Arc<Mutex<BatchState
         0.0
     };
 
-    let _ = app.emit("batch://progress", BatchProgress {
-        total_jobs: total,
-        completed_jobs: completed,
-        failed_jobs: failed,
-        percentage,
-        current_job_id: state.current_job_id.clone(),
-    });
+    let _ = app.emit(
+        "batch://progress",
+        BatchProgress {
+            total_jobs: total,
+            completed_jobs: completed,
+            failed_jobs: failed,
+            percentage,
+            current_job_id: state.current_job_id.clone(),
+        },
+    );
 }

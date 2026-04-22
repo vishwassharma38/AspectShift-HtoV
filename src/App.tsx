@@ -13,13 +13,6 @@ type QualityPreset = "draft" | "standard" | "high";
 type OutputFormat = "mp4" | "mov" | "webm";
 type LogoPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
-type JobStatus =
-  | "pending"
-  | "processing"
-  | "completed"
-  | { error: string }
-  | "cancelled";
-
 interface PlatformConfig {
   target_width: number;
   target_height: number;
@@ -39,6 +32,8 @@ interface ConversionOptions {
   blur_background: boolean;
   blur_sigma: number;
   remove_audio: boolean;
+  generate_subtitles: boolean;
+  burn_subtitles: boolean;
   skip_existing: boolean;
   quality: QualityPreset;
   output_format: OutputFormat;
@@ -60,39 +55,12 @@ interface VideoPreset {
   is_builtin: boolean;
 }
 
-interface BatchJobSettings {
-  ratios: AspectRatio[];
-  options: ConversionOptions;
-  platform_config: PlatformConfig | null;
-  output_dir: string;
-}
-
-interface BatchJob {
-  id: string;
-  file_path: string;
-  settings: BatchJobSettings;
-}
-
-interface FileProgress {
-  job_id: string;
-  file_path: string;
-  ratio: AspectRatio;
-  progress: number;
-  status: JobStatus;
-}
-
-interface BatchProgress {
-  total_jobs: number;
-  completed_jobs: number;
-  failed_jobs: number;
-  percentage: number;
-  current_job_id: string | null;
-}
-
 const DEFAULT_OPTIONS: ConversionOptions = {
   blur_background: false,
   blur_sigma: 20.0,
   remove_audio: false,
+  generate_subtitles: false,
+  burn_subtitles: false,
   skip_existing: true,
   quality: "standard",
   output_format: "mp4",
@@ -160,6 +128,8 @@ function App() {
       "blur_background",
       "blur_sigma",
       "remove_audio",
+      "generate_subtitles",
+      "burn_subtitles",
       "skip_existing",
       "quality",
       "output_format",
@@ -342,6 +312,39 @@ function App() {
           <strong>Platform Requirements:</strong> {selectedPreset.platform_config.target_width}x{selectedPreset.platform_config.target_height}
         </div>
       )}
+
+      <div className="row">
+        <label>
+          <input
+            type="checkbox"
+            checked={options.generate_subtitles}
+            onChange={(e) =>
+              setOptions({
+                ...options,
+                generate_subtitles: e.target.checked,
+              })
+            }
+          />
+          Generate Subtitles
+        </label>
+      </div>
+
+      <div className="row">
+        <label>
+          <input
+            type="checkbox"
+            checked={options.burn_subtitles}
+            onChange={(e) =>
+              setOptions({
+                ...options,
+                burn_subtitles: e.target.checked,
+                generate_subtitles: e.target.checked ? true : options.generate_subtitles,
+              })
+            }
+          />
+          Burn Subtitles
+        </label>
+      </div>
 
       <div className="row">
         <label>

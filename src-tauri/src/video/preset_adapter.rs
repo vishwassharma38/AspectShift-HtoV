@@ -1,4 +1,6 @@
-use crate::video::types::{AspectRatio, ConversionOptions, QualityPreset, PlatformConfig, LogoPreset};
+use crate::video::types::{
+    AspectRatio, ConversionOptions, LogoPreset, PlatformConfig, QualityPreset,
+};
 
 #[derive(Debug, Clone)]
 pub struct FfmpegPreset {
@@ -7,6 +9,7 @@ pub struct FfmpegPreset {
     pub blur_sigma: f32,
     pub quality: QualityPreset,
     pub remove_audio: bool,
+    pub burn_subtitles: bool,
     pub logo: Option<LogoPreset>,
     pub custom_encoding_enabled: bool,
     pub crf: Option<u8>,
@@ -39,6 +42,7 @@ pub fn legacy_to_preset(
         blur_sigma: options.blur_sigma,
         quality: options.quality,
         remove_audio: options.remove_audio,
+        burn_subtitles: options.burn_subtitles,
         logo,
         crf: options.crf,
         preset: options.preset,

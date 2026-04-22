@@ -1,4 +1,23 @@
+use crate::subtitles::positioning::get_subtitle_style;
 use crate::video::preset_adapter::FfmpegPreset;
+
+fn escape_filter_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
+}
+
+fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str, subtitle_style: &str) -> String {
+    let escaped_path = escape_filter_path(subtitle_path);
+    let escaped_style = subtitle_style.replace('\'', "\\'");
+    let subtitle_filter = format!("subtitles='{escaped_path}':force_style='{escaped_style}'");
+
+    if uses_complex_graph(filter_graph) {
+        format!("{filter_graph};[v]{subtitle_filter}[v]")
+    } else {
+        format!("{filter_graph},{subtitle_filter}")
+    }
+}
 
 fn uses_complex_graph(filter_graph: &str) -> bool {
     let has_named_labels = filter_graph.contains('[') && filter_graph.contains(']');
@@ -28,31 +47,41 @@ pub fn build_ffmpeg_args(
     input: &str,
     output: &str,
     filter_graph: &str,
-    preset: &FfmpegPreset
+    preset: &FfmpegPreset,
+    subtitle_path: Option<&str>,
 ) -> Vec<String> {
-    let mut args = vec![
-        "-i".to_string(), input.to_string(),
-    ];
+    let final_filter_graph = if preset.burn_subtitles {
+        if let Some(path) = subtitle_path {
+            let style = get_subtitle_style(preset.ratio.get_ratio());
+            with_subtitle_filter(filter_graph, path, &style)
+        } else {
+            filter_graph.to_string()
+        }
+    } else {
+        filter_graph.to_string()
+    };
+
+    let mut args = vec!["-i".to_string(), input.to_string()];
 
     if let Some(logo) = &preset.logo {
         args.push("-i".to_string());
         args.push(logo.path.clone());
     }
 
-    let use_filter_complex = uses_complex_graph(filter_graph);
+    let use_filter_complex = uses_complex_graph(&final_filter_graph);
 
     if use_filter_complex {
         args.push("-filter_complex".to_string());
     } else {
         args.push("-vf".to_string());
     }
-    
-    args.push(filter_graph.to_string());
+
+    args.push(final_filter_graph);
 
     if use_filter_complex {
         args.push("-map".to_string());
         args.push("[v]".to_string());
-        
+
         // Map audio if present
         if !preset.remove_audio {
             args.push("-map".to_string());
@@ -65,8 +94,10 @@ pub fn build_ffmpeg_args(
     } else {
         let bitrate = preset.audio_bitrate.as_deref().unwrap_or("128k");
         args.extend_from_slice(&[
-            "-c:a".to_string(), "aac".to_string(), 
-            "-b:a".to_string(), bitrate.to_string()
+            "-c:a".to_string(),
+            "aac".to_string(),
+            "-b:a".to_string(),
+            bitrate.to_string(),
         ]);
     }
 
@@ -83,7 +114,7 @@ pub fn build_ffmpeg_args(
                 args.push(clamped_crf.to_string());
             }
         }
-        
+
         if let Some(speed_preset) = &preset.preset {
             if supports_preset(codec) {
                 args.push("-preset".to_string());

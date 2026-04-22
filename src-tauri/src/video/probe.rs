@@ -4,13 +4,13 @@ use tauri::AppHandle;
 use crate::video::types::{OrientationInfo, VideoError, FileReadiness};
 use crate::video::ffmpeg::run_ffprobe;
 
-pub fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<OrientationInfo, VideoError> {
+pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<OrientationInfo, VideoError> {
     let output = run_ffprobe(app, &[
         "-v", "quiet",
         "-print_format", "json",
         "-show_streams",
         file_path
-    ])?;
+    ]).await?;
 
     let json: Value = serde_json::from_str(&output.stdout)?;
     
@@ -59,7 +59,7 @@ pub fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<Orientatio
     })
 }
 
-pub fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadiness, VideoError> {
+pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadiness, VideoError> {
     let path_buf = Path::new(path);
     
     if !path_buf.exists() {
@@ -84,7 +84,7 @@ pub fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadiness, Vi
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         path
-    ])?;
+    ]).await?;
 
     let estimated_duration_secs = output.stdout.trim().parse::<f64>().unwrap_or(0.0);
 

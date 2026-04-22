@@ -1,9 +1,8 @@
-use std::process::{Command, Stdio};
-use std::io::{BufReader, BufRead};
 use crate::video::types::VideoError;
-use tauri::{AppHandle, Manager, Emitter};
-use std::path::PathBuf;
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct VideoProgress {
@@ -19,29 +18,7 @@ pub struct FfmpegOutput {
     pub exit_code: i32,
 }
 
-pub fn get_ffmpeg_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
-    let resource_dir = app.path().resource_dir().map_err(|_| VideoError::FfmpegNotFound)?;
-    let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
-    let path = resource_dir.join(ffmpeg);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(VideoError::FfmpegNotFound)
-    }
-}
-
-pub fn get_ffprobe_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
-    let resource_dir = app.path().resource_dir().map_err(|_| VideoError::FfprobeNotFound)?;
-    let ffprobe = if cfg!(target_os = "windows") { "ffprobe.exe" } else { "ffprobe" };
-    let path = resource_dir.join(ffprobe);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(VideoError::FfprobeNotFound)
-    }
-}
-
-pub fn run_ffmpeg(
+pub async fn run_ffmpeg(
     app: &AppHandle,
     args: &[&str],
     job_id: &str,
@@ -50,8 +27,6 @@ pub fn run_ffmpeg(
     duration_secs: f64,
     cancel_token: Option<tokio_util::sync::CancellationToken>
 ) -> Result<FfmpegOutput, VideoError> {
-    let ffmpeg_path = get_ffmpeg_path(app)?;
-    
     // Progress flags will be added manually or ensure they are after input
     let mut final_args = vec![];
     final_args.extend_from_slice(args);
@@ -64,26 +39,45 @@ pub fn run_ffmpeg(
         final_args.push(output_path);
     }
 
-    let mut child = Command::new(ffmpeg_path)
-        .args(&final_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let sidecar = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|_| VideoError::FfmpegNotFound)?
+        .args(final_args);
+    let (mut rx, child) = sidecar.spawn().map_err(|e| VideoError::ProcessingFailed {
+        stderr: format!("Failed to spawn ffmpeg sidecar: {e}"),
+    })?;
+    let mut child = Some(child);
 
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+    let mut stdout_str = String::new();
+    let mut stderr_str = String::new();
+    let mut exit_code = -1;
     let app_handle = app.clone();
     let job_id = job_id.to_string();
     let file_label = file_label.to_string();
     let ratio_label = ratio_label.to_string();
 
     // Read progress in real-time
-    let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {
+        // Check for cancellation
+        if let Some(ref token) = cancel_token {
+            if token.is_cancelled() {
+                if let Some(child) = child.take() {
+                    let _ = child.kill();
+                }
+                return Err(VideoError::ProcessingFailed { stderr: "Cancelled by user".to_string() });
+            }
+        }
+
+        let Some(event) = rx.recv().await else {
+            break;
+        };
+
+        match event {
+            CommandEvent::Stdout(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                stdout_str.push_str(&line);
+                stdout_str.push('\n');
                 let l = line.trim();
                 if l.starts_with("out_time_ms=") {
                     let time_ms = l.replace("out_time_ms=", "").parse::<f64>().unwrap_or(0.0);
@@ -99,7 +93,7 @@ pub fn run_ffmpeg(
                     }
                 }
                 if l == "progress=end" {
-                     let _ = app_handle.emit("video://progress", VideoProgress {
+                    let _ = app_handle.emit("video://progress", VideoProgress {
                         job_id: job_id.clone(),
                         file: file_label.clone(),
                         ratio: ratio_label.clone(),
@@ -107,36 +101,47 @@ pub fn run_ffmpeg(
                     });
                 }
             }
-            Err(_) => break,
-        }
-
-        // Check for cancellation
-        if let Some(ref token) = cancel_token {
-            if token.is_cancelled() {
-                let _ = child.kill();
-                return Err(VideoError::ProcessingFailed { stderr: "Cancelled by user".to_string() });
+            CommandEvent::Stderr(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                stderr_str.push_str(&line);
+                stderr_str.push('\n');
             }
+            CommandEvent::Error(err) => {
+                if !stderr_str.is_empty() && !stderr_str.ends_with('\n') {
+                    stderr_str.push('\n');
+                }
+                stderr_str.push_str(&err);
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code.unwrap_or(-1);
+                break;
+            }
+            _ => {}
         }
     }
 
-    let output = child.wait_with_output()?;
-    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-    let exit_code = output.status.code().unwrap_or(-1);
-
-    if output.status.success() {
+    if exit_code == 0 {
         Ok(FfmpegOutput { stdout: stdout_str, stderr: stderr_str, exit_code })
     } else {
-        Err(VideoError::ProcessingFailed { stderr: stderr_str })
+        let stderr = if stderr_str.trim().is_empty() {
+            format!("ffmpeg exited with code {exit_code}")
+        } else {
+            stderr_str
+        };
+        Err(VideoError::ProcessingFailed { stderr })
     }
 }
 
-pub fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput, VideoError> {
-    let ffprobe_path = get_ffprobe_path(app)?;
-    
-    let output = Command::new(ffprobe_path)
+pub async fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput, VideoError> {
+    let output = app.shell()
+        .sidecar("ffprobe")
+        .map_err(|_| VideoError::FfprobeNotFound)?
         .args(args)
-        .output()?;
+        .output()
+        .await
+        .map_err(|e| VideoError::ProcessingFailed {
+            stderr: format!("Failed to execute ffprobe sidecar: {e}"),
+        })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -145,6 +150,11 @@ pub fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput, Video
     if output.status.success() {
         Ok(FfmpegOutput { stdout, stderr, exit_code })
     } else {
+        let stderr = if stderr.trim().is_empty() {
+            format!("ffprobe exited with code {exit_code}")
+        } else {
+            stderr
+        };
         Err(VideoError::ProcessingFailed { stderr })
     }
 }
