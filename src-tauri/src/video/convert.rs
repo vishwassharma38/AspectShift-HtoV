@@ -159,12 +159,19 @@ pub async fn convert_to_ratio(
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
 
+    let has_transform = if let Some(t) = &options.transform {
+        t.rotate != 0 || t.flip_h || t.flip_v
+    } else {
+        false
+    };
+
     if orientation.is_vertical
         && ratio_diff < 0.02
         && !options.blur_background
         && !options.remove_audio
         && !options.burn_subtitles
         && preset.logo.is_none()
+        && !has_transform
     {
         let args = ["-i", &input, "-c", "copy", "-y", &output_path];
         run_ffmpeg(

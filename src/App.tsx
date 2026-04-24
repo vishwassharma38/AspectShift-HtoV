@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
@@ -29,6 +29,12 @@ interface LogoOptions {
   path: string | null;
 }
 
+interface VideoTransform {
+  rotate: number; // 0, 90, 180, 270
+  flip_h: boolean;
+  flip_v: boolean;
+}
+
 interface ConversionOptions {
   blur_background: boolean;
   blur_sigma: number;
@@ -43,6 +49,7 @@ interface ConversionOptions {
   crf: number | null;
   preset: string | null;
   audio_bitrate: string | null;
+  transform?: VideoTransform | null;
 }
 
 interface VideoPreset {
@@ -54,6 +61,15 @@ interface VideoPreset {
   logo_path: string | null;
   platform_config: PlatformConfig | null;
   is_builtin: boolean;
+}
+
+interface OrientationInfo {
+  width: number;
+  height: number;
+  rotation: number;
+  is_vertical: boolean;
+  display_width: number;
+  display_height: number;
 }
 
 const DEFAULT_OPTIONS: ConversionOptions = {
@@ -70,6 +86,11 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   crf: 18,
   preset: "medium",
   audio_bitrate: "128k",
+  transform: {
+    rotate: 0,
+    flip_h: false,
+    flip_v: false,
+  },
 };
 
 function App() {
@@ -80,12 +101,22 @@ function App() {
   const [presets, setPresets] = useState<VideoPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [newPresetName, setNewPresetName] = useState("");
+  const [orientation, setOrientation] = useState<OrientationInfo | null>(null);
 
   const [status, setStatus] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     loadPresets();
   }, []);
+
+  useEffect(() => {
+    if (input) {
+      handleDetectOrientation();
+    } else {
+      setOrientation(null);
+    }
+  }, [input]);
 
   const loadPresets = async () => {
     try {
@@ -93,6 +124,17 @@ function App() {
       setPresets(allPresets);
     } catch (error) {
       console.error("Failed to load presets:", error);
+    }
+  };
+
+  const handleDetectOrientation = async () => {
+    try {
+      const info = await invoke<OrientationInfo>("detect_orientation", {
+        filePath: input,
+      });
+      setOrientation(info);
+    } catch (error) {
+      console.error("Failed to detect orientation:", error);
     }
   };
 
@@ -114,15 +156,16 @@ function App() {
 
       if (currentLogoEnabled !== presetLogoEnabled) return true;
       if (currentLogoEnabled) {
-        // Compare logo options if enabled
         if (options.logo?.path !== selectedPreset.logo_path) return true;
-        // Other logo settings (position, etc.) could be checked here too,
-        // but path/enabled is the primary drift source in this system.
       }
       return false;
     })();
 
     if (logoChanged) return true;
+
+    // Check transform changes
+    const transformChanged = JSON.stringify(options.transform) !== JSON.stringify(selectedPreset.options.transform || DEFAULT_OPTIONS.transform);
+    if (transformChanged) return true;
 
     // Check key options
     const keysToCompare: (keyof ConversionOptions)[] = [
@@ -260,207 +303,337 @@ function App() {
     }
   };
 
+  const getPreviewTransformStyle = () => {
+    if (!options.transform) return {};
+    const { rotate, flip_h, flip_v } = options.transform;
+    let transform = `rotate(${rotate}deg)`;
+    if (flip_h) transform += " scaleX(-1)";
+    if (flip_v) transform += " scaleY(-1)";
+    return { transform };
+  };
+
+  const getAspectRatioValue = (r: AspectRatio) => {
+    switch (r) {
+      case "ratio9x16": return 9 / 16;
+      case "ratio1x1": return 1 / 1;
+      case "ratio4x5": return 4 / 5;
+      case "ratio2x3": return 2 / 3;
+      case "ratio16x9": return 16 / 9;
+      default: return 9 / 16;
+    }
+  };
+
   return (
     <div className="container">
       <h1>AspectShift HTOV</h1>
 
-      <div className="row">
-        <div className="input-with-button">
-          <input
-            type="text"
-            placeholder="Input file path"
-            value={input}
-            readOnly
-          />
-          <button onClick={handlePickFile}>Browse File</button>
-        </div>
-        <div className="input-with-button">
-          <input
-            type="text"
-            placeholder="Output directory"
-            value={outputDir}
-            readOnly
-          />
-          <button onClick={handlePickOutputDir}>Browse Folder</button>
-        </div>
-      </div>
+      <div className="main-layout">
+        <div className="controls-panel">
+          <div className="row">
+            <div className="input-with-button">
+              <input
+                type="text"
+                placeholder="Input file path"
+                value={input}
+                readOnly
+              />
+              <button onClick={handlePickFile}>Browse File</button>
+            </div>
+          </div>
+          <div className="row">
+            <div className="input-with-button">
+              <input
+                type="text"
+                placeholder="Output directory"
+                value={outputDir}
+                readOnly
+              />
+              <button onClick={handlePickOutputDir}>Browse Folder</button>
+            </div>
+          </div>
 
-      <div className="row">
-        <label>Select Preset:</label>
-        <select
-          value={selectedPresetId}
-          onChange={(e) => handlePresetChange(e.target.value)}
-          className={isDirty ? "dirty" : ""}
-        >
-          <option value="">Manual / Default</option>
-          <optgroup label="Built-in">
-            {presets
-              .filter((p) => p.is_builtin)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
-                </option>
-              ))}
-          </optgroup>
-          <optgroup label="Custom">
-            {presets
-              .filter((p) => !p.is_builtin)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
-                </option>
-              ))}
-          </optgroup>
-        </select>
-        {selectedPresetId &&
-          !presets.find((p) => p.id === selectedPresetId)?.is_builtin && (
-            <button onClick={() => handleDeletePreset(selectedPresetId)}>
-              Delete
-            </button>
+          <div className="row">
+            <label>Select Preset:</label>
+            <select
+              value={selectedPresetId}
+              onChange={(e) => handlePresetChange(e.target.value)}
+              className={isDirty ? "dirty" : ""}
+            >
+              <option value="">Manual / Default</option>
+              <optgroup label="Built-in">
+                {presets
+                  .filter((p) => p.is_builtin)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                      {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="Custom">
+                {presets
+                  .filter((p) => !p.is_builtin)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                      {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                    </option>
+                  ))}
+              </optgroup>
+            </select>
+            {selectedPresetId &&
+              !presets.find((p) => p.id === selectedPresetId)?.is_builtin && (
+                <button onClick={() => handleDeletePreset(selectedPresetId)}>
+                  Delete
+                </button>
+              )}
+          </div>
+
+          {isDirty && (
+            <div className="warning">
+              ⚠️ Settings differ from preset.{" "}
+              <button onClick={() => handlePresetChange(selectedPresetId)}>
+                Reset
+              </button>{" "}
+              or{" "}
+              <button onClick={() => setSelectedPresetId("")}>
+                Switch to Custom
+              </button>
+            </div>
           )}
-      </div>
 
-      {isDirty && (
-        <div className="warning">
-          ⚠️ Settings differ from preset.{" "}
-          <button onClick={() => handlePresetChange(selectedPresetId)}>
-            Reset
-          </button>{" "}
-          or{" "}
-          <button onClick={() => setSelectedPresetId("")}>
-            Switch to Custom
-          </button>
-        </div>
-      )}
+          <hr />
 
-      <hr />
-
-      <div className={`row ${isLocked ? "locked" : ""}`}>
-        <label>Ratio:</label>
-        <select
-          value={ratio}
-          onChange={(e) => setRatio(e.target.value as AspectRatio)}
-          disabled={isLocked}
-        >
-          <option value="ratio9x16">9:16</option>
-          <option value="ratio1x1">1:1</option>
-          <option value="ratio4x5">4:5</option>
-          <option value="ratio2x3">2:3</option>
-          <option value="ratio16x9">16:9</option>
-        </select>
-        {isLocked && (
-          <span className="lock-icon">
-            🔒 Enforced by {selectedPreset?.name}
-          </span>
-        )}
-      </div>
-
-      {selectedPreset?.platform_config && (
-        <div className="info-box">
-          <strong>Platform Requirements:</strong>{" "}
-          {selectedPreset.platform_config.target_width}x
-          {selectedPreset.platform_config.target_height}
-        </div>
-      )}
-
-      <div className="row">
-        <label>
-          <input
-            type="checkbox"
-            checked={options.generate_subtitles}
-            onChange={(e) =>
-              setOptions({
-                ...options,
-                generate_subtitles: e.target.checked,
-              })
-            }
-          />
-          Generate Subtitles
-        </label>
-      </div>
-
-      <div className="row">
-        <label>
-          <input
-            type="checkbox"
-            checked={options.burn_subtitles}
-            onChange={(e) =>
-              setOptions({
-                ...options,
-                burn_subtitles: e.target.checked,
-                generate_subtitles: e.target.checked
-                  ? true
-                  : options.generate_subtitles,
-              })
-            }
-          />
-          Burn Subtitles
-        </label>
-      </div>
-
-      <div className="row">
-        <label>
-          <input
-            type="checkbox"
-            checked={options.custom_encoding_enabled}
-            onChange={(e) =>
-              setOptions({
-                ...options,
-                custom_encoding_enabled: e.target.checked,
-              })
-            }
-          />
-          Enable Custom Encoding
-        </label>
-      </div>
-
-      {options.custom_encoding_enabled && (
-        <>
-          <div className="row">
-            <label>CRF (Quality):</label>
-            <input
-              type="range"
-              min="0"
-              max="51"
-              value={options.crf || 18}
-              onChange={(e) =>
-                setOptions({ ...options, crf: parseInt(e.target.value) })
-              }
-            />
-            <span>{options.crf}</span>
-          </div>
-
-          <div className="row">
-            <label>Preset (Speed):</label>
+          <div className={`row ${isLocked ? "locked" : ""}`}>
+            <label>Ratio:</label>
             <select
-              value={options.preset || "medium"}
-              onChange={(e) =>
-                setOptions({ ...options, preset: e.target.value })
-              }
+              value={ratio}
+              onChange={(e) => setRatio(e.target.value as AspectRatio)}
+              disabled={isLocked}
             >
-              <option value="slow">Slow</option>
-              <option value="medium">Medium</option>
-              <option value="fast">Fast</option>
+              <option value="ratio9x16">9:16</option>
+              <option value="ratio1x1">1:1</option>
+              <option value="ratio4x5">4:5</option>
+              <option value="ratio2x3">2:3</option>
+              <option value="ratio16x9">16:9</option>
             </select>
           </div>
 
-          <div className="row">
-            <label>Audio Bitrate:</label>
-            <select
-              value={options.audio_bitrate || "128k"}
-              onChange={(e) =>
-                setOptions({ ...options, audio_bitrate: e.target.value })
-              }
-            >
-              <option value="128k">128k</option>
-              <option value="192k">192k</option>
-              <option value="320k">320k</option>
-            </select>
+          <div className="transform-controls">
+            <h3>Transform</h3>
+            <div className="row">
+              <button onClick={() => setOptions({
+                ...options,
+                transform: {
+                  ...options.transform!,
+                  rotate: (options.transform!.rotate + 90) % 360
+                }
+              })}>Rotate 90°</button>
+              
+              <label>
+                <input
+                  type="checkbox"
+                  checked={options.transform?.flip_h || false}
+                  onChange={(e) => setOptions({
+                    ...options,
+                    transform: {
+                      ...options.transform!,
+                      flip_h: e.target.checked
+                    }
+                  })}
+                />
+                Flip H
+              </label>
+
+              <label>
+                <input
+                  type="checkbox"
+                  checked={options.transform?.flip_v || false}
+                  onChange={(e) => setOptions({
+                    ...options,
+                    transform: {
+                      ...options.transform!,
+                      flip_v: e.target.checked
+                    }
+                  })}
+                />
+                Flip V
+              </label>
+
+              <button onClick={() => setOptions({
+                ...options,
+                transform: { rotate: 0, flip_h: false, flip_v: false }
+              })}>Reset Transform</button>
+            </div>
           </div>
-        </>
-      )}
+
+          <hr />
+
+          <div className="row">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.blur_background}
+                onChange={(e) =>
+                  setOptions({
+                    ...options,
+                    blur_background: e.target.checked,
+                  })
+                }
+              />
+              Blur Background
+            </label>
+          </div>
+
+          <div className="row">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.generate_subtitles}
+                onChange={(e) =>
+                  setOptions({
+                    ...options,
+                    generate_subtitles: e.target.checked,
+                  })
+                }
+              />
+              Generate Subtitles
+            </label>
+          </div>
+
+          <div className="row">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.burn_subtitles}
+                onChange={(e) =>
+                  setOptions({
+                    ...options,
+                    burn_subtitles: e.target.checked,
+                    generate_subtitles: e.target.checked
+                      ? true
+                      : options.generate_subtitles,
+                  })
+                }
+              />
+              Burn Subtitles
+            </label>
+          </div>
+
+          <div className="row">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.custom_encoding_enabled}
+                onChange={(e) =>
+                  setOptions({
+                    ...options,
+                    custom_encoding_enabled: e.target.checked,
+                  })
+                }
+              />
+              Enable Custom Encoding
+            </label>
+          </div>
+
+          {options.custom_encoding_enabled && (
+            <>
+              <div className="row">
+                <label>CRF (Quality):</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="51"
+                  value={options.crf || 18}
+                  onChange={(e) =>
+                    setOptions({ ...options, crf: parseInt(e.target.value) })
+                  }
+                />
+                <span>{options.crf}</span>
+              </div>
+
+              <div className="row">
+                <label>Preset (Speed):</label>
+                <select
+                  value={options.preset || "medium"}
+                  onChange={(e) =>
+                    setOptions({ ...options, preset: e.target.value })
+                  }
+                >
+                  <option value="slow">Slow</option>
+                  <option value="medium">Medium</option>
+                  <option value="fast">Fast</option>
+                </select>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="preview-panel">
+          <h3>Preview</h3>
+          <div 
+            className="preview-container"
+            style={{ 
+              aspectRatio: getAspectRatioValue(ratio),
+              backgroundColor: '#000',
+              position: 'relative',
+              overflow: 'hidden',
+              width: '100%',
+              maxWidth: '300px',
+              margin: 'auto',
+              border: '2px solid #444'
+            }}
+          >
+            {input ? (
+              <video
+                key={input}
+                ref={videoRef}
+                src={convertFileSrc(input)}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: options.blur_background ? 'cover' : 'contain',
+                  ...getPreviewTransformStyle()
+                }}
+                autoPlay
+                muted
+                loop
+                playsInline
+              />
+            ) : (
+              <div className="preview-placeholder">No video selected</div>
+            )}
+            
+            {options.blur_background && input && (
+               <video
+                 key={`${input}-blur`}
+                 src={convertFileSrc(input)}
+                 style={{
+                   position: 'absolute',
+                   top: 0,
+                   left: 0,
+                   width: '100%',
+                   height: '100%',
+                   objectFit: 'cover',
+                   zIndex: -1,
+                   filter: `blur(${options.blur_sigma}px)`,
+                   opacity: 0.5,
+                   ...getPreviewTransformStyle()
+                 }}
+                 autoPlay
+                 muted
+                 loop
+                 playsInline
+               />
+            )}
+          </div>
+          <div className="info-text">
+            {orientation && (
+              <p>{orientation.display_width}x{orientation.display_height} ({orientation.is_vertical ? 'Vertical' : 'Horizontal'})</p>
+            )}
+          </div>
+        </div>
+      </div>
 
       <hr />
 

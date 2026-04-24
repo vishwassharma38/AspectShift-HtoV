@@ -17,18 +17,69 @@
 
 .container {
   margin: 0;
-  padding-top: 10vh;
+  padding-top: 5vh;
   display: flex;
   flex-direction: column;
   justify-content: center;
   text-align: center;
-  max-width: 800px;
+  max-width: 1000px;
   margin: auto;
+}
+
+.main-layout {
+  display: flex;
+  gap: 30px;
+  text-align: left;
+  margin-top: 20px;
+}
+
+.controls-panel {
+  flex: 1;
+}
+
+.preview-panel {
+  width: 350px;
+  background-color: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.preview-container {
+  box-shadow: 0 0 20px rgba(0,0,0,0.5);
+  background-color: #000;
+  border-radius: 4px;
+}
+
+.preview-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #666;
+  font-style: italic;
+}
+
+.transform-controls h3 {
+  margin-top: 20px;
+  margin-bottom: 10px;
+  font-size: 1.1em;
+  color: #90caf9;
+}
+
+.info-text {
+  margin-top: 15px;
+  font-size: 0.85em;
+  color: #aaa;
+  text-align: center;
 }
 
 .row {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: center;
   margin-bottom: 10px;
   gap: 10px;

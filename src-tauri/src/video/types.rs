@@ -58,6 +58,18 @@ pub struct ConversionOptions {
     pub crf: Option<u8>,
     pub preset: Option<String>,
     pub audio_bitrate: Option<String>,
+    #[serde(default)]
+    pub transform: Option<VideoTransform>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct VideoTransform {
+    #[serde(default)]
+    pub rotate: i32, // 0, 90, 180, 270
+    #[serde(default)]
+    pub flip_h: bool,
+    #[serde(default)]
+    pub flip_v: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -153,6 +165,7 @@ impl Default for ConversionOptions {
             crf: Some(18),
             preset: Some("medium".to_string()),
             audio_bitrate: Some("128k".to_string()),
+            transform: None,
         }
     }
 }

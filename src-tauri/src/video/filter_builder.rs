@@ -1,5 +1,35 @@
 use crate::video::preset_adapter::FfmpegPreset;
-use crate::video::types::{OrientationInfo, LogoPosition};
+use crate::video::types::{OrientationInfo, LogoPosition, VideoTransform};
+
+fn get_transform_filters(transform: &VideoTransform) -> (String, bool) {
+    let mut filters = Vec::new();
+    let mut swaps_dimensions = false;
+
+    match transform.rotate {
+        90 => {
+            filters.push("transpose=1".to_string());
+            swaps_dimensions = !swaps_dimensions;
+        }
+        180 => {
+            filters.push("hflip".to_string());
+            filters.push("vflip".to_string());
+        }
+        270 => {
+            filters.push("transpose=2".to_string());
+            swaps_dimensions = !swaps_dimensions;
+        }
+        _ => {}
+    }
+
+    if transform.flip_h {
+        filters.push("hflip".to_string());
+    }
+    if transform.flip_v {
+        filters.push("vflip".to_string());
+    }
+
+    (filters.join(","), swaps_dimensions)
+}
 
 pub fn build_filter_graph(
     preset: &FfmpegPreset,
@@ -7,6 +37,18 @@ pub fn build_filter_graph(
 ) -> String {
     let max_height = 1920;
     
+    // 0. Handle transformations first
+    let (mut effective_display_width, mut effective_display_height) = (orientation.display_width, orientation.display_height);
+    let mut transform_filter = String::new();
+    
+    if let Some(transform) = &preset.transform {
+        let (filters, swaps) = get_transform_filters(transform);
+        transform_filter = filters;
+        if swaps {
+            std::mem::swap(&mut effective_display_width, &mut effective_display_height);
+        }
+    }
+
     // 1. Determine base dimensions from PRESET and ENFORCEMENT
     let (mut tw, mut th) = if let Some(config) = &preset.platform_config {
         if config.enforce_dimensions {
@@ -16,7 +58,7 @@ pub fn build_filter_graph(
             // Preset has platform config but DOES NOT enforce dimensions
             // Fall back to dynamic scaling based on ratio
             let target_ratio = preset.ratio.get_ratio();
-            let h = orientation.display_height.min(max_height);
+            let h = effective_display_height.min(max_height);
             let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
             let w = (rounded_h as f32 * target_ratio) as u32;
             (w, rounded_h)
@@ -24,7 +66,7 @@ pub fn build_filter_graph(
     } else {
         // No platform config, use dynamic scaling based on target ratio
         let target_ratio = preset.ratio.get_ratio();
-        let h = orientation.display_height.min(max_height);
+        let h = effective_display_height.min(max_height);
         let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
         let w = (rounded_h as f32 * target_ratio) as u32;
         (w, rounded_h)
@@ -35,10 +77,33 @@ pub fn build_filter_graph(
     th = (th as f32 / 2.0).round() as u32 * 2;
 
     let mut filter_stages = Vec::new();
-    let uses_complex_graph = preset.blur_background || preset.logo.is_some();
+    let has_transform = !transform_filter.is_empty();
+    let uses_complex_graph = preset.blur_background || preset.logo.is_some() || has_transform;
 
-    // Stage 1: Base Video Processing (Crop/Blur)
-    if preset.blur_background {
+    // Stage 1: Base Video Processing (Transform/Crop/Blur)
+    if has_transform {
+        if preset.blur_background {
+            filter_stages.push(format!(
+                "[0:v]{transform}[v_transformed];\
+                 [v_transformed]split[bg][fg];\
+                 [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
+                 [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
+                 [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
+                transform = transform_filter, tw = tw, th = th, sigma = preset.blur_sigma
+            ));
+        } else if uses_complex_graph {
+             filter_stages.push(format!(
+                "[0:v]{transform},scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th}[v]",
+                transform = transform_filter, tw = tw, th = th
+            ));
+        } else {
+             // Should not happen as uses_complex_graph is true if has_transform
+             filter_stages.push(format!(
+                "{transform},scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th}",
+                transform = transform_filter, tw = tw, th = th
+            ));
+        }
+    } else if preset.blur_background {
         filter_stages.push(format!(
             "[0:v]split[bg][fg];\
              [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\

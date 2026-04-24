@@ -1,5 +1,5 @@
 use crate::video::types::{
-    AspectRatio, ConversionOptions, LogoPreset, PlatformConfig, QualityPreset,
+    AspectRatio, ConversionOptions, LogoPreset, PlatformConfig, QualityPreset, VideoTransform,
 };
 
 #[derive(Debug, Clone)]
@@ -16,6 +16,7 @@ pub struct FfmpegPreset {
     pub preset: Option<String>,
     pub audio_bitrate: Option<String>,
     pub platform_config: Option<PlatformConfig>,
+    pub transform: Option<VideoTransform>,
 }
 
 pub fn legacy_to_preset(
@@ -49,5 +50,6 @@ pub fn legacy_to_preset(
         audio_bitrate: options.audio_bitrate,
         platform_config,
         custom_encoding_enabled: options.custom_encoding_enabled,
+        transform: options.transform,
     }
 }
