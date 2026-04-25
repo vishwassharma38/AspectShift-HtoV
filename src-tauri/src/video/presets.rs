@@ -7,6 +7,27 @@ use crate::video::types::{VideoPreset, AspectRatio, ConversionOptions, PlatformC
 pub fn get_builtin_presets() -> Vec<VideoPreset> {
     vec![
         VideoPreset {
+            id: "youtube".to_string(),
+            name: "YouTube".to_string(),
+            description: Some("Standard YouTube video (16:9)".to_string()),
+            ratio: AspectRatio::Ratio16x9,
+            options: ConversionOptions {
+                quality: QualityPreset::High,
+                custom_encoding_enabled: true,
+                crf: Some(18),
+                preset: Some("slow".to_string()),
+                audio_bitrate: Some("192k".to_string()),
+                ..Default::default()
+            },
+            platform_config: Some(PlatformConfig {
+                target_width: 1920,
+                target_height: 1080,
+                enforce_dimensions: true,
+            }),
+            logo_path: None,
+            is_builtin: true,
+        },
+        VideoPreset {
             id: "youtube_shorts".to_string(),
             name: "YouTube Shorts".to_string(),
             description: Some("Optimized for YouTube Shorts (9:16)".to_string()),
@@ -22,6 +43,27 @@ pub fn get_builtin_presets() -> Vec<VideoPreset> {
             platform_config: Some(PlatformConfig {
                 target_width: 1080,
                 target_height: 1920,
+                enforce_dimensions: true,
+            }),
+            logo_path: None,
+            is_builtin: true,
+        },
+        VideoPreset {
+            id: "instagram".to_string(),
+            name: "Instagram Square".to_string(),
+            description: Some("Standard Instagram Square (1:1)".to_string()),
+            ratio: AspectRatio::Ratio1x1,
+            options: ConversionOptions {
+                quality: QualityPreset::Standard,
+                custom_encoding_enabled: true,
+                crf: Some(23),
+                preset: Some("medium".to_string()),
+                audio_bitrate: Some("128k".to_string()),
+                ..Default::default()
+            },
+            platform_config: Some(PlatformConfig {
+                target_width: 1080,
+                target_height: 1080,
                 enforce_dimensions: true,
             }),
             logo_path: None,

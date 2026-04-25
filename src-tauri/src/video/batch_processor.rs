@@ -1,6 +1,8 @@
 use crate::video::convert::{convert_to_ratio, prepare_subtitles};
 use crate::video::queue::{BatchManager, BatchState};
 use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
@@ -13,11 +15,36 @@ pub async fn start_batch(
 ) -> Result<(), String> {
     let mut jobs = Vec::new();
     for file in files {
-        jobs.push(BatchJob {
-            id: uuid::Uuid::new_v4().to_string(),
-            file_path: file,
-            settings: settings.clone(),
-        });
+        for target in &settings.targets {
+            let input_path = Path::new(&file);
+            let stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("video");
+            let ext = target.options.output_format.get_extension();
+            
+            let tag = if let Some(name) = &target.preset_name {
+                name.to_lowercase().replace(' ', "_").replace('/', "_")
+            } else {
+                target.ratio.get_tag().replace(':', "x")
+            };
+
+            let output_name = format!("{}_{}.{}", stem, tag, ext);
+            let output_path = Path::new(&settings.output_dir)
+                .join(output_name)
+                .to_string_lossy()
+                .to_string();
+
+            jobs.push(BatchJob {
+                id: uuid::Uuid::new_v4().to_string(),
+                input_path: file.clone(),
+                target_ratio: target.ratio.clone(),
+                target_preset: target.options.preset.clone(),
+                active_effects: target.options.clone(),
+                platform_config: target.platform_config.clone(),
+                resolved_output_path: output_path,
+            });
+        }
     }
 
     manager.add_jobs(jobs).await;
@@ -29,7 +56,7 @@ pub async fn start_batch(
     state.is_running = true;
     state.cancellation_token = tokio_util::sync::CancellationToken::new();
 
-    // Fix 4: Emit batch progress at start
+    // Emit batch progress at start
     let _ = app.emit(
         "batch://progress",
         BatchProgress {
@@ -45,6 +72,8 @@ pub async fn start_batch(
     let app_clone = app.clone();
 
     tokio::spawn(async move {
+        let mut subtitle_cache: HashMap<String, PathBuf> = HashMap::new();
+
         loop {
             let (job, token) = {
                 let mut s = state_clone.lock().await;
@@ -71,110 +100,60 @@ pub async fn start_batch(
             emit_batch_progress(&app_clone, &state_clone).await;
 
             let job_id = job.id.clone();
-            let file_path = job.file_path.clone();
+            let input_path = job.input_path.clone();
+            let ratio = job.target_ratio.clone();
 
-            let mut job_failed = false;
+            // Emit Processing status
+            let _ = app_clone.emit(
+                "batch://file-status",
+                FileProgress {
+                    job_id: job_id.clone(),
+                    file_path: input_path.clone(),
+                    ratio: ratio.clone(),
+                    progress: 0.0,
+                    status: JobStatus::Processing,
+                },
+            );
+
             let should_prepare_subtitles =
-                job.settings.options.generate_subtitles || job.settings.options.burn_subtitles;
-            let prepared_subtitle = if should_prepare_subtitles {
-                match prepare_subtitles(&app_clone, &file_path, &job.settings.output_dir).await {
-                    Ok(path) => Some(path),
-                    Err(e) => {
-                        job_failed = true;
-                        let failure = e.to_string();
-                        for ratio in &job.settings.ratios {
+                job.active_effects.generate_subtitles || job.active_effects.burn_subtitles;
+            
+            let mut prepared_subtitle = None;
+            if should_prepare_subtitles {
+                if let Some(path) = subtitle_cache.get(&input_path) {
+                    prepared_subtitle = Some(path.clone());
+                } else {
+                    // Get output dir from resolved path
+                    let output_dir = Path::new(&job.resolved_output_path)
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ".".to_string());
+
+                    match prepare_subtitles(&app_clone, &input_path, &output_dir).await {
+                        Ok(path) => {
+                            subtitle_cache.insert(input_path.clone(), path.clone());
+                            prepared_subtitle = Some(path);
+                        }
+                        Err(e) => {
+                            let failure = e.to_string();
                             let _ = app_clone.emit(
                                 "batch://file-status",
                                 FileProgress {
                                     job_id: job_id.clone(),
-                                    file_path: file_path.clone(),
+                                    file_path: input_path.clone(),
                                     ratio: ratio.clone(),
                                     progress: 0.0,
-                                    status: JobStatus::Failed(failure.clone()),
+                                    status: JobStatus::Failed(failure),
                                 },
                             );
+                            
+                            {
+                                let mut s = state_clone.lock().await;
+                                s.failed_jobs += 1;
+                            }
+                            emit_batch_progress(&app_clone, &state_clone).await;
+                            continue;
                         }
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            if should_prepare_subtitles && prepared_subtitle.is_none() {
-                {
-                    let mut s = state_clone.lock().await;
-                    s.failed_jobs += 1;
-                }
-                emit_batch_progress(&app_clone, &state_clone).await;
-                continue;
-            }
-
-            // Process each ratio for the file
-            for ratio in &job.settings.ratios {
-                if token.is_cancelled() {
-                    break;
-                }
-
-                // Fix 1: Emit Processing for this ratio
-                let _ = app_clone.emit(
-                    "batch://file-status",
-                    FileProgress {
-                        job_id: job_id.clone(),
-                        file_path: file_path.clone(),
-                        ratio: ratio.clone(),
-                        progress: 0.0,
-                        status: JobStatus::Processing,
-                    },
-                );
-
-                let app_handle = app_clone.clone();
-                let job_id_inner = job_id.clone();
-                let file_path_inner = file_path.clone();
-                let ratio_inner = ratio.clone();
-                let options_inner = job.settings.options.clone();
-                let platform_config_inner = job.settings.platform_config.clone();
-                let output_dir_inner = job.settings.output_dir.clone();
-                let token_inner = token.clone();
-                let subtitle_inner = prepared_subtitle.clone();
-
-                let result = convert_to_ratio(
-                    &app_handle,
-                    job_id_inner,
-                    file_path_inner,
-                    output_dir_inner,
-                    ratio_inner,
-                    options_inner,
-                    platform_config_inner,
-                    subtitle_inner,
-                    Some(token_inner),
-                ).await;
-
-                match result {
-                    Ok(_) => {
-                        let _ = app_clone.emit(
-                            "batch://file-status",
-                            FileProgress {
-                                job_id: job_id.clone(),
-                                file_path: file_path.clone(),
-                                ratio: ratio.clone(),
-                                progress: 100.0,
-                                status: JobStatus::Completed,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        job_failed = true;
-                        let _ = app_clone.emit(
-                            "batch://file-status",
-                            FileProgress {
-                                job_id: job_id.clone(),
-                                file_path: file_path.clone(),
-                                ratio: ratio.clone(),
-                                progress: 0.0,
-                                status: JobStatus::Failed(e.to_string()),
-                            },
-                        );
                     }
                 }
             }
@@ -185,20 +164,57 @@ pub async fn start_batch(
                 break;
             }
 
-            // Update completed/failed count
-            {
-                let mut s = state_clone.lock().await;
-                if job_failed {
-                    s.failed_jobs += 1;
-                } else {
-                    s.completed_jobs += 1;
+            let result = convert_to_ratio(
+                &app_clone,
+                job_id.clone(),
+                input_path.clone(),
+                Path::new(&job.resolved_output_path).parent().unwrap().to_string_lossy().to_string(),
+                ratio.clone(),
+                job.active_effects.clone(),
+                job.platform_config.clone(),
+                prepared_subtitle,
+                Some(token.clone()),
+            ).await;
+
+            match result {
+                Ok(_) => {
+                    let _ = app_clone.emit(
+                        "batch://file-status",
+                        FileProgress {
+                            job_id: job_id.clone(),
+                            file_path: input_path.clone(),
+                            ratio: ratio.clone(),
+                            progress: 100.0,
+                            status: JobStatus::Completed,
+                        },
+                    );
+                    {
+                        let mut s = state_clone.lock().await;
+                        s.completed_jobs += 1;
+                    }
+                }
+                Err(e) => {
+                    let _ = app_clone.emit(
+                        "batch://file-status",
+                        FileProgress {
+                            job_id: job_id.clone(),
+                            file_path: input_path.clone(),
+                            ratio: ratio.clone(),
+                            progress: 0.0,
+                            status: JobStatus::Failed(e.to_string()),
+                        },
+                    );
+                    {
+                        let mut s = state_clone.lock().await;
+                        s.failed_jobs += 1;
+                    }
                 }
             }
 
             emit_batch_progress(&app_clone, &state_clone).await;
         }
 
-        // Fix 4: Emit batch progress at end
+        // Emit final progress
         emit_batch_progress(&app_clone, &state_clone).await;
     });
 

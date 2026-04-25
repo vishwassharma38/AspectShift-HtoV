@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type AspectRatio =
@@ -72,6 +73,27 @@ interface OrientationInfo {
   display_height: number;
 }
 
+interface BatchProgress {
+  total_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  percentage: number;
+  current_job_id: string | null;
+}
+
+interface FileProgress {
+  job_id: string;
+  file_path: string;
+  ratio: AspectRatio;
+  progress: number;
+  status:
+    | "pending"
+    | "processing"
+    | "completed"
+    | { error: string }
+    | "cancelled";
+}
+
 const DEFAULT_OPTIONS: ConversionOptions = {
   blur_background: false,
   blur_sigma: 20.0,
@@ -93,21 +115,65 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   },
 };
 
+const ASPECT_RATIOS: { label: string; value: AspectRatio }[] = [
+  { label: "9:16", value: "ratio9x16" },
+  { label: "1:1", value: "ratio1x1" },
+  { label: "4:5", value: "ratio4x5" },
+  { label: "2:3", value: "ratio2x3" },
+  { label: "16:9", value: "ratio16x9" },
+];
+
 function App() {
   const [input, setInput] = useState("");
+  const [batchFiles, setBatchFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState("");
   const [ratio, setRatio] = useState<AspectRatio>("ratio9x16");
+  const [selectedRatios, setSelectedRatios] = useState<AspectRatio[]>([
+    "ratio9x16",
+  ]);
   const [options, setOptions] = useState<ConversionOptions>(DEFAULT_OPTIONS);
   const [presets, setPresets] = useState<VideoPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
+  const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
   const [newPresetName, setNewPresetName] = useState("");
+  const [newPresetDescription, setNewPresetDescription] = useState("");
   const [orientation, setOrientation] = useState<OrientationInfo | null>(null);
 
   const [status, setStatus] = useState("");
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(
+    null,
+  );
+  const [fileProgresses, setFileProgresses] = useState<
+    Record<string, FileProgress>
+  >({});
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     loadPresets();
+  }, []);
+
+  useEffect(() => {
+    const unlistenProgress = listen<BatchProgress>(
+      "batch://progress",
+      (event) => {
+        setBatchProgress(event.payload);
+      },
+    );
+
+    const unlistenFileStatus = listen<FileProgress>(
+      "batch://file-status",
+      (event) => {
+        setFileProgresses((prev) => ({
+          ...prev,
+          [event.payload.job_id]: event.payload,
+        }));
+      },
+    );
+
+    return () => {
+      unlistenProgress.then((f) => f());
+      unlistenFileStatus.then((f) => f());
+    };
   }, []);
 
   useEffect(() => {
@@ -164,7 +230,11 @@ function App() {
     if (logoChanged) return true;
 
     // Check transform changes
-    const transformChanged = JSON.stringify(options.transform) !== JSON.stringify(selectedPreset.options.transform || DEFAULT_OPTIONS.transform);
+    const transformChanged =
+      JSON.stringify(options.transform) !==
+      JSON.stringify(
+        selectedPreset.options.transform || DEFAULT_OPTIONS.transform,
+      );
     if (transformChanged) return true;
 
     // Check key options
@@ -190,22 +260,54 @@ function App() {
     return false;
   }, [selectedPreset, ratio, options]);
 
-  const isLocked = selectedPreset?.platform_config?.enforce_dimensions || false;
-
   const handlePickFile = async () => {
     try {
       const selected = await open({
-        multiple: false,
+        multiple: true,
         filters: [
           { name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "webm"] },
         ],
       });
-      if (selected && typeof selected === "string") {
+      if (selected && Array.isArray(selected)) {
+        if (selected.length === 1) {
+          setInput(selected[0]);
+          setBatchFiles([]);
+        } else {
+          setInput(selected[0]); // Preview first file
+          setBatchFiles(selected);
+        }
+      } else if (selected && typeof selected === "string") {
         setInput(selected);
+        setBatchFiles([]);
       }
     } catch (error) {
       setStatus(`Error picking file: ${error}`);
     }
+  };
+
+  const handleToggleRatio = (r: AspectRatio) => {
+    setSelectedRatios((prev) =>
+      prev.includes(r)
+        ? prev.length > 1
+          ? prev.filter((item) => item !== r)
+          : prev
+        : [...prev, r],
+    );
+    // For preview, update the main ratio to the last selected one
+    setRatio(r);
+  };
+
+  const handleTogglePresetSelection = (presetId: string) => {
+    setSelectedPresetIds((prev) => {
+      if (prev.includes(presetId)) {
+        return prev.filter((id) => id !== presetId);
+      }
+      if (prev.length >= 5) {
+        setStatus("Maximum 5 presets can be selected at once");
+        return prev;
+      }
+      return [...prev, presetId];
+    });
   };
 
   const handlePickOutputDir = async () => {
@@ -257,7 +359,7 @@ function App() {
     const preset: VideoPreset = {
       id: Date.now().toString(),
       name: newPresetName,
-      description: "Custom preset",
+      description: newPresetDescription || "Custom preset",
       ratio,
       options,
       logo_path: options.logo?.enabled ? options.logo.path : null,
@@ -268,6 +370,7 @@ function App() {
     try {
       await invoke("save_preset", { preset });
       setNewPresetName("");
+      setNewPresetDescription("");
       loadPresets();
       setStatus("Preset saved!");
     } catch (error) {
@@ -282,24 +385,89 @@ function App() {
       if (selectedPresetId === id) {
         setSelectedPresetId("");
       }
+      setSelectedPresetIds((prev) => prev.filter((pid) => pid !== id));
     } catch (error) {
       setStatus(`Error deleting preset: ${error}`);
     }
   };
 
-  const handleConvert = async () => {
-    try {
-      setStatus("Processing...");
-      const result = await invoke("convert_to_ratio", {
-        input,
-        outputDir,
-        ratio,
-        options,
-        platform_config: selectedPreset?.platform_config || null,
+  const handleStartBatch = async () => {
+    if (!outputDir) {
+      setStatus("Please select an output directory first");
+      return;
+    }
+
+    const files = batchFiles.length > 0 ? batchFiles : [input];
+    if (files.length === 0 || !files[0]) {
+      setStatus("Please select at least one file");
+      return;
+    }
+
+    const targets: any[] = [];
+
+    // Add selected presets
+    selectedPresetIds.forEach((pid) => {
+      const p = presets.find((preset) => preset.id === pid);
+      if (p) {
+        targets.push({
+          ratio: p.ratio,
+          options: p.options,
+          platform_config: p.platform_config,
+          preset_name: p.name,
+        });
+      }
+    });
+
+    // Add manual ratios if no presets are selected, or if user wants both
+    // If no presets selected, we use the current UI settings for all selected ratios
+    if (selectedPresetIds.length === 0) {
+      selectedRatios.forEach((r) => {
+        targets.push({
+          ratio: r,
+          options: options,
+          platform_config: selectedPreset?.platform_config || null,
+          preset_name: null,
+        });
       });
-      setStatus(`Success: ${JSON.stringify(result)}`);
+    }
+
+    if (targets.length === 0) {
+      setStatus("Please select at least one preset or ratio");
+      return;
+    }
+
+    try {
+      setStatus("Starting batch...");
+      setFileProgresses({});
+      await invoke("start_batch", {
+        files,
+        settings: {
+          targets,
+          output_dir: outputDir,
+        },
+      });
     } catch (error) {
-      setStatus(`Error: ${error}`);
+      setStatus(`Error starting batch: ${error}`);
+    }
+  };
+
+  const handleCancelBatch = async () => {
+    try {
+      await invoke("cancel_batch");
+      setStatus("Cancelling batch...");
+    } catch (error) {
+      setStatus(`Error cancelling batch: ${error}`);
+    }
+  };
+
+  const handleClearBatch = async () => {
+    try {
+      await invoke("clear_batch");
+      setBatchProgress(null);
+      setFileProgresses({});
+      setStatus("Batch cleared");
+    } catch (error) {
+      setStatus(`Error clearing batch: ${error}`);
     }
   };
 
@@ -314,12 +482,18 @@ function App() {
 
   const getAspectRatioValue = (r: AspectRatio) => {
     switch (r) {
-      case "ratio9x16": return 9 / 16;
-      case "ratio1x1": return 1 / 1;
-      case "ratio4x5": return 4 / 5;
-      case "ratio2x3": return 2 / 3;
-      case "ratio16x9": return 16 / 9;
-      default: return 9 / 16;
+      case "ratio9x16":
+        return 9 / 16;
+      case "ratio1x1":
+        return 1 / 1;
+      case "ratio4x5":
+        return 4 / 5;
+      case "ratio2x3":
+        return 2 / 3;
+      case "ratio16x9":
+        return 16 / 9;
+      default:
+        return 9 / 16;
     }
   };
 
@@ -366,7 +540,9 @@ function App() {
                   .map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
-                      {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                      {selectedPresetId === p.id && isDirty
+                        ? " (modified)"
+                        : ""}
                     </option>
                   ))}
               </optgroup>
@@ -376,7 +552,9 @@ function App() {
                   .map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
-                      {selectedPresetId === p.id && isDirty ? " (modified)" : ""}
+                      {selectedPresetId === p.id && isDirty
+                        ? " (modified)"
+                        : ""}
                     </option>
                   ))}
               </optgroup>
@@ -404,43 +582,55 @@ function App() {
 
           <hr />
 
-          <div className={`row ${isLocked ? "locked" : ""}`}>
-            <label>Ratio:</label>
-            <select
-              value={ratio}
-              onChange={(e) => setRatio(e.target.value as AspectRatio)}
-              disabled={isLocked}
-            >
-              <option value="ratio9x16">9:16</option>
-              <option value="ratio1x1">1:1</option>
-              <option value="ratio4x5">4:5</option>
-              <option value="ratio2x3">2:3</option>
-              <option value="ratio16x9">16:9</option>
-            </select>
+          <div className="row">
+            <label>Ratios:</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+              {ASPECT_RATIOS.map((r) => (
+                <label
+                  key={r.value}
+                  style={{ display: "flex", alignItems: "center", gap: "4px" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedRatios.includes(r.value)}
+                    onChange={() => handleToggleRatio(r.value)}
+                  />
+                  {r.label}
+                </label>
+              ))}
+            </div>
           </div>
 
           <div className="transform-controls">
             <h3>Transform</h3>
             <div className="row">
-              <button onClick={() => setOptions({
-                ...options,
-                transform: {
-                  ...options.transform!,
-                  rotate: (options.transform!.rotate + 90) % 360
+              <button
+                onClick={() =>
+                  setOptions({
+                    ...options,
+                    transform: {
+                      ...options.transform!,
+                      rotate: (options.transform!.rotate + 90) % 360,
+                    },
+                  })
                 }
-              })}>Rotate 90°</button>
-              
+              >
+                Rotate 90°
+              </button>
+
               <label>
                 <input
                   type="checkbox"
                   checked={options.transform?.flip_h || false}
-                  onChange={(e) => setOptions({
-                    ...options,
-                    transform: {
-                      ...options.transform!,
-                      flip_h: e.target.checked
-                    }
-                  })}
+                  onChange={(e) =>
+                    setOptions({
+                      ...options,
+                      transform: {
+                        ...options.transform!,
+                        flip_h: e.target.checked,
+                      },
+                    })
+                  }
                 />
                 Flip H
               </label>
@@ -449,21 +639,29 @@ function App() {
                 <input
                   type="checkbox"
                   checked={options.transform?.flip_v || false}
-                  onChange={(e) => setOptions({
-                    ...options,
-                    transform: {
-                      ...options.transform!,
-                      flip_v: e.target.checked
-                    }
-                  })}
+                  onChange={(e) =>
+                    setOptions({
+                      ...options,
+                      transform: {
+                        ...options.transform!,
+                        flip_v: e.target.checked,
+                      },
+                    })
+                  }
                 />
                 Flip V
               </label>
 
-              <button onClick={() => setOptions({
-                ...options,
-                transform: { rotate: 0, flip_h: false, flip_v: false }
-              })}>Reset Transform</button>
+              <button
+                onClick={() =>
+                  setOptions({
+                    ...options,
+                    transform: { rotate: 0, flip_h: false, flip_v: false },
+                  })
+                }
+              >
+                Reset Transform
+              </button>
             </div>
           </div>
 
@@ -571,17 +769,17 @@ function App() {
 
         <div className="preview-panel">
           <h3>Preview</h3>
-          <div 
+          <div
             className="preview-container"
-            style={{ 
+            style={{
               aspectRatio: getAspectRatioValue(ratio),
-              backgroundColor: '#000',
-              position: 'relative',
-              overflow: 'hidden',
-              width: '100%',
-              maxWidth: '300px',
-              margin: 'auto',
-              border: '2px solid #444'
+              backgroundColor: "#000",
+              position: "relative",
+              overflow: "hidden",
+              width: "100%",
+              maxWidth: "300px",
+              margin: "auto",
+              border: "2px solid #444",
             }}
           >
             {input ? (
@@ -590,10 +788,10 @@ function App() {
                 ref={videoRef}
                 src={convertFileSrc(input)}
                 style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: options.blur_background ? 'cover' : 'contain',
-                  ...getPreviewTransformStyle()
+                  width: "100%",
+                  height: "100%",
+                  objectFit: options.blur_background ? "cover" : "contain",
+                  ...getPreviewTransformStyle(),
                 }}
                 autoPlay
                 muted
@@ -603,33 +801,36 @@ function App() {
             ) : (
               <div className="preview-placeholder">No video selected</div>
             )}
-            
+
             {options.blur_background && input && (
-               <video
-                 key={`${input}-blur`}
-                 src={convertFileSrc(input)}
-                 style={{
-                   position: 'absolute',
-                   top: 0,
-                   left: 0,
-                   width: '100%',
-                   height: '100%',
-                   objectFit: 'cover',
-                   zIndex: -1,
-                   filter: `blur(${options.blur_sigma}px)`,
-                   opacity: 0.5,
-                   ...getPreviewTransformStyle()
-                 }}
-                 autoPlay
-                 muted
-                 loop
-                 playsInline
-               />
+              <video
+                key={`${input}-blur`}
+                src={convertFileSrc(input)}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  zIndex: -1,
+                  filter: `blur(${options.blur_sigma}px)`,
+                  opacity: 0.5,
+                  ...getPreviewTransformStyle(),
+                }}
+                autoPlay
+                muted
+                loop
+                playsInline
+              />
             )}
           </div>
           <div className="info-text">
             {orientation && (
-              <p>{orientation.display_width}x{orientation.display_height} ({orientation.is_vertical ? 'Vertical' : 'Horizontal'})</p>
+              <p>
+                {orientation.display_width}x{orientation.display_height} (
+                {orientation.is_vertical ? "Vertical" : "Horizontal"})
+              </p>
             )}
           </div>
         </div>
@@ -637,24 +838,122 @@ function App() {
 
       <hr />
 
-      <div className="row">
-        <input
-          type="text"
-          placeholder="New preset name"
-          value={newPresetName}
-          onChange={(e) => setNewPresetName(e.target.value)}
-        />
-        <button onClick={handleSavePreset}>Save as Preset</button>
+      <div className="row presets-multi-select">
+        <h3>Platform Presets (Select up to 5 for Batch)</h3>
+        <div className="presets-grid">
+          {presets.map((p) => (
+            <label key={p.id} className={`preset-card ${selectedPresetIds.includes(p.id) ? "selected" : ""}`}>
+              <input
+                type="checkbox"
+                checked={selectedPresetIds.includes(p.id)}
+                onChange={() => handleTogglePresetSelection(p.id)}
+              />
+              <div className="preset-info" onClick={() => handlePresetChange(p.id)}>
+                <span className="preset-name">{p.name}</span>
+                <span className="preset-ratio">{p.ratio.replace("ratio", "").replace("x", ":")}</span>
+              </div>
+            </label>
+          ))}
+        </div>
       </div>
 
-      <div className="row">
-        <button
-          onClick={handleConvert}
-          className={status === "Processing..." ? "loading" : ""}
-        >
-          {status === "Processing..." ? "Converting..." : "Convert"}
-        </button>
+      <hr />
+
+      <div className="custom-preset-builder">
+        <h3>Custom Preset Builder</h3>
+        <div className="row">
+          <input
+            type="text"
+            placeholder="Preset Name (e.g., My Viral TikTok)"
+            value={newPresetName}
+            onChange={(e) => setNewPresetName(e.target.value)}
+          />
+          <input
+            type="text"
+            placeholder="Description (optional)"
+            value={newPresetDescription}
+            onChange={(e) => setNewPresetDescription(e.target.value)}
+          />
+          <button onClick={handleSavePreset} disabled={!newPresetName}>
+            Save Current Settings as Preset
+          </button>
+        </div>
+        <p className="hint">
+          Tip: Adjust the settings above (Ratio, Blur, Subtitles, etc.) then save them here.
+        </p>
       </div>
+
+      <div className="row batch-actions">
+        <button
+          className="primary-button"
+          onClick={handleStartBatch}
+          disabled={
+            !!batchProgress &&
+            batchProgress.percentage < 100 &&
+            batchProgress.percentage > 0
+          }
+        >
+          {batchFiles.length > 1 || selectedPresetIds.length > 0 || selectedRatios.length > 1
+            ? `Start Batch (${(batchFiles.length || 1) * (selectedPresetIds.length || selectedRatios.length)} Jobs)`
+            : "Convert Now"}
+        </button>
+
+        {batchProgress && (
+          <>
+            <button onClick={handleCancelBatch}>Cancel</button>
+            <button onClick={handleClearBatch}>Clear Queue</button>
+          </>
+        )}
+      </div>
+
+      {batchProgress && (
+        <div className="batch-queue">
+          <h3>Batch Progress: {batchProgress.percentage.toFixed(1)}%</h3>
+          <p>
+            Jobs: {batchProgress.completed_jobs} / {batchProgress.total_jobs}
+            {batchProgress.failed_jobs > 0 &&
+              ` (${batchProgress.failed_jobs} failed)`}
+          </p>
+          <div className="progress-bar-container">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${batchProgress.percentage}%` }}
+            ></div>
+          </div>
+
+          <div
+            className="job-list"
+            style={{ maxHeight: "200px", overflowY: "auto" }}
+          >
+            {Object.values(fileProgresses)
+              .reverse()
+              .map((job) => (
+                <div key={job.job_id} className="batch-job-item">
+                  <span
+                    style={{
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {job.file_path.split(/[\\/]/).pop()}
+                  </span>
+                  <span style={{ margin: "0 10px", width: "40px" }}>
+                    {job.ratio.replace("ratio", "").replace("x", ":")}
+                  </span>
+                  <span
+                    className={`job-status-${typeof job.status === "string" ? job.status : "failed"}`}
+                  >
+                    {typeof job.status === "string"
+                      ? job.status.charAt(0).toUpperCase() + job.status.slice(1)
+                      : `Error: ${job.status.error}`}
+                  </span>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       <div className="status">
         <p>{status}</p>

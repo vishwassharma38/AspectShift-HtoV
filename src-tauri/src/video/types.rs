@@ -106,18 +106,28 @@ pub enum LogoPosition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BatchJobSettings {
-    pub ratios: Vec<AspectRatio>,
-    pub options: ConversionOptions,
+pub struct BatchJob {
+    pub id: String,
+    pub input_path: String,
+    pub target_ratio: AspectRatio,
+    pub target_preset: Option<String>,
+    pub active_effects: ConversionOptions,
     pub platform_config: Option<PlatformConfig>,
-    pub output_dir: String,
+    pub resolved_output_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BatchJob {
-    pub id: String,
-    pub file_path: String,
-    pub settings: BatchJobSettings,
+pub struct JobTarget {
+    pub ratio: AspectRatio,
+    pub options: ConversionOptions,
+    pub platform_config: Option<PlatformConfig>,
+    pub preset_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchJobSettings {
+    pub targets: Vec<JobTarget>,
+    pub output_dir: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

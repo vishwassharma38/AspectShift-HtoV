@@ -49,7 +49,7 @@
 }
 
 .preview-container {
-  box-shadow: 0 0 20px rgba(0,0,0,0.5);
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
   background-color: #000;
   border-radius: 4px;
 }
@@ -96,7 +96,9 @@
   min-width: 0;
 }
 
-input, select, button {
+input,
+select,
+button {
   padding: 8px;
   border-radius: 4px;
   border: 1px solid #444;
@@ -169,9 +171,149 @@ button:hover {
   min-height: 40px;
 }
 
-hr {
+.batch-queue {
+  margin-top: 20px;
+  text-align: left;
+  background-color: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  border: 1px solid #444;
+}
+
+.batch-job-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #333;
+  font-size: 0.9em;
+}
+
+.batch-job-item:last-child {
+  border-bottom: none;
+}
+
+.progress-bar-container {
   width: 100%;
-  border: 0;
-  border-top: 1px solid #444;
+  height: 10px;
+  background-color: #333;
+  border-radius: 5px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: #646cff;
+  transition: width 0.3s ease;
+}
+
+.job-status-pending {
+  color: #aaa;
+}
+.job-status-processing {
+  color: #90caf9;
+}
+.job-status-completed {
+  color: #4caf50;
+}
+.job-status-failed {
+  color: #f44336;
+}
+.job-status-cancelled {
+  color: #ff9800;
+}
+
+.presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.preset-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background-color: #2a2a2a;
+  border: 2px solid #444;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.preset-card:hover {
+  border-color: #646cff;
+  background-color: #333;
+}
+
+.preset-card.selected {
+  border-color: #646cff;
+  background-color: #1a1a2e;
+  box-shadow: 0 0 10px rgba(100, 108, 255, 0.3);
+}
+
+.preset-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.preset-name {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.preset-ratio {
+  font-size: 0.8em;
+  color: #888;
+}
+
+.custom-preset-builder {
+  background-color: #1a1a1a;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid #444;
   margin: 20px 0;
+  text-align: left;
+}
+
+.custom-preset-builder h3 {
+  margin-top: 0;
+  color: #90caf9;
+}
+
+.custom-preset-builder input {
+  flex: 1;
+}
+
+.hint {
+  font-size: 0.85em;
+  color: #888;
+  margin-top: 10px;
+  font-style: italic;
+}
+
+.primary-button {
+  background-color: #646cff;
+  color: white;
+  font-weight: bold;
+  padding: 12px 24px;
+  font-size: 1.1em;
+  border: none;
+}
+
+.primary-button:hover {
+  background-color: #535bf2;
+}
+
+.primary-button:disabled {
+  background-color: #333;
+  cursor: not-allowed;
+}
+
+.batch-actions {
+  justify-content: center;
+  margin-top: 30px;
 }
