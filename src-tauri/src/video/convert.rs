@@ -7,8 +7,9 @@ use crate::video::lock::ProcessingLock;
 use crate::video::preset_adapter::legacy_to_preset;
 use crate::video::probe::{check_file_ready, detect_orientation};
 use crate::video::types::{
-    AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError,
+    AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError, OutputTags,
 };
+use crate::os_utils::OsUtils;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tracing::info;
@@ -30,27 +31,55 @@ pub async fn prepare_subtitles(
     Ok(srt_path)
 }
 
-pub fn check_already_processed(
+pub fn get_deterministic_output_path(
     input: &str,
     output_dir: &str,
     ratio: &AspectRatio,
     options: &ConversionOptions,
-) -> bool {
-    if !options.skip_existing {
-        return false;
-    }
-
+) -> String {
     let input_path = Path::new(input);
     let stem = input_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("video");
     let ext = options.output_format.get_extension();
-    let tag = ratio.get_tag().replace(':', "x");
-    let output_name = format!("{}_{}.{}", stem, tag, ext);
-    let output_path = Path::new(output_dir).join(output_name);
+    
+    let platform_tag = options.preset.as_ref().map(|name| {
+        let base_name = name.split('(').next().unwrap_or(name).trim();
+        OsUtils::sanitize_path_component(base_name)
+    });
 
-    output_path.exists()
+    let tags = OutputTags {
+        ratio: ratio.get_tag().replace(':', "x"),
+        platform: platform_tag,
+        blur: options.blur_background,
+        logo: options.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
+        subtitles: options.burn_subtitles || options.generate_subtitles,
+        no_audio: options.remove_audio,
+    };
+
+    let filename = tags.get_output_filename(stem, ext);
+    Path::new(output_dir).join(filename).to_string_lossy().to_string()
+}
+
+pub fn check_already_processed(
+    input: &str,
+    output_dir: &str,
+    ratio: &AspectRatio,
+    options: &ConversionOptions,
+    resolved_output_path: Option<&str>,
+) -> bool {
+    if !options.skip_existing {
+        return false;
+    }
+
+    let output_path = if let Some(path) = resolved_output_path {
+        path.to_string()
+    } else {
+        get_deterministic_output_path(input, output_dir, ratio, options)
+    };
+
+    Path::new(&output_path).exists()
 }
 
 pub async fn convert_to_ratio(
@@ -63,8 +92,19 @@ pub async fn convert_to_ratio(
     platform_config: Option<PlatformConfig>,
     subtitle_path: Option<PathBuf>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    resolved_output_path: Option<String>,
 ) -> Result<ConversionResult, VideoError> {
-    // 1. File Readiness Check
+    // 1. Determine final output path
+    let output_path = if let Some(path) = resolved_output_path {
+        path
+    } else {
+        get_deterministic_output_path(&input, &output_dir, &ratio, &options)
+    };
+
+    let output_path_buf = PathBuf::from(&output_path);
+    let final_output_dir = output_path_buf.parent().ok_or_else(|| VideoError::InvalidInput("Invalid output path".to_string()))?;
+
+    // 2. File Readiness Check
     let readiness = check_file_ready(app, &input).await?;
     let duration = readiness.estimated_duration_secs;
 
@@ -73,27 +113,18 @@ pub async fn convert_to_ratio(
         if let Some(existing) = subtitle_path {
             Some(existing)
         } else {
-            Some(prepare_subtitles(app, &input, &output_dir).await?)
+            // Ensure output dir for subtitles exists
+            if !final_output_dir.exists() {
+                std::fs::create_dir_all(final_output_dir)?;
+            }
+            Some(prepare_subtitles(app, &input, &final_output_dir.to_string_lossy()).await?)
         }
     } else {
         None
     };
 
-    // 2. Already Processed Check
-    if check_already_processed(&input, &output_dir, &ratio, &options) {
-        let input_path = Path::new(&input);
-        let stem = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("video");
-        let ext = options.output_format.get_extension();
-        let tag = ratio.get_tag().replace(':', "x");
-        let output_name = format!("{}_{}.{}", stem, tag, ext);
-        let output_path = Path::new(&output_dir)
-            .join(output_name)
-            .to_string_lossy()
-            .to_string();
-
+    // 3. Already Processed Check
+    if options.skip_existing && Path::new(&output_path).exists() {
         return Ok(ConversionResult {
             output_path,
             ratio,
@@ -101,28 +132,26 @@ pub async fn convert_to_ratio(
         });
     }
 
-    // 3. Acquire Lock
-    let _lock = ProcessingLock::acquire(&input, &output_dir)?;
+    // 4. Acquire Lock
+    let _lock = ProcessingLock::acquire(&input, &final_output_dir.to_string_lossy())?;
 
-    // 4. Orientation Detection
+    // 5. Ensure output directory exists
+    if !final_output_dir.exists() {
+        std::fs::create_dir_all(final_output_dir)?;
+    }
+
+    // 6. Orientation Detection
     let orientation = detect_orientation(app, &input).await?;
 
-    // 5. Output Path
-    let input_path = Path::new(&input);
-    let stem = input_path
+    let stem = Path::new(&input)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("video");
-    let ext = options.output_format.get_extension();
-    let tag = ratio.get_tag().replace(':', "x");
-    let output_name = format!("{}_{}.{}", stem, tag, ext);
-    let output_path_buf = Path::new(&output_dir).join(output_name);
-    let output_path = output_path_buf.to_string_lossy().to_string();
 
     let file_label = stem.to_string();
     let ratio_label = ratio.get_tag().to_string();
 
-    // 6. Logo Detection
+    // 7. Logo Detection
     let logo_path = if let Some(logo_opts) = &options.logo {
         if logo_opts.enabled {
             if let Some(path) = &logo_opts.path {
@@ -148,13 +177,13 @@ pub async fn convert_to_ratio(
         None
     };
 
-    // 7. Bridge to Preset System
+    // 8. Bridge to Preset System
     let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path, platform_config);
 
-    // 8. Consistency Validation
+    // 9. Consistency Validation
     validate_preset_consistency(&preset).map_err(|e| VideoError::InvalidInput(e))?;
 
-    // 9. Passthrough Check
+    // 10. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
@@ -190,10 +219,10 @@ pub async fn convert_to_ratio(
         });
     }
 
-    // 10. Filter Construction
+    // 11. Filter Construction
     let filter = build_filter_graph(&preset, &orientation);
 
-    // 11. FFmpeg Command Building
+    // 12. FFmpeg Command Building
     let subtitle_str = subtitle_path.as_ref().and_then(|p| p.to_str());
     let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset, subtitle_str);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();

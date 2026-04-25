@@ -44,6 +44,7 @@ pub async fn convert_to_ratio(
         platform_config,
         None,
         None,
+        None,
     )
     .await
     .map_err(|e| e.to_string())
@@ -79,6 +80,12 @@ pub async fn clear_batch(manager: State<'_, queue::BatchManager>) -> Result<(), 
 #[tauri::command]
 pub async fn check_file_ready(app: AppHandle, path: String) -> Result<FileReadiness, String> {
     probe::check_file_ready(&app, &path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn open_output_folder(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+    app.shell().open(path, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

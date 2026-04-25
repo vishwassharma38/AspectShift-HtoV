@@ -127,6 +127,7 @@ function App() {
   const [input, setInput] = useState("");
   const [batchFiles, setBatchFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState("");
+  const [enableSubfolders, setEnableSubfolders] = useState(false);
   const [ratio, setRatio] = useState<AspectRatio>("ratio9x16");
   const [selectedRatios, setSelectedRatios] = useState<AspectRatio[]>([
     "ratio9x16",
@@ -444,10 +445,23 @@ function App() {
         settings: {
           targets,
           output_dir: outputDir,
+          enable_subfolders: enableSubfolders,
         },
       });
     } catch (error) {
       setStatus(`Error starting batch: ${error}`);
+    }
+  };
+
+  const handleOpenOutputFolder = async () => {
+    if (!outputDir) {
+      setStatus("Please select an output directory first");
+      return;
+    }
+    try {
+      await invoke("open_output_folder", { path: outputDir });
+    } catch (error) {
+      setStatus(`Error opening folder: ${error}`);
     }
   };
 
@@ -523,7 +537,23 @@ function App() {
                 readOnly
               />
               <button onClick={handlePickOutputDir}>Browse Folder</button>
+              {outputDir && (
+                <button onClick={handleOpenOutputFolder} style={{ marginLeft: "5px" }}>
+                  Open
+                </button>
+              )}
             </div>
+          </div>
+
+          <div className="row">
+            <label style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+              <input
+                type="checkbox"
+                checked={enableSubfolders}
+                onChange={(e) => setEnableSubfolders(e.target.checked)}
+              />
+              Organize into subfolders
+            </label>
           </div>
 
           <div className="row">

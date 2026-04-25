@@ -26,6 +26,7 @@ pub fn run() {
             video::cancel_batch,
             video::get_batch_status,
             video::clear_batch,
+            video::open_output_folder,
             video::presets::get_all_presets,
             video::presets::save_preset,
             video::presets::delete_preset

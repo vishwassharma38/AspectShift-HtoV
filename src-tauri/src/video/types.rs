@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-#[derive(PartialEq)]
 pub enum AspectRatio {
     Ratio9x16,
     Ratio1x1,
@@ -128,6 +127,53 @@ pub struct JobTarget {
 pub struct BatchJobSettings {
     pub targets: Vec<JobTarget>,
     pub output_dir: String,
+    #[serde(default)]
+    pub enable_subfolders: bool,
+}
+
+pub struct OutputTags {
+    pub ratio: String,
+    pub platform: Option<String>,
+    pub blur: bool,
+    pub logo: bool,
+    pub subtitles: bool,
+    pub no_audio: bool,
+}
+
+impl OutputTags {
+    pub fn to_suffix(&self) -> String {
+        let mut tags = Vec::new();
+
+        // Ratio is ALWAYS first and ALWAYS present
+        tags.push(self.ratio.clone());
+
+        // Platform tag only included if preset is active
+        if let Some(platform) = &self.platform {
+            tags.push(platform.clone());
+        }
+
+        // Effect tags included ONLY when enabled
+        if self.blur {
+            tags.push("blur".to_string());
+        }
+        if self.logo {
+            tags.push("logo".to_string());
+        }
+        if self.subtitles {
+            tags.push("subtitles".to_string());
+        }
+        if self.no_audio {
+            tags.push("no_audio".to_string());
+        }
+
+        // Tag order is FIXED and NEVER dynamically reordered
+        // Tags are appended in a deterministic chain
+        tags.join("_")
+    }
+
+    pub fn get_output_filename(&self, stem: &str, extension: &str) -> String {
+        format!("{}_{}.{}", stem, self.to_suffix(), extension)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

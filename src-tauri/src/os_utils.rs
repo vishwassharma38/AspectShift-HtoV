@@ -44,4 +44,29 @@ impl OsUtils {
             !path.exists() || std::fs::File::open(path).is_err()
         }
     }
+
+    /// Sanitizes a string for use as a single path component (folder or filename).
+    /// Replaces all non-alphanumeric characters (except _) with _.
+    pub fn sanitize_path_component(input: &str) -> String {
+        let sanitized: String = input
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        
+        // Trim redundant underscores
+        let mut result = String::new();
+        let mut last_was_underscore = false;
+        for c in sanitized.chars() {
+            if c == '_' {
+                if !last_was_underscore {
+                    result.push(c);
+                    last_was_underscore = true;
+                }
+            } else {
+                result.push(c);
+                last_was_underscore = false;
+            }
+        }
+        result.to_lowercase().trim_matches('_').to_string()
+    }
 }

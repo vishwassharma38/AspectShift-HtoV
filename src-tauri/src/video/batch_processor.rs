@@ -1,11 +1,13 @@
 use crate::video::convert::{convert_to_ratio, prepare_subtitles};
 use crate::video::queue::{BatchManager, BatchState};
-use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus};
-use std::collections::HashMap;
+use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus, OutputTags, AspectRatio};
+use crate::os_utils::OsUtils;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
+use tracing::info;
 
 pub async fn start_batch(
     app: AppHandle,
@@ -13,7 +15,26 @@ pub async fn start_batch(
     files: Vec<String>,
     settings: BatchJobSettings,
 ) -> Result<(), String> {
+    // A. Validate output_dir EARLY
+    if settings.output_dir.trim().is_empty() {
+        return Err("Output directory cannot be empty".to_string());
+    }
+    let root_output_dir = Path::new(&settings.output_dir);
+
     let mut jobs = Vec::new();
+
+    // Determine unique ratios and presets to decide on subfolder names
+    let unique_ratios: HashSet<AspectRatio> = settings.targets.iter().map(|t| t.ratio.clone()).collect();
+    let unique_presets: HashSet<String> = settings.targets.iter()
+        .filter_map(|t| t.preset_name.clone())
+        .collect();
+
+    let is_preset_mode = !unique_presets.is_empty();
+    let use_subfolders = settings.enable_subfolders && (
+        (is_preset_mode && unique_presets.len() > 1) || 
+        (!is_preset_mode && unique_ratios.len() > 1)
+    );
+
     for file in files {
         for target in &settings.targets {
             let input_path = Path::new(&file);
@@ -23,17 +44,57 @@ pub async fn start_batch(
                 .unwrap_or("video");
             let ext = target.options.output_format.get_extension();
             
-            let tag = if let Some(name) = &target.preset_name {
-                name.to_lowercase().replace(' ', "_").replace('/', "_")
+            // Construct OutputTags
+            let platform_tag = if let Some(name) = &target.preset_name {
+                // "Instagram (Modified)" -> "instagram"
+                let base_name = name.split('(').next().unwrap_or(name).trim();
+                // C. Sanitize platform_tag
+                Some(OsUtils::sanitize_path_component(base_name))
             } else {
-                target.ratio.get_tag().replace(':', "x")
+                None
             };
 
-            let output_name = format!("{}_{}.{}", stem, tag, ext);
-            let output_path = Path::new(&settings.output_dir)
-                .join(output_name)
-                .to_string_lossy()
-                .to_string();
+            let tags = OutputTags {
+                ratio: target.ratio.get_tag().replace(':', "x"),
+                platform: platform_tag,
+                blur: target.options.blur_background,
+                logo: target.options.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
+                subtitles: target.options.burn_subtitles || target.options.generate_subtitles,
+                no_audio: target.options.remove_audio,
+            };
+
+            let suffix = tags.to_suffix();
+            let output_name = format!("{}_{}.{}", stem, suffix, ext);
+            
+            // Subfolder logic
+            let mut output_dir = root_output_dir.to_path_buf();
+            if use_subfolders {
+                if is_preset_mode {
+                    if let Some(name) = &target.preset_name {
+                        let base_name = name.split('(').next().unwrap_or(name).trim();
+                        // C. Sanitize preset-based folder names
+                        output_dir.push(OsUtils::sanitize_path_component(base_name));
+                    }
+                } else {
+                    output_dir.push(target.ratio.get_tag().replace(':', "x"));
+                }
+            }
+
+            // B. Ensure directory exists BEFORE skip logic
+            if let Err(e) = std::fs::create_dir_all(&output_dir) {
+                return Err(format!("Failed to create output directory {}: {}", output_dir.display(), e));
+            }
+
+            let output_path = output_dir.join(output_name);
+            let output_path_str = output_path.to_string_lossy().to_string();
+
+            // E. Add debug logging (non-intrusive)
+            info!("Resolved output path: {}", output_path_str);
+
+            // Skip logic
+            if target.options.skip_existing && output_path.exists() {
+                continue;
+            }
 
             jobs.push(BatchJob {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -42,9 +103,13 @@ pub async fn start_batch(
                 target_preset: target.options.preset.clone(),
                 active_effects: target.options.clone(),
                 platform_config: target.platform_config.clone(),
-                resolved_output_path: output_path,
+                resolved_output_path: output_path_str,
             });
         }
+    }
+
+    if jobs.is_empty() {
+        return Ok(());
     }
 
     manager.add_jobs(jobs).await;
@@ -174,6 +239,7 @@ pub async fn start_batch(
                 job.platform_config.clone(),
                 prepared_subtitle,
                 Some(token.clone()),
+                Some(job.resolved_output_path.clone()),
             ).await;
 
             match result {
