@@ -30,6 +30,14 @@ fn get_video_codec(output: &str) -> &'static str {
     }
 }
 
+fn get_audio_codec(output: &str) -> &'static str {
+    if output.to_lowercase().ends_with(".webm") {
+        "libopus"
+    } else {
+        "aac"
+    }
+}
+
 fn supports_crf(codec: &str) -> bool {
     matches!(codec, "libx264" | "libx265" | "libvpx-vp9")
 }
@@ -88,9 +96,10 @@ pub fn build_ffmpeg_args(
         args.push("-an".to_string());
     } else {
         let bitrate = preset.audio_bitrate.as_deref().unwrap_or("128k");
+        let audio_codec = get_audio_codec(output);
         args.extend_from_slice(&[
             "-c:a".to_string(),
-            "aac".to_string(),
+            audio_codec.to_string(),
             "-b:a".to_string(),
             bitrate.to_string(),
         ]);

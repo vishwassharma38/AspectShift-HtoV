@@ -1,13 +1,96 @@
 use crate::video::convert::{convert_to_ratio, prepare_subtitles};
+use crate::video::presets::resolve_conversion_config;
 use crate::video::queue::{BatchManager, BatchState};
 use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus, OutputTags, AspectRatio};
+use crate::video::validation::{validate_config, FinalConfig};
 use crate::os_utils::OsUtils;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
+
+fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut seen_paths = HashSet::new();
+
+    // Normalize incoming paths (files and folders) into validated video files only.
+    for entry in entries {
+        let entry_path = PathBuf::from(&entry);
+        let metadata = match std::fs::metadata(&entry_path) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                warn!("Skipping input entry (metadata failed): {} ({})", entry_path.display(), e);
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            // Folder input: expand one level and keep only supported video files.
+            let read_dir = match std::fs::read_dir(&entry_path) {
+                Ok(read_dir) => read_dir,
+                Err(e) => {
+                    warn!("Skipping input folder (read_dir failed): {} ({})", entry_path.display(), e);
+                    continue;
+                }
+            };
+
+            for child in read_dir {
+                let child = match child {
+                    Ok(child) => child,
+                    Err(e) => {
+                        warn!("Skipping folder entry (invalid dir entry): {} ({})", entry_path.display(), e);
+                        continue;
+                    }
+                };
+
+                let child_path = child.path();
+                let child_metadata = match child.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        warn!("Skipping entry (metadata failed): {} ({})", child_path.display(), e);
+                        continue;
+                    }
+                };
+
+                if !child_metadata.is_file() {
+                    info!("Skipping non-file entry: {}", child_path.display());
+                    continue;
+                }
+
+                // Prevent directories/unsupported files from entering the ffprobe pipeline.
+                if !OsUtils::has_supported_video_extension(&child_path) {
+                    info!("Skipping unsupported input file: {}", child_path.display());
+                    continue;
+                }
+
+                let child_path_str = child_path.to_string_lossy().to_string();
+                if seen_paths.insert(child_path_str.clone()) {
+                    files.push(child_path_str);
+                }
+            }
+            continue;
+        }
+
+        if !metadata.is_file() {
+            info!("Skipping non-file input entry: {}", entry_path.display());
+            continue;
+        }
+
+        // Prevent unsupported files from entering the ffprobe pipeline.
+        if !OsUtils::has_supported_video_extension(&entry_path) {
+            info!("Skipping unsupported input file: {}", entry_path.display());
+            continue;
+        }
+
+        if seen_paths.insert(entry.clone()) {
+            files.push(entry);
+        }
+    }
+
+    files
+}
 
 pub async fn start_batch(
     app: AppHandle,
@@ -21,11 +104,42 @@ pub async fn start_batch(
     }
     let root_output_dir = Path::new(&settings.output_dir);
 
+    let valid_input_files = collect_valid_video_inputs(files);
+    if valid_input_files.is_empty() {
+        return Err("No valid video files found in selected input".to_string());
+    }
+
     let mut jobs = Vec::new();
+    let resolved_targets = settings
+        .targets
+        .iter()
+        .map(|t| -> Result<crate::video::presets::ResolvedConversionConfig, String> {
+            let resolved = resolve_conversion_config(&app, t).map_err(|e| e.to_string())?;
+            let crate::video::presets::ResolvedConversionConfig {
+                ratio,
+                options,
+                platform_config,
+                preset_name,
+            } = resolved;
+            let validated = validate_config(FinalConfig {
+                ratio,
+                options,
+                platform_config,
+            })
+            .map_err(|e| e.to_string())?;
+
+            Ok(crate::video::presets::ResolvedConversionConfig {
+                ratio: validated.ratio,
+                options: validated.options,
+                platform_config: validated.platform_config,
+                preset_name,
+            })
+        })
+        .collect::<Result<Vec<crate::video::presets::ResolvedConversionConfig>, String>>()?;
 
     // Determine unique ratios and presets to decide on subfolder names
-    let unique_ratios: HashSet<AspectRatio> = settings.targets.iter().map(|t| t.ratio.clone()).collect();
-    let unique_presets: HashSet<String> = settings.targets.iter()
+    let unique_ratios: HashSet<AspectRatio> = resolved_targets.iter().map(|t| t.ratio.clone()).collect();
+    let unique_presets: HashSet<String> = resolved_targets.iter()
         .filter_map(|t| t.preset_name.clone())
         .collect();
 
@@ -35,8 +149,8 @@ pub async fn start_batch(
         (!is_preset_mode && unique_ratios.len() > 1)
     );
 
-    for file in files {
-        for target in &settings.targets {
+    for file in valid_input_files {
+        for target in &resolved_targets {
             let input_path = Path::new(&file);
             let stem = input_path
                 .file_stem()
@@ -54,38 +168,34 @@ pub async fn start_batch(
                 None
             };
 
-            let tags = OutputTags {
-                ratio: target.ratio.get_tag().replace(':', "x"),
-                platform: platform_tag,
-                blur: target.options.blur_background,
-                logo: target.options.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
-                subtitles: target.options.burn_subtitles || target.options.generate_subtitles,
-                no_audio: target.options.remove_audio,
+            // Determine subfolder if enabled
+            let subfolder = if use_subfolders {
+                if is_preset_mode {
+                    target.preset_name.as_ref().map(|name| {
+                        let base_name = name.split('(').next().unwrap_or(name).trim();
+                        OsUtils::sanitize_path_component(base_name)
+                    })
+                } else {
+                    Some(target.ratio.get_tag().replace(':', "x"))
+                }
+            } else {
+                None
             };
 
-            let suffix = tags.to_suffix();
-            let output_name = format!("{}_{}.{}", stem, suffix, ext);
-            
-            // Subfolder logic
-            let mut output_dir = root_output_dir.to_path_buf();
-            if use_subfolders {
-                if is_preset_mode {
-                    if let Some(name) = &target.preset_name {
-                        let base_name = name.split('(').next().unwrap_or(name).trim();
-                        // C. Sanitize preset-based folder names
-                        output_dir.push(OsUtils::sanitize_path_component(base_name));
-                    }
-                } else {
-                    output_dir.push(target.ratio.get_tag().replace(':', "x"));
-                }
-            }
+            // Use the shared path resolver
+            let output_path = crate::video::paths::resolve_output_path(crate::video::paths::OutputPathResolver {
+                input_path: Path::new(&file),
+                output_dir: &root_output_dir,
+                ratio: &target.ratio,
+                options: &target.options,
+                subfolder,
+            });
 
             // B. Ensure directory exists BEFORE skip logic
-            if let Err(e) = std::fs::create_dir_all(&output_dir) {
-                return Err(format!("Failed to create output directory {}: {}", output_dir.display(), e));
+            if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap()) {
+                return Err(format!("Failed to create output directory {}: {}", output_path.parent().unwrap().display(), e));
             }
 
-            let output_path = output_dir.join(output_name);
             let output_path_str = output_path.to_string_lossy().to_string();
 
             // E. Add debug logging (non-intrusive)

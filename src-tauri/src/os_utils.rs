@@ -4,6 +4,8 @@ use tauri::{AppHandle, Manager};
 pub struct OsUtils;
 
 impl OsUtils {
+    pub const SUPPORTED_VIDEO_EXTENSIONS: [&'static str; 5] = ["mp4", "mov", "mkv", "avi", "webm"];
+
     /// Escapes a path for use inside FFmpeg filter strings (e.g., subtitles, drawtext).
     /// FFmpeg filters use ':' as a separator, which conflicts with Windows drive letters.
     pub fn escape_filter_path(path: &str) -> String {
@@ -68,5 +70,17 @@ impl OsUtils {
             }
         }
         result.to_lowercase().trim_matches('_').to_string()
+    }
+
+    /// Returns true when the path has a supported video extension.
+    pub fn has_supported_video_extension(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                OsUtils::SUPPORTED_VIDEO_EXTENSIONS
+                    .iter()
+                    .any(|supported| ext.eq_ignore_ascii_case(supported))
+            })
+            .unwrap_or(false)
     }
 }

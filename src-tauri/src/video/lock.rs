@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
 use crate::video::types::VideoError;
 
 pub struct ProcessingLock {
@@ -7,13 +8,18 @@ pub struct ProcessingLock {
 }
 
 impl ProcessingLock {
-    pub fn acquire(input_path: &str, output_dir: &str) -> Result<Self, VideoError> {
+    pub fn acquire(app: &AppHandle, input_path: &str) -> Result<Self, VideoError> {
         let input_stem = Path::new(input_path)
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| VideoError::InvalidInput("Invalid input filename".into()))?;
 
-        let lock_file = Path::new(output_dir).join(format!("{}.processing", input_stem));
+        let lock_dir = get_lock_dir(app)?;
+        if !lock_dir.exists() {
+            fs::create_dir_all(&lock_dir)?;
+        }
+
+        let lock_file = lock_dir.join(format!("{}.processing", input_stem));
 
         if lock_file.exists() {
             return Err(VideoError::AlreadyProcessing(input_stem.to_string()));
@@ -40,15 +46,27 @@ impl Drop for ProcessingLock {
     }
 }
 
-pub fn release_processing_lock(input_path: &str, output_dir: &str) -> Result<(), VideoError> {
-    let input_stem = Path::new(input_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| VideoError::InvalidInput("Invalid input filename".into()))?;
+fn get_lock_dir(app: &AppHandle) -> Result<PathBuf, VideoError> {
+    let app_data = app.path().app_data_dir().map_err(VideoError::TauriError)?;
+    Ok(app_data.join("locks"))
+}
 
-    let lock_file = Path::new(output_dir).join(format!("{}.processing", input_stem));
-    if lock_file.exists() {
-        fs::remove_file(lock_file)?;
+/// Automatically cleans up all stale .processing lock files.
+/// Should be called during application startup.
+pub fn cleanup_stale_locks(app: &AppHandle) -> Result<(), VideoError> {
+    let lock_dir = get_lock_dir(app)?;
+    if !lock_dir.exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(lock_dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("processing") {
+            let _ = fs::remove_file(path);
+        }
     }
     Ok(())
 }
+

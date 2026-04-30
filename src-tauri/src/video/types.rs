@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use thiserror::Error;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AspectRatio {
     Ratio9x16,
@@ -33,14 +34,33 @@ impl AspectRatio {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
 pub struct PlatformConfig {
     pub target_width: u32,
     pub target_height: u32,
     pub enforce_dimensions: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct ConversionRequestDTO {
+    pub input: String,
+    pub output_dir: String,
+    pub ratio: AspectRatio,
+    pub options: PartialConversionOptions,
+    #[serde(default)]
+    pub platform_config: Option<PlatformConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversionRequest {
+    pub input: String,
+    pub output_dir: String,
+    pub ratio: AspectRatio,
+    pub options: ConversionOptions,
+    pub platform_config: Option<PlatformConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ConversionOptions {
     pub blur_background: bool,
     pub blur_sigma: f32,
@@ -61,7 +81,7 @@ pub struct ConversionOptions {
     pub transform: Option<VideoTransform>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Type)]
 pub struct VideoTransform {
     #[serde(default)]
     pub rotate: i32, // 0, 90, 180, 270
@@ -71,7 +91,7 @@ pub struct VideoTransform {
     pub flip_v: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct LogoOptions {
     #[serde(default)]
     pub enabled: bool,
@@ -95,7 +115,7 @@ impl Default for LogoOptions {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum LogoPosition {
     TopLeft,
@@ -115,15 +135,75 @@ pub struct BatchJob {
     pub resolved_output_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct JobTarget {
-    pub ratio: AspectRatio,
-    pub options: ConversionOptions,
+    #[serde(default)]
+    pub ratio: Option<AspectRatio>,
+    #[serde(default)]
+    pub preset_id: Option<String>,
+    #[serde(default)]
+    pub overrides: Option<PartialConversionOptions>,
+    // Backward-compat legacy payload fields (frontend-resolved config).
+    #[serde(default)]
+    pub options: Option<ConversionOptions>,
+    #[serde(default)]
     pub platform_config: Option<PlatformConfig>,
+    #[serde(default)]
     pub preset_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, Type)]
+pub struct PartialConversionOptions {
+    pub blur_background: Option<bool>,
+    pub blur_sigma: Option<f32>,
+    pub remove_audio: Option<bool>,
+    pub generate_subtitles: Option<bool>,
+    pub burn_subtitles: Option<bool>,
+    pub skip_existing: Option<bool>,
+    pub quality: Option<QualityPreset>,
+    pub output_format: Option<OutputFormat>,
+    pub logo: Option<LogoOptions>,
+    pub custom_encoding_enabled: Option<bool>,
+    pub crf: Option<u8>,
+    pub preset: Option<String>,
+    pub audio_bitrate: Option<String>,
+    pub transform: Option<VideoTransform>,
+}
+
+impl From<PartialConversionOptions> for ConversionOptions {
+    fn from(partial: PartialConversionOptions) -> Self {
+        let mut options = ConversionOptions::default();
+        if let Some(v) = partial.blur_background { options.blur_background = v; }
+        if let Some(v) = partial.blur_sigma { options.blur_sigma = v; }
+        if let Some(v) = partial.remove_audio { options.remove_audio = v; }
+        if let Some(v) = partial.generate_subtitles { options.generate_subtitles = v; }
+        if let Some(v) = partial.burn_subtitles { options.burn_subtitles = v; }
+        if let Some(v) = partial.skip_existing { options.skip_existing = v; }
+        if let Some(v) = partial.quality { options.quality = v; }
+        if let Some(v) = partial.output_format { options.output_format = v; }
+        if let Some(v) = partial.logo { options.logo = Some(v); }
+        if let Some(v) = partial.custom_encoding_enabled { options.custom_encoding_enabled = v; }
+        if let Some(v) = partial.crf { options.crf = Some(v); }
+        if let Some(v) = partial.preset { options.preset = Some(v); }
+        if let Some(v) = partial.audio_bitrate { options.audio_bitrate = Some(v); }
+        if let Some(v) = partial.transform { options.transform = Some(v); }
+        options
+    }
+}
+
+impl From<ConversionRequestDTO> for ConversionRequest {
+    fn from(dto: ConversionRequestDTO) -> Self {
+        Self {
+            input: dto.input,
+            output_dir: dto.output_dir,
+            ratio: dto.ratio,
+            options: dto.options.into(),
+            platform_config: dto.platform_config,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct BatchJobSettings {
     pub targets: Vec<JobTarget>,
     pub output_dir: String,
@@ -176,7 +256,7 @@ impl OutputTags {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Pending,
@@ -187,7 +267,7 @@ pub enum JobStatus {
     Cancelled,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct FileProgress {
     pub job_id: String,
     pub file_path: String,
@@ -196,7 +276,7 @@ pub struct FileProgress {
     pub status: JobStatus,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct BatchProgress {
     pub total_jobs: usize,
     pub completed_jobs: usize,
@@ -226,7 +306,7 @@ impl Default for ConversionOptions {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum QualityPreset {
     Draft,
@@ -244,7 +324,7 @@ impl QualityPreset {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
     Mp4,
@@ -262,7 +342,7 @@ impl OutputFormat {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Type)]
 pub struct OrientationInfo {
     pub width: u32,
     pub height: u32,
@@ -279,7 +359,7 @@ pub struct ConversionResult {
     pub skipped: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Type)]
 pub struct FileReadiness {
     pub exists: bool,
     pub is_readable: bool,
@@ -288,7 +368,7 @@ pub struct FileReadiness {
     pub estimated_duration_secs: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct VideoPreset {
     pub id: String,
     pub name: String,
@@ -300,7 +380,7 @@ pub struct VideoPreset {
     pub is_builtin: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct LogoPreset {
     pub path: String,
     pub position: LogoPosition,
@@ -341,6 +421,40 @@ pub enum VideoError {
     JsonError(#[from] serde_json::Error),
     #[error("Tauri error: {0}")]
     TauriError(#[from] tauri::Error),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct StructuredError {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<VideoError> for StructuredError {
+    fn from(error: VideoError) -> Self {
+        let code = match &error {
+            VideoError::InvalidInput(_) => "invalid_config",
+            VideoError::FileNotFound(_) => "file_not_found",
+            VideoError::FileLocked(_) => "file_locked",
+            VideoError::AlreadyProcessing(_) => "already_processing",
+            VideoError::FfmpegNotFound => "ffmpeg_not_found",
+            VideoError::FfprobeNotFound => "ffprobe_not_found",
+            VideoError::WhisperNotFound => "whisper_not_found",
+            VideoError::WhisperModelNotFound => "whisper_model_not_found",
+            VideoError::WhisperFailed { .. } => "subtitle_generation_failed",
+            VideoError::SubtitleParseError(_) => "subtitle_parse_error",
+            VideoError::ProcessingFailed { .. } => "processing_failed",
+            VideoError::LockError(_) => "lock_error",
+            VideoError::IoError(_) => "io_error",
+            VideoError::JsonError(_) => "json_error",
+            VideoError::TauriError(_) => "tauri_error",
+        }
+        .to_string();
+
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
 }
 
 impl From<VideoError> for String {

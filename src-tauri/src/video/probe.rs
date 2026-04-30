@@ -6,6 +6,18 @@ use crate::video::ffmpeg::run_ffprobe;
 use crate::os_utils::OsUtils;
 
 pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<OrientationInfo, VideoError> {
+    let input_path = Path::new(file_path);
+    // Validate early so ffprobe is never invoked for folders/unsupported paths.
+    if !input_path.exists() {
+        return Err(VideoError::FileNotFound(file_path.to_string()));
+    }
+    if !input_path.is_file() {
+        return Err(VideoError::InvalidInput(format!("Input path is not a file: {}", file_path)));
+    }
+    if !OsUtils::has_supported_video_extension(input_path) {
+        return Err(VideoError::InvalidInput(format!("Unsupported video file type: {}", file_path)));
+    }
+
     let output = run_ffprobe(app, &[
         "-v", "quiet",
         "-print_format", "json",
@@ -63,8 +75,15 @@ pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<Orie
 pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadiness, VideoError> {
     let path_buf = Path::new(path);
     
+    // Validate early so ffprobe is never invoked for folders/unsupported paths.
     if !path_buf.exists() {
         return Err(VideoError::FileNotFound(path.to_string()));
+    }
+    if !path_buf.is_file() {
+        return Err(VideoError::InvalidInput(format!("Input path is not a file: {}", path)));
+    }
+    if !OsUtils::has_supported_video_extension(path_buf) {
+        return Err(VideoError::InvalidInput(format!("Unsupported video file type: {}", path)));
     }
 
     let metadata = std::fs::metadata(path)?;

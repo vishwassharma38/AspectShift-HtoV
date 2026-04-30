@@ -2,8 +2,9 @@
 name = "aspectshift-htov"
 version = "0.1.0"
 description = "A Tauri App"
-authors = ["you"]
 edition = "2021"
+authors = ["you"]
+default-run = "aspectshift-htov"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -31,3 +32,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.23.0", features = ["v4"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
+specta = { version = "2.0.0-rc.23", features = ["derive"] }
+specta-typescript = "0.0.10"

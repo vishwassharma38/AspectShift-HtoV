@@ -31,7 +31,6 @@
       "detect_orientation",
       "convert_to_ratio",
       "check_file_ready",
-      "release_processing_lock",
       "start_batch",
       "cancel_batch",
       "get_batch_status",

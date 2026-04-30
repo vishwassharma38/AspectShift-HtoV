@@ -9,6 +9,7 @@ use crate::video::probe::{check_file_ready, detect_orientation};
 use crate::video::types::{
     AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError, OutputTags,
 };
+use crate::video::validation::{validate_config, FinalConfig};
 use crate::os_utils::OsUtils;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -37,29 +38,15 @@ pub fn get_deterministic_output_path(
     ratio: &AspectRatio,
     options: &ConversionOptions,
 ) -> String {
-    let input_path = Path::new(input);
-    let stem = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("video");
-    let ext = options.output_format.get_extension();
-    
-    let platform_tag = options.preset.as_ref().map(|name| {
-        let base_name = name.split('(').next().unwrap_or(name).trim();
-        OsUtils::sanitize_path_component(base_name)
-    });
-
-    let tags = OutputTags {
-        ratio: ratio.get_tag().replace(':', "x"),
-        platform: platform_tag,
-        blur: options.blur_background,
-        logo: options.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
-        subtitles: options.burn_subtitles || options.generate_subtitles,
-        no_audio: options.remove_audio,
-    };
-
-    let filename = tags.get_output_filename(stem, ext);
-    Path::new(output_dir).join(filename).to_string_lossy().to_string()
+    crate::video::paths::resolve_output_path(crate::video::paths::OutputPathResolver {
+        input_path: Path::new(input),
+        output_dir: Path::new(output_dir),
+        ratio,
+        options,
+        subfolder: None,
+    })
+    .to_string_lossy()
+    .to_string()
 }
 
 pub fn check_already_processed(
@@ -94,6 +81,16 @@ pub async fn convert_to_ratio(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     resolved_output_path: Option<String>,
 ) -> Result<ConversionResult, VideoError> {
+    let validated = validate_config(FinalConfig {
+        ratio: ratio.clone(),
+        options: options.clone(),
+        platform_config: platform_config.clone(),
+    })?;
+
+    let ratio = validated.ratio;
+    let options = validated.options;
+    let platform_config = validated.platform_config;
+
     // 1. Determine final output path
     let output_path = if let Some(path) = resolved_output_path {
         path
@@ -108,6 +105,19 @@ pub async fn convert_to_ratio(
     let readiness = check_file_ready(app, &input).await?;
     let duration = readiness.estimated_duration_secs;
 
+    // 3. Already Processed Check
+    if options.skip_existing && Path::new(&output_path).exists() {
+        return Ok(ConversionResult {
+            output_path,
+            ratio,
+            skipped: true,
+        });
+    }
+
+    // 4. Acquire Lock
+    let _lock = ProcessingLock::acquire(app, &input)?;
+
+    // 5. Subtitle Preparation
     let should_generate_subtitles = options.generate_subtitles || options.burn_subtitles;
     let subtitle_path = if should_generate_subtitles {
         if let Some(existing) = subtitle_path {
@@ -123,24 +133,12 @@ pub async fn convert_to_ratio(
         None
     };
 
-    // 3. Already Processed Check
-    if options.skip_existing && Path::new(&output_path).exists() {
-        return Ok(ConversionResult {
-            output_path,
-            ratio,
-            skipped: true,
-        });
-    }
-
-    // 4. Acquire Lock
-    let _lock = ProcessingLock::acquire(&input, &final_output_dir.to_string_lossy())?;
-
-    // 5. Ensure output directory exists
+    // 6. Ensure output directory exists
     if !final_output_dir.exists() {
         std::fs::create_dir_all(final_output_dir)?;
     }
 
-    // 6. Orientation Detection
+    // 7. Orientation Detection
     let orientation = detect_orientation(app, &input).await?;
 
     let stem = Path::new(&input)
@@ -151,7 +149,7 @@ pub async fn convert_to_ratio(
     let file_label = stem.to_string();
     let ratio_label = ratio.get_tag().to_string();
 
-    // 7. Logo Detection
+    // 8. Logo Detection
     let logo_path = if let Some(logo_opts) = &options.logo {
         if logo_opts.enabled {
             if let Some(path) = &logo_opts.path {
@@ -177,13 +175,13 @@ pub async fn convert_to_ratio(
         None
     };
 
-    // 8. Bridge to Preset System
+    // 9. Bridge to Preset System
     let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path, platform_config);
 
-    // 9. Consistency Validation
+    // 10. Consistency Validation
     validate_preset_consistency(&preset).map_err(|e| VideoError::InvalidInput(e))?;
 
-    // 10. Passthrough Check
+    // 11. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
@@ -219,10 +217,10 @@ pub async fn convert_to_ratio(
         });
     }
 
-    // 11. Filter Construction
+    // 12. Filter Construction
     let filter = build_filter_graph(&preset, &orientation);
 
-    // 12. FFmpeg Command Building
+    // 13. FFmpeg Command Building
     let subtitle_str = subtitle_path.as_ref().and_then(|p| p.to_str());
     let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset, subtitle_str);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();

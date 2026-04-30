@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
-use crate::video::types::{VideoPreset, AspectRatio, ConversionOptions, PlatformConfig, QualityPreset, VideoError};
+use crate::video::types::{
+    AspectRatio, ConversionOptions, JobTarget, PartialConversionOptions, PlatformConfig,
+    QualityPreset, VideoError, VideoPreset,
+};
 
 pub fn get_builtin_presets() -> Vec<VideoPreset> {
     vec![
@@ -172,6 +175,96 @@ pub fn load_custom_presets(app: &AppHandle) -> Result<Vec<VideoPreset>, VideoErr
     Ok(presets)
 }
 
+fn apply_overrides(
+    mut options: ConversionOptions,
+    overrides: &PartialConversionOptions,
+) -> ConversionOptions {
+    if let Some(v) = overrides.blur_background { options.blur_background = v; }
+    if let Some(v) = overrides.blur_sigma { options.blur_sigma = v; }
+    if let Some(v) = overrides.remove_audio { options.remove_audio = v; }
+    if let Some(v) = overrides.generate_subtitles { options.generate_subtitles = v; }
+    if let Some(v) = overrides.burn_subtitles { options.burn_subtitles = v; }
+    if let Some(v) = overrides.skip_existing { options.skip_existing = v; }
+    if let Some(v) = &overrides.quality { options.quality = v.clone(); }
+    if let Some(v) = &overrides.output_format { options.output_format = v.clone(); }
+    if let Some(v) = &overrides.logo { options.logo = Some(v.clone()); }
+    if let Some(v) = overrides.custom_encoding_enabled { options.custom_encoding_enabled = v; }
+    if let Some(v) = overrides.crf { options.crf = Some(v); }
+    if let Some(v) = &overrides.preset { options.preset = Some(v.clone()); }
+    if let Some(v) = &overrides.audio_bitrate { options.audio_bitrate = Some(v.clone()); }
+    if let Some(v) = &overrides.transform { options.transform = Some(v.clone()); }
+    options
+}
+
+fn get_all_presets_internal(app: &AppHandle) -> Result<Vec<VideoPreset>, VideoError> {
+    let mut all_presets = get_builtin_presets();
+    let custom_presets = load_custom_presets(app)?;
+    all_presets.extend(custom_presets);
+    Ok(all_presets)
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedConversionConfig {
+    pub ratio: AspectRatio,
+    pub options: ConversionOptions,
+    pub platform_config: Option<PlatformConfig>,
+    pub preset_name: Option<String>,
+}
+
+pub fn resolve_conversion_config(
+    app: &AppHandle,
+    input: &JobTarget,
+) -> Result<ResolvedConversionConfig, VideoError> {
+    // Backward-compatible path: already-resolved payload from older frontends.
+    if let Some(options) = &input.options {
+        let ratio = input
+            .ratio
+            .clone()
+            .ok_or_else(|| VideoError::InvalidInput("Legacy target payload missing ratio".to_string()))?;
+        return Ok(ResolvedConversionConfig {
+            ratio,
+            options: options.clone(),
+            platform_config: input.platform_config.clone(),
+            preset_name: input.preset_name.clone(),
+        });
+    }
+
+    let (base_ratio, mut base_options, platform_config, preset_name) = if let Some(preset_id) = &input.preset_id {
+        let presets = get_all_presets_internal(app)?;
+        let preset = presets
+            .into_iter()
+            .find(|p| p.id == *preset_id)
+            .ok_or_else(|| VideoError::InvalidInput(format!("Unknown preset_id: {}", preset_id)))?;
+        (
+            preset.ratio,
+            preset.options,
+            preset.platform_config,
+            Some(preset.name),
+        )
+    } else {
+        (
+            input
+                .ratio
+                .clone()
+                .ok_or_else(|| VideoError::InvalidInput("Target requires either preset_id or ratio".to_string()))?,
+            ConversionOptions::default(),
+            None,
+            None,
+        )
+    };
+
+    if let Some(overrides) = &input.overrides {
+        base_options = apply_overrides(base_options, overrides);
+    }
+
+    Ok(ResolvedConversionConfig {
+        ratio: base_ratio,
+        options: base_options,
+        platform_config,
+        preset_name,
+    })
+}
+
 pub fn save_custom_preset(app: &AppHandle, mut preset: VideoPreset) -> Result<(), VideoError> {
     let mut presets = load_custom_presets(app)?;
     
@@ -205,10 +298,7 @@ pub fn delete_custom_preset(app: &AppHandle, id: String) -> Result<(), VideoErro
 
 #[tauri::command]
 pub fn get_all_presets(app: AppHandle) -> Result<Vec<VideoPreset>, String> {
-    let mut all_presets = get_builtin_presets();
-    let custom_presets = load_custom_presets(&app).map_err(|e| e.to_string())?;
-    all_presets.extend(custom_presets);
-    Ok(all_presets)
+    get_all_presets_internal(&app).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

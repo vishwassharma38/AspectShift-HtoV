@@ -14,6 +14,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Automatic cleanup of stale lock files at startup
+            let _ = video::lock::cleanup_stale_locks(app.handle());
+            
             app.manage(video::queue::BatchManager::new());
             Ok(())
         })
@@ -21,7 +24,6 @@ pub fn run() {
             video::detect_orientation,
             video::convert_to_ratio,
             video::check_file_ready,
-            video::release_processing_lock,
             video::start_batch,
             video::cancel_batch,
             video::get_batch_status,

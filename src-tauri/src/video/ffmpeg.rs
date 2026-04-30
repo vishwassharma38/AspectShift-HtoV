@@ -1,10 +1,12 @@
 use crate::video::types::VideoError;
 use serde::Serialize;
+use specta::Type;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+use tracing::error;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Type)]
 pub struct VideoProgress {
     pub job_id: String,
     pub file: String,
@@ -155,6 +157,11 @@ pub async fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput,
         } else {
             stderr
         };
+        // Keep ffprobe stderr visible in existing tracing logs for per-file diagnosis.
+        error!(
+            "ffprobe failed (code {}), args: {:?}, stderr: {}",
+            exit_code, args, stderr
+        );
         Err(VideoError::ProcessingFailed { stderr })
     }
 }
