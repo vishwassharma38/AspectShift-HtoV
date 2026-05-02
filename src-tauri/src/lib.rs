@@ -1,6 +1,7 @@
 pub mod subtitles;
 pub mod video;
 pub mod os_utils;
+
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -13,10 +14,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Automatic cleanup of stale lock files at startup
             let _ = video::lock::cleanup_stale_locks(app.handle());
-            
+
             app.manage(video::queue::BatchManager::new());
             Ok(())
         })

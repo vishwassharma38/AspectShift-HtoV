@@ -105,11 +105,9 @@ pub async fn check_file_ready(app: AppHandle, path: String) -> Result<FileReadin
 
 #[tauri::command]
 pub async fn open_output_folder(app: AppHandle, path: String) -> Result<(), StructuredError> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell().open(path, None).map_err(|e| StructuredError {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(&path, None::<&str>).map_err(|e| StructuredError {
         code: "operation_failed".to_string(),
         message: e.to_string(),
     })
 }
-
-

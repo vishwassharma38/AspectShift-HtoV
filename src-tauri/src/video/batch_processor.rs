@@ -1,7 +1,7 @@
 use crate::video::convert::{convert_to_ratio, prepare_subtitles};
 use crate::video::presets::resolve_conversion_config;
 use crate::video::queue::{BatchManager, BatchState};
-use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus, OutputTags, AspectRatio};
+use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus, AspectRatio};
 use crate::video::validation::{validate_config, FinalConfig};
 use crate::os_utils::OsUtils;
 use std::collections::{HashMap, HashSet};
@@ -151,23 +151,6 @@ pub async fn start_batch(
 
     for file in valid_input_files {
         for target in &resolved_targets {
-            let input_path = Path::new(&file);
-            let stem = input_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("video");
-            let ext = target.options.output_format.get_extension();
-            
-            // Construct OutputTags
-            let platform_tag = if let Some(name) = &target.preset_name {
-                // "Instagram (Modified)" -> "instagram"
-                let base_name = name.split('(').next().unwrap_or(name).trim();
-                // C. Sanitize platform_tag
-                Some(OsUtils::sanitize_path_component(base_name))
-            } else {
-                None
-            };
-
             // Determine subfolder if enabled
             let subfolder = if use_subfolders {
                 if is_preset_mode {
@@ -188,6 +171,7 @@ pub async fn start_batch(
                 output_dir: &root_output_dir,
                 ratio: &target.ratio,
                 options: &target.options,
+                preset_name: target.preset_name.as_deref(),
                 subfolder,
             });
 

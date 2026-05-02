@@ -324,6 +324,12 @@ export default function App() {
   const [presets, setPresets] = useState<VideoPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
+  // FIX: Store base values per preset id so overrides are computed correctly
+  // per-preset rather than against a single globally-last-clicked preset.
+  const [presetBaseValuesMap, setPresetBaseValuesMap] = useState<
+    Map<string, PresetComparableState>
+  >(new Map());
+  // Kept for dirty-check display in the UI (against the most recently loaded preset)
   const [presetBaseValues, setPresetBaseValues] =
     useState<PresetComparableState | null>(null);
 
@@ -632,19 +638,74 @@ export default function App() {
     };
     setPreviewRatio(p.ratio);
     setOptions(appliedOptions);
-    setPresetBaseValues(buildCurrentState(p.ratio, appliedOptions));
+    const baseState = buildCurrentState(p.ratio, appliedOptions);
+    setPresetBaseValues(baseState);
     addLog(`Preset loaded as starting point: ${p.name}`, "info");
   };
 
+  // FIX: handleTogglePreset now correctly manages preset state on both
+  // select and deselect, and stores per-preset base values for accurate
+  // override computation in handleStartBatch.
   const handleTogglePreset = (id: string) => {
-    setSelectedPresetIds((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 5) {
-        addLog("Max 5 presets per batch", "warn");
-        return prev;
+    const isCurrentlySelected = selectedPresetIds.includes(id);
+
+    if (isCurrentlySelected) {
+      // DESELECTING: remove from active list and clean up its stored base values
+      const nextIds = selectedPresetIds.filter((x) => x !== id);
+      setSelectedPresetIds(nextIds);
+
+      // Remove this preset's base values from the map
+      setPresetBaseValuesMap((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+
+      // If we're deselecting the currently previewed preset, revert UI to
+      // either the last remaining selected preset or clean defaults.
+      if (selectedPresetId === id) {
+        const fallbackId = nextIds[nextIds.length - 1] ?? "";
+        handlePresetChange(fallbackId);
       }
-      return [...prev, id];
-    });
+    } else {
+      // SELECTING: add to active list and store its base values
+      if (selectedPresetIds.length >= 5) {
+        addLog("Max 5 presets per batch", "warn");
+        return;
+      }
+
+      const p = presets.find((x) => x.id === id);
+      if (!p) return;
+
+      const appliedOptions: ConversionOptions = {
+        ...p.options,
+        logo: p.logo_path
+          ? {
+              enabled: true,
+              position: "bottom_right",
+              opacity: 1,
+              gap: 20,
+              scale: 0.15,
+              path: p.logo_path,
+            }
+          : null,
+        transform: p.options.transform ?? {
+          rotate: 0,
+          flip_h: false,
+          flip_v: false,
+        },
+      };
+      const baseState = buildCurrentState(p.ratio, appliedOptions);
+
+      // Store the base state for this specific preset
+      setPresetBaseValuesMap((prev) => {
+        const next = new Map(prev);
+        next.set(id, baseState);
+        return next;
+      });
+
+      setSelectedPresetIds((prev) => [...prev, id]);
+    }
   };
 
   const handleToggleRatio = (r: AspectRatio) => {
@@ -680,8 +741,17 @@ export default function App() {
     try {
       await invoke("delete_preset", { id });
       await loadPresets();
-      if (selectedPresetId === id) setSelectedPresetId("");
+      if (selectedPresetId === id) {
+        setSelectedPresetId("");
+        setPresetBaseValues(null);
+      }
       setSelectedPresetIds((prev) => prev.filter((x) => x !== id));
+      // Clean up stored base values for the deleted preset
+      setPresetBaseValuesMap((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
       addLog("Preset deleted", "info");
     } catch (e) {
       addLog(`Delete failed: ${errorMessage(e)}`, "error");
@@ -713,9 +783,14 @@ export default function App() {
         ? selectedPresetIds.flatMap((id) => {
             const p = presets.find((x) => x.id === id);
             if (!p) return [];
+
+            // FIX: Use per-preset base values from the map, not a shared global.
+            // This ensures each preset's overrides are computed relative to that
+            // specific preset's defaults, not whatever preset was last clicked.
+            const thisPresetBase = presetBaseValuesMap.get(id) ?? null;
             const modifiedKeys = getModifiedOptionKeys(
               currentValues,
-              presetBaseValues,
+              thisPresetBase,
             );
             const overrides: ConversionOptionsRequestDTO = {};
             for (const key of modifiedKeys) {
@@ -1058,7 +1133,8 @@ export default function App() {
                         setOptions({
                           ...options,
                           transform: {
-                            rotate: ((options.transform?.rotate ?? 0) + 90) % 360,
+                            rotate:
+                              ((options.transform?.rotate ?? 0) + 90) % 360,
                             flip_h: options.transform?.flip_h ?? false,
                             flip_v: options.transform?.flip_v ?? false,
                           },
@@ -1603,43 +1679,53 @@ export default function App() {
               </span>
             </div>
             <div className="presets-grid">
-              {presets.map((p) => (
-                <div
-                  key={p.id}
-                  className={`preset-card${selectedPresetIds.includes(p.id) ? " selected" : ""}`}
-                  onClick={() => {
-                    handleTogglePreset(p.id);
-                    handlePresetChange(p.id);
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedPresetIds.includes(p.id)}
-                    onChange={() => {}}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                  <div className="preset-card-name">
-                    {PLATFORM_ICONS[p.id] && (
-                      <span style={{ marginRight: 4, opacity: 0.6 }}>
-                        {PLATFORM_ICONS[p.id]}
-                      </span>
-                    )}
-                    {p.name}
-                  </div>
-                  <div className="preset-card-ratio">
-                    {RATIO_DISPLAY[p.ratio]}
-                  </div>
-                  {p.platform_config && (
-                    <div className="preset-card-desc text-xs text-muted">
-                      {p.platform_config.target_width}×
-                      {p.platform_config.target_height}
+              {presets.map((p) => {
+                const isSelected = selectedPresetIds.includes(p.id);
+                return (
+                  <div
+                    key={p.id}
+                    className={`preset-card${isSelected ? " selected" : ""}`}
+                    onClick={() => {
+                      // FIX: Only load this preset's settings into the UI panel
+                      // when SELECTING it. When DESELECTING, handleTogglePreset
+                      // handles the state cleanup (reverts to fallback or defaults).
+                      // This prevents a deselected preset from persisting its
+                      // settings as the "active" configuration.
+                      if (!isSelected) {
+                        handlePresetChange(p.id);
+                      }
+                      handleTogglePreset(p.id);
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {}}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <div className="preset-card-name">
+                      {PLATFORM_ICONS[p.id] && (
+                        <span style={{ marginRight: 4, opacity: 0.6 }}>
+                          {PLATFORM_ICONS[p.id]}
+                        </span>
+                      )}
+                      {p.name}
                     </div>
-                  )}
-                  {!p.is_builtin && (
-                    <span className="preset-card-badge">custom</span>
-                  )}
-                </div>
-              ))}
+                    <div className="preset-card-ratio">
+                      {RATIO_DISPLAY[p.ratio]}
+                    </div>
+                    {p.platform_config && (
+                      <div className="preset-card-desc text-xs text-muted">
+                        {p.platform_config.target_width}×
+                        {p.platform_config.target_height}
+                      </div>
+                    )}
+                    {!p.is_builtin && (
+                      <span className="preset-card-badge">custom</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -1918,5 +2004,3 @@ export default function App() {
     </div>
   );
 }
-
-

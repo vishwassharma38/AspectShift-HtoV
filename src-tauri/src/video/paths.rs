@@ -7,6 +7,7 @@ pub struct OutputPathResolver<'a> {
     pub output_dir: &'a Path,
     pub ratio: &'a AspectRatio,
     pub options: &'a ConversionOptions,
+    pub preset_name: Option<&'a str>,
     pub subfolder: Option<String>,
 }
 
@@ -17,7 +18,7 @@ pub fn resolve_output_path(resolver: OutputPathResolver) -> PathBuf {
         .unwrap_or("video");
     let ext = resolver.options.output_format.get_extension();
 
-    let platform_tag = resolver.options.preset.as_ref().map(|name| {
+    let platform_tag = resolver.preset_name.map(|name| {
         let base_name = name.split('(').next().unwrap_or(name).trim();
         OsUtils::sanitize_path_component(base_name)
     });

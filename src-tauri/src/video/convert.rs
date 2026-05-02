@@ -7,10 +7,9 @@ use crate::video::lock::ProcessingLock;
 use crate::video::preset_adapter::legacy_to_preset;
 use crate::video::probe::{check_file_ready, detect_orientation};
 use crate::video::types::{
-    AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError, OutputTags,
+    AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError,
 };
 use crate::video::validation::{validate_config, FinalConfig};
-use crate::os_utils::OsUtils;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tracing::info;
@@ -43,6 +42,7 @@ pub fn get_deterministic_output_path(
         output_dir: Path::new(output_dir),
         ratio,
         options,
+        preset_name: None,
         subfolder: None,
     })
     .to_string_lossy()
