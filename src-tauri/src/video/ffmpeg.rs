@@ -27,12 +27,12 @@ pub async fn run_ffmpeg(
     file_label: &str,
     ratio_label: &str,
     duration_secs: f64,
-    cancel_token: Option<tokio_util::sync::CancellationToken>
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<FfmpegOutput, VideoError> {
     // Progress flags will be added manually or ensure they are after input
     let mut final_args = vec![];
     final_args.extend_from_slice(args);
-    
+
     // Ensure -progress pipe:1 is before the last argument (the output path)
     if final_args.len() > 1 {
         let output_path = final_args.pop().unwrap();
@@ -67,7 +67,9 @@ pub async fn run_ffmpeg(
                 if let Some(child) = child.take() {
                     let _ = child.kill();
                 }
-                return Err(VideoError::ProcessingFailed { stderr: "Cancelled by user".to_string() });
+                return Err(VideoError::ProcessingFailed {
+                    stderr: "Cancelled by user".to_string(),
+                });
             }
         }
 
@@ -86,21 +88,27 @@ pub async fn run_ffmpeg(
                     let current_secs = time_ms / 1_000_000.0;
                     if duration_secs > 0.0 {
                         let percent = (current_secs / duration_secs) * 100.0;
-                        let _ = app_handle.emit("video://progress", VideoProgress {
-                            job_id: job_id.clone(),
-                            file: file_label.clone(),
-                            ratio: ratio_label.clone(),
-                            percent: percent as f32,
-                        });
+                        let _ = app_handle.emit(
+                            "video://progress",
+                            VideoProgress {
+                                job_id: job_id.clone(),
+                                file: file_label.clone(),
+                                ratio: ratio_label.clone(),
+                                percent: percent as f32,
+                            },
+                        );
                     }
                 }
                 if l == "progress=end" {
-                    let _ = app_handle.emit("video://progress", VideoProgress {
-                        job_id: job_id.clone(),
-                        file: file_label.clone(),
-                        ratio: ratio_label.clone(),
-                        percent: 100.0,
-                    });
+                    let _ = app_handle.emit(
+                        "video://progress",
+                        VideoProgress {
+                            job_id: job_id.clone(),
+                            file: file_label.clone(),
+                            ratio: ratio_label.clone(),
+                            percent: 100.0,
+                        },
+                    );
                 }
             }
             CommandEvent::Stderr(line_bytes) => {
@@ -123,7 +131,11 @@ pub async fn run_ffmpeg(
     }
 
     if exit_code == 0 {
-        Ok(FfmpegOutput { stdout: stdout_str, stderr: stderr_str, exit_code })
+        Ok(FfmpegOutput {
+            stdout: stdout_str,
+            stderr: stderr_str,
+            exit_code,
+        })
     } else {
         let stderr = if stderr_str.trim().is_empty() {
             format!("ffmpeg exited with code {exit_code}")
@@ -135,7 +147,8 @@ pub async fn run_ffmpeg(
 }
 
 pub async fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput, VideoError> {
-    let output = app.shell()
+    let output = app
+        .shell()
         .sidecar("ffprobe")
         .map_err(|_| VideoError::FfprobeNotFound)?
         .args(args)
@@ -150,7 +163,11 @@ pub async fn run_ffprobe(app: &AppHandle, args: &[&str]) -> Result<FfmpegOutput,
     let exit_code = output.status.code().unwrap_or(-1);
 
     if output.status.success() {
-        Ok(FfmpegOutput { stdout, stderr, exit_code })
+        Ok(FfmpegOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
     } else {
         let stderr = if stderr.trim().is_empty() {
             format!("ffprobe exited with code {exit_code}")

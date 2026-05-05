@@ -19,14 +19,15 @@ impl OsUtils {
         #[cfg(not(target_os = "windows"))]
         {
             // Unix: Just escape : and '
-            path.replace(':', "\\:")
-                .replace('\'', "\\'")
+            path.replace(':', "\\:").replace('\'', "\\'")
         }
     }
 
     /// Returns a platform-agnostic temporary directory using Tauri APIs.
     pub fn get_temp_dir(app: &AppHandle) -> PathBuf {
-        app.path().temp_dir().unwrap_or_else(|_| std::env::temp_dir())
+        app.path()
+            .temp_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
     }
 
     /// Checks if a file is likely locked by another process (Windows-centric check).
@@ -52,9 +53,15 @@ impl OsUtils {
     pub fn sanitize_path_component(input: &str) -> String {
         let sanitized: String = input
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
-        
+
         // Trim redundant underscores
         let mut result = String::new();
         let mut last_was_underscore = false;

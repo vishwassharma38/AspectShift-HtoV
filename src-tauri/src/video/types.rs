@@ -16,7 +16,7 @@ impl AspectRatio {
     pub fn get_ratio(&self) -> f32 {
         match self {
             AspectRatio::Ratio9x16 => 9.0 / 16.0,
-            AspectRatio::Ratio1x1 => 1.0 / 1.0,
+            AspectRatio::Ratio1x1 => 1.0,
             AspectRatio::Ratio4x5 => 4.0 / 5.0,
             AspectRatio::Ratio2x3 => 2.0 / 3.0,
             AspectRatio::Ratio16x9 => 16.0 / 9.0,
@@ -35,56 +35,60 @@ impl AspectRatio {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodingProfile {
+    pub crf: u8,
+    pub quality_preset: String,
+    pub speed_preset: String,
+    pub audio_bitrate: String,
+}
+
+impl EncodingProfile {
+    pub fn standard() -> Self {
+        Self {
+            crf: 23,
+            quality_preset: "standard".to_string(),
+            speed_preset: "medium".to_string(),
+            audio_bitrate: "128k".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct PlatformConfig {
     pub target_width: u32,
     pub target_height: u32,
     pub enforce_dimensions: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
-pub struct ConversionRequestDTO {
-    pub input: String,
-    pub output_dir: String,
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AspectRatioTarget {
+    pub id: String,
     pub ratio: AspectRatio,
-    pub options: PartialConversionOptions,
-    #[serde(default)]
-    pub platform_config: Option<PlatformConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConversionRequest {
-    pub input: String,
-    pub output_dir: String,
-    pub ratio: AspectRatio,
-    pub options: ConversionOptions,
-    pub platform_config: Option<PlatformConfig>,
+    pub encoding: EncodingProfile,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
-pub struct ConversionOptions {
-    pub blur_background: bool,
-    pub blur_sigma: f32,
-    pub remove_audio: bool,
-    #[serde(default)]
-    pub generate_subtitles: bool,
-    #[serde(default)]
-    pub burn_subtitles: bool,
-    pub skip_existing: bool,
-    pub quality: QualityPreset,
-    pub output_format: OutputFormat,
-    pub logo: Option<LogoOptions>,
-    pub custom_encoding_enabled: bool,
-    pub crf: Option<u8>,
-    pub preset: Option<String>,
-    pub audio_bitrate: Option<String>,
-    #[serde(default)]
-    pub transform: Option<VideoTransform>,
+#[serde(rename_all = "camelCase")]
+pub struct PlatformPreset {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub ratio: AspectRatio,
+    pub encoding: EncodingProfile,
+    pub logo_path: Option<String>,
+    pub platform_config: Option<PlatformConfig>,
+    pub is_builtin: bool,
 }
+
+pub type VideoPreset = PlatformPreset;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Type)]
 pub struct VideoTransform {
     #[serde(default)]
-    pub rotate: i32, // 0, 90, 180, 270
+    pub rotate: i32,
     #[serde(default)]
     pub flip_h: bool,
     #[serde(default)]
@@ -92,6 +96,7 @@ pub struct VideoTransform {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct LogoOptions {
     #[serde(default)]
     pub enabled: bool,
@@ -124,71 +129,141 @@ pub enum LogoPosition {
     BottomRight,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BatchJob {
-    pub id: String,
-    pub input_path: String,
-    pub target_ratio: AspectRatio,
-    pub target_preset: Option<String>,
-    pub active_effects: ConversionOptions,
-    pub platform_config: Option<PlatformConfig>,
-    pub resolved_output_path: String,
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    Mp4,
+    Mov,
+    Webm,
+}
+
+impl OutputFormat {
+    pub fn get_extension(&self) -> &'static str {
+        match self {
+            OutputFormat::Mp4 => "mp4",
+            OutputFormat::Mov => "mov",
+            OutputFormat::Webm => "webm",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
-pub struct JobTarget {
-    #[serde(default)]
-    pub ratio: Option<AspectRatio>,
-    #[serde(default)]
-    pub preset_id: Option<String>,
-    #[serde(default)]
-    pub overrides: Option<PartialConversionOptions>,
-    // Backward-compat legacy payload fields (frontend-resolved config).
-    #[serde(default)]
-    pub options: Option<ConversionOptions>,
-    #[serde(default)]
-    pub platform_config: Option<PlatformConfig>,
-    #[serde(default)]
-    pub preset_name: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default, Type)]
-pub struct PartialConversionOptions {
-    pub blur_background: Option<bool>,
+#[serde(rename_all = "camelCase")]
+pub struct VideoEffectsSettings {
+    pub blur: Option<bool>,
+    pub watermark: Option<String>,
+    pub overlays: Option<Vec<String>>,
+    pub subtitles: Option<String>,
+    pub color_filter: Option<String>,
     pub blur_sigma: Option<f32>,
     pub remove_audio: Option<bool>,
     pub generate_subtitles: Option<bool>,
     pub burn_subtitles: Option<bool>,
     pub skip_existing: Option<bool>,
-    pub quality: Option<QualityPreset>,
     pub output_format: Option<OutputFormat>,
     pub logo: Option<LogoOptions>,
-    pub custom_encoding_enabled: Option<bool>,
-    pub crf: Option<u8>,
-    pub preset: Option<String>,
-    pub audio_bitrate: Option<String>,
     pub transform: Option<VideoTransform>,
 }
 
-impl From<PartialConversionOptions> for ConversionOptions {
-    fn from(partial: PartialConversionOptions) -> Self {
-        let mut options = ConversionOptions::default();
-        if let Some(v) = partial.blur_background { options.blur_background = v; }
-        if let Some(v) = partial.blur_sigma { options.blur_sigma = v; }
-        if let Some(v) = partial.remove_audio { options.remove_audio = v; }
-        if let Some(v) = partial.generate_subtitles { options.generate_subtitles = v; }
-        if let Some(v) = partial.burn_subtitles { options.burn_subtitles = v; }
-        if let Some(v) = partial.skip_existing { options.skip_existing = v; }
-        if let Some(v) = partial.quality { options.quality = v; }
-        if let Some(v) = partial.output_format { options.output_format = v; }
-        if let Some(v) = partial.logo { options.logo = Some(v); }
-        if let Some(v) = partial.custom_encoding_enabled { options.custom_encoding_enabled = v; }
-        if let Some(v) = partial.crf { options.crf = Some(v); }
-        if let Some(v) = partial.preset { options.preset = Some(v); }
-        if let Some(v) = partial.audio_bitrate { options.audio_bitrate = Some(v); }
-        if let Some(v) = partial.transform { options.transform = Some(v); }
-        options
+impl VideoEffectsSettings {
+    pub fn blur_enabled(&self) -> bool {
+        self.blur.unwrap_or(false)
     }
+
+    pub fn blur_sigma_value(&self) -> f32 {
+        self.blur_sigma.unwrap_or(20.0)
+    }
+
+    pub fn remove_audio_enabled(&self) -> bool {
+        self.remove_audio.unwrap_or(false)
+    }
+
+    pub fn generate_subtitles_enabled(&self) -> bool {
+        self.generate_subtitles.unwrap_or(false)
+    }
+
+    pub fn burn_subtitles_enabled(&self) -> bool {
+        self.burn_subtitles.unwrap_or(false)
+    }
+
+    pub fn skip_existing_enabled(&self) -> bool {
+        self.skip_existing.unwrap_or(false)
+    }
+
+    pub fn output_format_value(&self) -> OutputFormat {
+        self.output_format.clone().unwrap_or(OutputFormat::Mp4)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputJob {
+    pub id: String,
+    pub source_preset_id: String,
+    pub ratio: AspectRatio,
+    pub encoding: EncodingProfile,
+    pub effects: VideoEffectsSettings,
+    pub platform_config: Option<PlatformConfig>,
+    pub preset_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetType {
+    AspectRatio,
+    Platform,
+    Custom,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputTarget {
+    pub id: String,
+    pub label: String,
+    pub target_type: TargetType,
+    pub job: OutputJob,
+}
+
+impl OutputTarget {
+    // CENTRALIZED SANITIZATION:
+    // All labels MUST pass through this function exactly once.
+    pub fn sanitize_label(label: &str) -> String {
+        label
+            // Step 1: replace ratio colons first
+            .replace(':', "x")
+            // Step 2: convert word boundaries into underscores
+            .replace(|c: char| c == ' ' || c == '/' || c == '-' || c == '(' || c == ')', "_")
+            // Step 3: remove invalid characters
+            .replace(|c: char| !c.is_alphanumeric() && c != '_', "")
+            // Step 4: collapse repeated underscores
+            .split('_')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+            .to_lowercase()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchJob {
+    pub input_path: String,
+    pub output: OutputJob,
+    pub resolved_output_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversionRequestDTO {
+    pub input: String,
+    pub output_dir: String,
+    pub job: OutputJob,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversionRequest {
+    pub input: String,
+    pub output_dir: String,
+    pub job: OutputJob,
 }
 
 impl From<ConversionRequestDTO> for ConversionRequest {
@@ -196,16 +271,15 @@ impl From<ConversionRequestDTO> for ConversionRequest {
         Self {
             input: dto.input,
             output_dir: dto.output_dir,
-            ratio: dto.ratio,
-            options: dto.options.into(),
-            platform_config: dto.platform_config,
+            job: dto.job,
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchJobSettings {
-    pub targets: Vec<JobTarget>,
+    pub targets: Vec<OutputJob>,
     pub output_dir: String,
     #[serde(default)]
     pub enable_subfolders: bool,
@@ -223,16 +297,10 @@ pub struct OutputTags {
 impl OutputTags {
     pub fn to_suffix(&self) -> String {
         let mut tags = Vec::new();
-
-        // Ratio is ALWAYS first and ALWAYS present
         tags.push(self.ratio.clone());
-
-        // Platform tag only included if preset is active
         if let Some(platform) = &self.platform {
             tags.push(platform.clone());
         }
-
-        // Effect tags included ONLY when enabled
         if self.blur {
             tags.push("blur".to_string());
         }
@@ -245,9 +313,6 @@ impl OutputTags {
         if self.no_audio {
             tags.push("no_audio".to_string());
         }
-
-        // Tag order is FIXED and NEVER dynamically reordered
-        // Tags are appended in a deterministic chain
         tags.join("_")
     }
 
@@ -285,63 +350,6 @@ pub struct BatchProgress {
     pub current_job_id: Option<String>,
 }
 
-impl Default for ConversionOptions {
-    fn default() -> Self {
-        Self {
-            blur_background: false,
-            blur_sigma: 20.0,
-            remove_audio: false,
-            generate_subtitles: false,
-            burn_subtitles: false,
-            skip_existing: true,
-            quality: QualityPreset::Standard,
-            output_format: OutputFormat::Mp4,
-            logo: None,
-            custom_encoding_enabled: false,
-            crf: Some(18),
-            preset: Some("medium".to_string()),
-            audio_bitrate: Some("128k".to_string()),
-            transform: None,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum QualityPreset {
-    Draft,
-    Standard,
-    High,
-}
-
-impl QualityPreset {
-    pub fn get_ffmpeg_args(&self) -> Vec<&'static str> {
-        match self {
-            QualityPreset::Draft => vec!["-preset", "veryfast", "-crf", "28"],
-            QualityPreset::Standard => vec!["-preset", "medium", "-crf", "23"],
-            QualityPreset::High => vec!["-preset", "slow", "-crf", "18"],
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputFormat {
-    Mp4,
-    Mov,
-    Webm,
-}
-
-impl OutputFormat {
-    pub fn get_extension(&self) -> &'static str {
-        match self {
-            OutputFormat::Mp4 => "mp4",
-            OutputFormat::Mov => "mov",
-            OutputFormat::Webm => "webm",
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct OrientationInfo {
     pub width: u32,
@@ -366,18 +374,6 @@ pub struct FileReadiness {
     pub file_size_bytes: u64,
     pub is_locked: bool,
     pub estimated_duration_secs: f64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
-pub struct VideoPreset {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub ratio: AspectRatio,
-    pub options: ConversionOptions,
-    pub logo_path: Option<String>,
-    pub platform_config: Option<PlatformConfig>,
-    pub is_builtin: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]

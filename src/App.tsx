@@ -4,45 +4,31 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AspectRatio,
+  AspectRatioTarget,
   BatchProgress,
-  ConversionOptions,
+  EncodingProfile,
   FileProgress,
   FileReadiness,
   LogoOptions,
   LogoPosition,
   OrientationInfo,
   OutputFormat,
-  QualityPreset,
-  VideoPreset,
+  OutputJob,
+  PlatformPreset,
   VideoProgress,
   VideoTransform,
+  VideoEffectsSettings,
 } from "./types/backend";
 import "./App.css";
-interface JobTargetRequestDTO {
-  ratio?: AspectRatio;
-  preset_id?: string;
-  overrides?: ConversionOptionsRequestDTO;
-}
-interface ConversionOptionsRequestDTO {
-  blur_background?: boolean;
-  blur_sigma?: number;
-  remove_audio?: boolean;
-  generate_subtitles?: boolean;
-  burn_subtitles?: boolean;
-  skip_existing?: boolean;
-  quality?: QualityPreset;
-  output_format?: OutputFormat;
-  logo?: LogoOptions | null;
-  custom_encoding_enabled?: boolean;
-  crf?: number | null;
-  preset?: string | null;
-  audio_bitrate?: string | null;
-  transform?: VideoTransform | null;
-}
+type VideoPreset = PlatformPreset;
 interface PresetComparableState {
   ratio: AspectRatio;
-  options: ConversionOptions;
+  encoding: EncodingProfile;
 }
+type ModifiedPreset = Record<string, EncodingProfile>;
+type Selection =
+  | { type: "aspectRatio"; id: string }
+  | { type: "platform"; id: string };
 interface LogEntry {
   time: string;
   msg: string;
@@ -54,20 +40,26 @@ interface BackendError {
 }
 
 // ── Constants ────────────────────────────────────────────────
-const DEFAULT_OPTIONS: ConversionOptions = {
-  blur_background: false,
-  blur_sigma: 20.0,
-  remove_audio: false,
-  generate_subtitles: false,
-  burn_subtitles: false,
-  skip_existing: true,
-  quality: "standard",
-  output_format: "mp4",
-  logo: null,
-  custom_encoding_enabled: false,
+const DEFAULT_ENCODING: EncodingProfile = {
   crf: 18,
-  preset: "medium",
-  audio_bitrate: "128k",
+  qualityPreset: "standard",
+  speedPreset: "medium",
+  audioBitrate: "128k",
+};
+
+const DEFAULT_EFFECTS: VideoEffectsSettings = {
+  blur: false,
+  watermark: null,
+  overlays: null,
+  subtitles: null,
+  colorFilter: null,
+  blurSigma: 20.0,
+  removeAudio: false,
+  generateSubtitles: false,
+  burnSubtitles: false,
+  skipExisting: true,
+  outputFormat: "mp4",
+  logo: null,
   transform: { rotate: 0, flip_h: false, flip_v: false },
 };
 
@@ -186,37 +178,38 @@ function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
   };
 }
 
-function normalizeOptions(options: ConversionOptions): ConversionOptions {
+function deepClone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function generateId(): string {
+  return crypto.randomUUID();
+}
+
+function normalizeEncoding(encoding: EncodingProfile): EncodingProfile {
   return {
-    ...options,
-    logo: normalizeLogo(options.logo ?? null),
-    crf: options.crf ?? null,
-    preset: options.preset ?? null,
-    audio_bitrate: options.audio_bitrate ?? null,
-    transform: normalizeTransform(options.transform),
+    crf: Number(encoding.crf),
+    qualityPreset: encoding.qualityPreset,
+    speedPreset: encoding.speedPreset,
+    audioBitrate: encoding.audioBitrate,
   };
 }
 
-function toConversionOptionsRequestDTO(
-  options: ConversionOptions,
-): ConversionOptionsRequestDTO {
-  return normalizeOptions(options);
+function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
+  return {
+    ...effects,
+    logo: normalizeLogo(effects.logo ?? null),
+    transform: normalizeTransform(effects.transform),
+  };
 }
 
 function buildCurrentState(
   ratio: AspectRatio,
-  options: ConversionOptions,
+  encoding: EncodingProfile,
 ): PresetComparableState {
   return {
     ratio,
-    options: normalizeOptions({
-      ...options,
-      transform: options.transform ?? {
-        rotate: 0,
-        flip_h: false,
-        flip_v: false,
-      },
-    }),
+    encoding: normalizeEncoding(encoding),
   };
 }
 
@@ -225,62 +218,23 @@ function getOverrideCount(
   defaults: PresetComparableState | null,
 ): number {
   if (!defaults) return 0;
-  const keys: (keyof ConversionOptions)[] = [
-    "blur_background",
-    "blur_sigma",
-    "remove_audio",
-    "generate_subtitles",
-    "burn_subtitles",
-    "skip_existing",
-    "quality",
-    "output_format",
-    "custom_encoding_enabled",
+  const keys: (keyof EncodingProfile)[] = [
     "crf",
-    "preset",
-    "audio_bitrate",
-    "logo",
-    "transform",
+    "qualityPreset",
+    "speedPreset",
+    "audioBitrate",
   ];
 
   let diff = current.ratio === defaults.ratio ? 0 : 1;
   for (const key of keys) {
     if (
-      JSON.stringify(current.options[key]) !==
-      JSON.stringify(defaults.options[key])
+      JSON.stringify(current.encoding[key]) !==
+      JSON.stringify(defaults.encoding[key])
     ) {
       diff += 1;
     }
   }
   return diff;
-}
-
-function getModifiedOptionKeys(
-  current: PresetComparableState,
-  base: PresetComparableState | null,
-): (keyof ConversionOptions)[] {
-  if (!base) return [];
-  const keys: (keyof ConversionOptions)[] = [
-    "blur_background",
-    "blur_sigma",
-    "remove_audio",
-    "generate_subtitles",
-    "burn_subtitles",
-    "skip_existing",
-    "quality",
-    "output_format",
-    "custom_encoding_enabled",
-    "crf",
-    "preset",
-    "audio_bitrate",
-    "logo",
-    "transform",
-  ];
-
-  return keys.filter(
-    (key) =>
-      JSON.stringify(current.options[key]) !==
-      JSON.stringify(base.options[key]),
-  );
 }
 
 // ── Toggle Component ─────────────────────────────────────────
@@ -320,15 +274,17 @@ export default function App() {
   // Ratios & Presets
   const [previewRatio, setPreviewRatio] = useState<AspectRatio>("ratio9x16");
   const [selectedRatios, setSelectedRatios] = useState<AspectRatio[]>([]);
-  const [options, setOptions] = useState<ConversionOptions>(DEFAULT_OPTIONS);
+  const [aspectRatioTargets, setAspectRatioTargets] = useState<
+    AspectRatioTarget[]
+  >([]);
+  const [encodingState, setEncodingState] =
+    useState<EncodingProfile>(DEFAULT_ENCODING);
+  const [effectsState, setEffectsState] =
+    useState<VideoEffectsSettings>(DEFAULT_EFFECTS);
   const [presets, setPresets] = useState<VideoPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
-  // FIX: Store base values per preset id so overrides are computed correctly
-  // per-preset rather than against a single globally-last-clicked preset.
-  const [presetBaseValuesMap, setPresetBaseValuesMap] = useState<
-    Map<string, PresetComparableState>
-  >(new Map());
+  const [modifiedPresets, setModifiedPresets] = useState<ModifiedPreset>({});
   // Kept for dirty-check display in the UI (against the most recently loaded preset)
   const [presetBaseValues, setPresetBaseValues] =
     useState<PresetComparableState | null>(null);
@@ -376,6 +332,7 @@ export default function App() {
   // ── Init ──────────────────────────────────────────────────
   useEffect(() => {
     loadPresets();
+    loadAspectRatioTargets();
   }, []);
 
   // ── Tauri Event Listeners ─────────────────────────────────
@@ -464,6 +421,17 @@ export default function App() {
     }
   };
 
+  const loadAspectRatioTargets = async () => {
+    try {
+      const all = await invoke<AspectRatioTarget[]>(
+        "get_all_aspect_ratio_targets",
+      );
+      setAspectRatioTargets(all);
+    } catch (e) {
+      addLog(`Failed to load aspect ratio targets: ${errorMessage(e)}`, "error");
+    }
+  };
+
   // ── Dirty check ────────────────────────────────────────────
   const selectedPreset = useMemo(
     () => presets.find((p) => p.id === selectedPresetId) || null,
@@ -471,8 +439,8 @@ export default function App() {
   );
 
   const currentValues = useMemo(
-    () => buildCurrentState(previewRatio, options),
-    [previewRatio, options],
+    () => buildCurrentState(previewRatio, encodingState),
+    [previewRatio, encodingState],
   );
 
   const presetOverrideCount = useMemo(
@@ -481,6 +449,23 @@ export default function App() {
   );
 
   const isDirty = presetOverrideCount > 0;
+
+  useEffect(() => {
+    if (!selectedPresetId) return;
+    if (presetOverrideCount === 0) {
+      setModifiedPresets((prev) => {
+        if (!prev[selectedPresetId]) return prev;
+        const next = { ...prev };
+        delete next[selectedPresetId];
+        return next;
+      });
+      return;
+    }
+    setModifiedPresets((prev) => ({
+      ...prev,
+      [selectedPresetId]: deepClone(encodingState),
+    }));
+  }, [encodingState, presetOverrideCount, selectedPresetId]);
 
   // ── ETA calculation ────────────────────────────────────────
   const eta = useMemo(() => {
@@ -592,13 +577,20 @@ export default function App() {
         ],
       });
       if (sel && typeof sel === "string") {
-        setOptions((prev) => ({
+        setEffectsState((prev) => ({
           ...prev,
           logo: {
-            ...(prev.logo || DEFAULT_OPTIONS.logo!),
+            ...(prev.logo || {
+              position: "bottom_right" as LogoPosition,
+              opacity: 1,
+              gap: 20,
+              scale: 0.15,
+              path: null,
+            }),
             enabled: true,
             path: sel,
           },
+          watermark: sel,
         }));
         addLog(`Logo loaded: ${basename(sel)}`, "info");
       }
@@ -611,34 +603,17 @@ export default function App() {
   const handlePresetChange = (id: string) => {
     setSelectedPresetId(id);
     if (!id) {
-      setOptions(DEFAULT_OPTIONS);
+      setEncodingState(DEFAULT_ENCODING);
       setPreviewRatio("ratio9x16");
       setPresetBaseValues(null);
       return;
     }
     const p = presets.find((x) => x.id === id);
     if (!p) return;
-    const appliedOptions: ConversionOptions = {
-      ...p.options,
-      logo: p.logo_path
-        ? {
-            enabled: true,
-            position: "bottom_right",
-            opacity: 1,
-            gap: 20,
-            scale: 0.15,
-            path: p.logo_path,
-          }
-        : null,
-      transform: p.options.transform ?? {
-        rotate: 0,
-        flip_h: false,
-        flip_v: false,
-      },
-    };
+    const appliedEncoding = deepClone(p.encoding);
     setPreviewRatio(p.ratio);
-    setOptions(appliedOptions);
-    const baseState = buildCurrentState(p.ratio, appliedOptions);
+    setEncodingState(appliedEncoding);
+    const baseState = buildCurrentState(p.ratio, appliedEncoding);
     setPresetBaseValues(baseState);
     addLog(`Preset loaded as starting point: ${p.name}`, "info");
   };
@@ -654,18 +629,9 @@ export default function App() {
       const nextIds = selectedPresetIds.filter((x) => x !== id);
       setSelectedPresetIds(nextIds);
 
-      // Remove this preset's base values from the map
-      setPresetBaseValuesMap((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-
-      // If we're deselecting the currently previewed preset, revert UI to
-      // either the last remaining selected preset or clean defaults.
       if (selectedPresetId === id) {
-        const fallbackId = nextIds[nextIds.length - 1] ?? "";
-        handlePresetChange(fallbackId);
+        setSelectedPresetId("");
+        setPresetBaseValues(null);
       }
     } else {
       // SELECTING: add to active list and store its base values
@@ -676,33 +642,6 @@ export default function App() {
 
       const p = presets.find((x) => x.id === id);
       if (!p) return;
-
-      const appliedOptions: ConversionOptions = {
-        ...p.options,
-        logo: p.logo_path
-          ? {
-              enabled: true,
-              position: "bottom_right",
-              opacity: 1,
-              gap: 20,
-              scale: 0.15,
-              path: p.logo_path,
-            }
-          : null,
-        transform: p.options.transform ?? {
-          rotate: 0,
-          flip_h: false,
-          flip_v: false,
-        },
-      };
-      const baseState = buildCurrentState(p.ratio, appliedOptions);
-
-      // Store the base state for this specific preset
-      setPresetBaseValuesMap((prev) => {
-        const next = new Map(prev);
-        next.set(id, baseState);
-        return next;
-      });
 
       setSelectedPresetIds((prev) => [...prev, id]);
     }
@@ -715,6 +654,53 @@ export default function App() {
     setPreviewRatio(r);
   };
 
+  const createOutputJob = (
+    sourcePresetId: string,
+    ratio: AspectRatio,
+    encoding: EncodingProfile,
+    presetName: string | null,
+    platformConfig: VideoPreset["platformConfig"],
+  ): OutputJob => ({
+    id: generateId(),
+    sourcePresetId,
+    ratio,
+    encoding: deepClone(encoding),
+    effects: deepClone(normalizeEffects(effectsState)),
+    platformConfig: platformConfig ? deepClone(platformConfig) : null,
+    presetName,
+  });
+
+  const resolveSelections = (selections: Selection[]): OutputJob[] =>
+    selections.map((selection) => {
+      if (selection.type === "platform") {
+        const preset = presets.find((p) => p.id === selection.id);
+        if (!preset) {
+          throw new Error(`Unknown platform preset: ${selection.id}`);
+        }
+        const encoding =
+          modifiedPresets[preset.id] ?? deepClone(preset.encoding);
+        return createOutputJob(
+          `platform:${preset.id}`,
+          preset.ratio,
+          encoding,
+          preset.name,
+          preset.platformConfig,
+        );
+      }
+
+      const target = aspectRatioTargets.find((t) => t.id === selection.id);
+      if (!target) {
+        throw new Error(`Unknown aspect ratio target: ${selection.id}`);
+      }
+      return createOutputJob(
+        `aspectRatio:${target.id}`,
+        target.ratio,
+        target.encoding,
+        null,
+        null,
+      );
+    });
+
   const handleSavePreset = async () => {
     if (!newPresetName.trim()) return;
     const p: VideoPreset = {
@@ -722,10 +708,10 @@ export default function App() {
       name: newPresetName,
       description: "Custom preset",
       ratio: previewRatio,
-      options,
-      logo_path: options.logo?.enabled ? options.logo.path : null,
-      platform_config: selectedPreset?.platform_config || null,
-      is_builtin: false,
+      encoding: deepClone(encodingState),
+      logoPath: effectsState.logo?.enabled ? effectsState.logo.path : null,
+      platformConfig: selectedPreset?.platformConfig || null,
+      isBuiltin: false,
     };
     try {
       await invoke("save_preset", { preset: p });
@@ -746,10 +732,9 @@ export default function App() {
         setPresetBaseValues(null);
       }
       setSelectedPresetIds((prev) => prev.filter((x) => x !== id));
-      // Clean up stored base values for the deleted preset
-      setPresetBaseValuesMap((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
+      setModifiedPresets((prev) => {
+        const next = { ...prev };
+        delete next[id];
         return next;
       });
       addLog("Preset deleted", "info");
@@ -778,36 +763,11 @@ export default function App() {
       return;
     }
 
-    const targets: JobTargetRequestDTO[] =
-      selectedPresetIds.length > 0
-        ? selectedPresetIds.flatMap((id) => {
-            const p = presets.find((x) => x.id === id);
-            if (!p) return [];
-
-            // FIX: Use per-preset base values from the map, not a shared global.
-            // This ensures each preset's overrides are computed relative to that
-            // specific preset's defaults, not whatever preset was last clicked.
-            const thisPresetBase = presetBaseValuesMap.get(id) ?? null;
-            const modifiedKeys = getModifiedOptionKeys(
-              currentValues,
-              thisPresetBase,
-            );
-            const overrides: ConversionOptionsRequestDTO = {};
-            for (const key of modifiedKeys) {
-              (overrides as unknown as Record<string, unknown>)[String(key)] =
-                currentValues.options[key];
-            }
-            return [
-              {
-                preset_id: p.id,
-                overrides,
-              },
-            ];
-          })
-        : selectedRatios.map((r) => ({
-            ratio: r,
-            overrides: toConversionOptionsRequestDTO(options),
-          }));
+    const selections: Selection[] = [
+      ...selectedPresetIds.map((id) => ({ type: "platform" as const, id })),
+      ...selectedRatios.map((id) => ({ type: "aspectRatio" as const, id })),
+    ];
+    const targets = resolveSelections(selections);
 
     if (targets.length === 0) {
       addLog("Select at least one preset or ratio", "warn");
@@ -828,8 +788,8 @@ export default function App() {
         files,
         settings: {
           targets,
-          output_dir: outputDir,
-          enable_subfolders: enableSubfolders,
+          outputDir: outputDir,
+          enableSubfolders: enableSubfolders,
         },
       });
     } catch (e) {
@@ -861,13 +821,13 @@ export default function App() {
 
   // ── Preview helpers ────────────────────────────────────────
   const previewTransform = useMemo(() => {
-    if (!options.transform) return {};
-    const { rotate, flip_h, flip_v } = options.transform;
+    if (!effectsState.transform) return {};
+    const { rotate, flip_h, flip_v } = effectsState.transform;
     let t = `rotate(${rotate}deg)`;
     if (flip_h) t += " scaleX(-1)";
     if (flip_v) t += " scaleY(-1)";
     return { transform: t };
-  }, [options.transform]);
+  }, [effectsState.transform]);
 
   // Compute preview box dimensions (max 220px in longest side)
   const previewDims = useMemo(() => {
@@ -1050,13 +1010,13 @@ export default function App() {
                       <span className="label-desc">Gaussian fill</span>
                     </span>
                     <Toggle
-                      checked={options.blur_background}
+                      checked={effectsState.blur ?? false}
                       onChange={(v) =>
-                        setOptions({ ...options, blur_background: v })
+                        setEffectsState({ ...effectsState, blur: v })
                       }
                     />
                   </div>
-                  {options.blur_background && (
+                  {effectsState.blur && (
                     <div className="slider-row mt-2">
                       <span className="text-sm text-muted">Sigma</span>
                       <input
@@ -1064,15 +1024,15 @@ export default function App() {
                         type="range"
                         min="5"
                         max="60"
-                        value={options.blur_sigma}
+                        value={effectsState.blurSigma ?? 20}
                         onChange={(e) =>
-                          setOptions({
-                            ...options,
-                            blur_sigma: parseFloat(e.target.value),
+                          setEffectsState({
+                            ...effectsState,
+                            blurSigma: parseFloat(e.target.value),
                           })
                         }
                       />
-                      <span className="slider-value">{options.blur_sigma}</span>
+                      <span className="slider-value">{effectsState.blurSigma}</span>
                     </div>
                   )}
                 </div>
@@ -1082,9 +1042,9 @@ export default function App() {
                   <div className="toggle-row">
                     <span className="toggle-label">Remove Audio</span>
                     <Toggle
-                      checked={options.remove_audio}
+                      checked={effectsState.removeAudio ?? false}
                       onChange={(v) =>
-                        setOptions({ ...options, remove_audio: v })
+                        setEffectsState({ ...effectsState, removeAudio: v })
                       }
                     />
                   </div>
@@ -1098,9 +1058,9 @@ export default function App() {
                       <span className="label-desc">via Whisper AI</span>
                     </span>
                     <Toggle
-                      checked={options.generate_subtitles ?? false}
+                      checked={effectsState.generateSubtitles ?? false}
                       onChange={(v) =>
-                        setOptions({ ...options, generate_subtitles: v })
+                        setEffectsState({ ...effectsState, generateSubtitles: v })
                       }
                     />
                   </div>
@@ -1110,14 +1070,14 @@ export default function App() {
                       <span className="label-desc">hard-coded to video</span>
                     </span>
                     <Toggle
-                      checked={options.burn_subtitles ?? false}
+                      checked={effectsState.burnSubtitles ?? false}
                       onChange={(v) =>
-                        setOptions({
-                          ...options,
-                          burn_subtitles: v,
-                          generate_subtitles: v
+                        setEffectsState({
+                          ...effectsState,
+                          burnSubtitles: v,
+                          generateSubtitles: v
                             ? true
-                            : (options.generate_subtitles ?? false),
+                            : (effectsState.generateSubtitles ?? false),
                         })
                       }
                     />
@@ -1130,24 +1090,24 @@ export default function App() {
                     <button
                       className="btn btn-sm"
                       onClick={() =>
-                        setOptions({
-                          ...options,
+                        setEffectsState({
+                          ...effectsState,
                           transform: {
                             rotate:
-                              ((options.transform?.rotate ?? 0) + 90) % 360,
-                            flip_h: options.transform?.flip_h ?? false,
-                            flip_v: options.transform?.flip_v ?? false,
+                              ((effectsState.transform?.rotate ?? 0) + 90) % 360,
+                            flip_h: effectsState.transform?.flip_h ?? false,
+                            flip_v: effectsState.transform?.flip_v ?? false,
                           },
                         })
                       }
                     >
-                      ↻ Rotate {options.transform?.rotate || 0}°
+                      ↻ Rotate {effectsState.transform?.rotate || 0}°
                     </button>
                     <button
                       className="btn btn-sm"
                       onClick={() =>
-                        setOptions({
-                          ...options,
+                        setEffectsState({
+                          ...effectsState,
                           transform: {
                             rotate: 0,
                             flip_h: false,
@@ -1162,12 +1122,12 @@ export default function App() {
                       <input
                         type="checkbox"
                         id="flip-h"
-                        checked={options.transform?.flip_h || false}
+                        checked={effectsState.transform?.flip_h || false}
                         onChange={(e) =>
-                          setOptions({
-                            ...options,
+                          setEffectsState({
+                            ...effectsState,
                             transform: {
-                              ...options.transform!,
+                              ...(effectsState.transform ?? DEFAULT_EFFECTS.transform!),
                               flip_h: e.target.checked,
                             },
                           })
@@ -1181,12 +1141,12 @@ export default function App() {
                       <input
                         type="checkbox"
                         id="flip-v"
-                        checked={options.transform?.flip_v || false}
+                        checked={effectsState.transform?.flip_v || false}
                         onChange={(e) =>
-                          setOptions({
-                            ...options,
+                          setEffectsState({
+                            ...effectsState,
                             transform: {
-                              ...options.transform!,
+                              ...(effectsState.transform ?? DEFAULT_EFFECTS.transform!),
                               flip_v: e.target.checked,
                             },
                           })
@@ -1204,13 +1164,13 @@ export default function App() {
                   <div className="toggle-row mb-2">
                     <span className="toggle-label">Enable Logo</span>
                     <Toggle
-                      checked={options.logo?.enabled || false}
+                      checked={effectsState.logo?.enabled || false}
                       onChange={(v) =>
-                        setOptions({
-                          ...options,
+                        setEffectsState({
+                          ...effectsState,
                           logo: v
                             ? {
-                                ...(options.logo || {
+                                ...(effectsState.logo || {
                                   position: "bottom_right",
                                   opacity: 1,
                                   gap: 20,
@@ -1224,17 +1184,17 @@ export default function App() {
                       }
                     />
                   </div>
-                  {options.logo?.enabled && (
+                  {effectsState.logo?.enabled && (
                     <>
                       <div
                         className="logo-upload-zone mt-2"
                         onClick={handlePickLogo}
                       >
-                        {options.logo?.path &&
-                        isImagePath(options.logo.path) ? (
+                        {effectsState.logo?.path &&
+                        isImagePath(effectsState.logo.path) ? (
                           <img
                             className="logo-preview-thumb"
-                            src={convertFileSrc(options.logo.path)}
+                            src={convertFileSrc(effectsState.logo.path)}
                             alt="logo preview"
                           />
                         ) : (
@@ -1242,11 +1202,11 @@ export default function App() {
                         )}
                         <div className="logo-upload-text">
                           <strong>
-                            {options.logo?.path
-                              ? basename(options.logo.path)
+                            {effectsState.logo?.path
+                              ? basename(effectsState.logo.path)
                               : "No logo"}
                           </strong>
-                          {options.logo?.path
+                          {effectsState.logo?.path
                             ? "Click to change"
                             : "Click to upload PNG/SVG"}
                         </div>
@@ -1255,12 +1215,12 @@ export default function App() {
                         <label className="input-label">Position</label>
                         <select
                           className="input select"
-                          value={options.logo?.position || "bottom_right"}
+                          value={effectsState.logo?.position || "bottom_right"}
                           onChange={(e) =>
-                            setOptions({
-                              ...options,
+                            setEffectsState({
+                              ...effectsState,
                               logo: {
-                                ...options.logo!,
+                                ...effectsState.logo!,
                                 position: e.target.value as LogoPosition,
                               },
                             })
@@ -1280,19 +1240,19 @@ export default function App() {
                           min="0"
                           max="1"
                           step="0.05"
-                          value={options.logo?.opacity || 1}
+                          value={effectsState.logo?.opacity || 1}
                           onChange={(e) =>
-                            setOptions({
-                              ...options,
+                            setEffectsState({
+                              ...effectsState,
                               logo: {
-                                ...options.logo!,
+                                ...effectsState.logo!,
                                 opacity: parseFloat(e.target.value),
                               },
                             })
                           }
                         />
                         <span className="slider-value">
-                          {Math.round((options.logo?.opacity || 1) * 100)}%
+                          {Math.round((effectsState.logo?.opacity || 1) * 100)}%
                         </span>
                       </div>
                       <div className="slider-row mt-2">
@@ -1303,19 +1263,19 @@ export default function App() {
                           min="0.05"
                           max="0.5"
                           step="0.01"
-                          value={options.logo?.scale || 0.15}
+                          value={effectsState.logo?.scale || 0.15}
                           onChange={(e) =>
-                            setOptions({
-                              ...options,
+                            setEffectsState({
+                              ...effectsState,
                               logo: {
-                                ...options.logo!,
+                                ...effectsState.logo!,
                                 scale: parseFloat(e.target.value),
                               },
                             })
                           }
                         />
                         <span className="slider-value">
-                          {Math.round((options.logo?.scale || 0.15) * 100)}%
+                          {Math.round((effectsState.logo?.scale || 0.15) * 100)}%
                         </span>
                       </div>
                     </>
@@ -1327,9 +1287,9 @@ export default function App() {
                   <div className="toggle-row">
                     <span className="toggle-label">Skip Existing</span>
                     <Toggle
-                      checked={options.skip_existing}
+                      checked={effectsState.skipExisting ?? false}
                       onChange={(v) =>
-                        setOptions({ ...options, skip_existing: v })
+                        setEffectsState({ ...effectsState, skipExisting: v })
                       }
                     />
                   </div>
@@ -1337,11 +1297,11 @@ export default function App() {
                     <label className="input-label">Output Format</label>
                     <select
                       className="input select"
-                      value={options.output_format}
+                      value={effectsState.outputFormat ?? "mp4"}
                       onChange={(e) =>
-                        setOptions({
-                          ...options,
-                          output_format: e.target.value as OutputFormat,
+                        setEffectsState({
+                          ...effectsState,
+                          outputFormat: e.target.value as OutputFormat,
                         })
                       }
                     >
@@ -1363,11 +1323,11 @@ export default function App() {
                     <label className="input-label">Quality Preset</label>
                     <select
                       className="input select"
-                      value={options.quality}
+                      value={encodingState.qualityPreset}
                       onChange={(e) =>
-                        setOptions({
-                          ...options,
-                          quality: e.target.value as QualityPreset,
+                        setEncodingState({
+                          ...encodingState,
+                          qualityPreset: e.target.value,
                         })
                       }
                     >
@@ -1383,16 +1343,11 @@ export default function App() {
                         override quality preset
                       </span>
                     </span>
-                    <Toggle
-                      checked={options.custom_encoding_enabled}
-                      onChange={(v) =>
-                        setOptions({ ...options, custom_encoding_enabled: v })
-                      }
-                    />
+                    <Toggle checked={true} onChange={() => {}} />
                   </div>
                 </div>
 
-                {options.custom_encoding_enabled && (
+                {true && (
                   <div className="settings-group">
                     <div className="settings-group-title">Advanced</div>
                     <div className="slider-row">
@@ -1402,23 +1357,26 @@ export default function App() {
                         type="range"
                         min="0"
                         max="51"
-                        value={options.crf ?? 18}
+                        value={encodingState.crf}
                         onChange={(e) =>
-                          setOptions({
-                            ...options,
+                          setEncodingState({
+                            ...encodingState,
                             crf: Number.parseInt(e.target.value, 10),
                           })
                         }
                       />
-                      <span className="slider-value">{options.crf ?? 18}</span>
+                      <span className="slider-value">{encodingState.crf}</span>
                     </div>
                     <div className="mt-4">
                       <label className="input-label">Speed Preset</label>
                       <select
                         className="input select"
-                        value={options.preset || "medium"}
+                        value={encodingState.speedPreset}
                         onChange={(e) =>
-                          setOptions({ ...options, preset: e.target.value })
+                          setEncodingState({
+                            ...encodingState,
+                            speedPreset: e.target.value,
+                          })
                         }
                       >
                         <option value="slow">Slow (best quality)</option>
@@ -1431,11 +1389,11 @@ export default function App() {
                       <label className="input-label">Audio Bitrate</label>
                       <select
                         className="input select"
-                        value={options.audio_bitrate || "128k"}
+                        value={encodingState.audioBitrate}
                         onChange={(e) =>
-                          setOptions({
-                            ...options,
-                            audio_bitrate: e.target.value,
+                          setEncodingState({
+                            ...encodingState,
+                            audioBitrate: e.target.value,
                           })
                         }
                       >
@@ -1486,11 +1444,11 @@ export default function App() {
                   </div>
                 </div>
 
-                {presets.filter((p) => !p.is_builtin).length > 0 && (
+                {presets.filter((p) => !p.isBuiltin).length > 0 && (
                   <div className="mt-8">
                     <div className="settings-group-title">Custom Presets</div>
                     {presets
-                      .filter((p) => !p.is_builtin)
+                      .filter((p) => !p.isBuiltin)
                       .map((p) => (
                         <div
                           key={p.id}
@@ -1571,13 +1529,13 @@ export default function App() {
                     height: previewDims.height,
                   }}
                 >
-                  {options.blur_background ? (
+                  {effectsState.blur ? (
                     <>
                       <video
                         src={convertFileSrc(previewInputFile)}
                         className="preview-blur-bg"
                         style={{
-                          filter: `blur(${options.blur_sigma}px)`,
+                          filter: `blur(${effectsState.blurSigma ?? 20}px)`,
                           ...previewTransform,
                         }}
                         autoPlay
@@ -1688,7 +1646,7 @@ export default function App() {
                     onClick={() => {
                       // FIX: Only load this preset's settings into the UI panel
                       // when SELECTING it. When DESELECTING, handleTogglePreset
-                      // handles the state cleanup (reverts to fallback or defaults).
+                      // handles the state cleanup for the active configuration.
                       // This prevents a deselected preset from persisting its
                       // settings as the "active" configuration.
                       if (!isSelected) {
@@ -1714,13 +1672,13 @@ export default function App() {
                     <div className="preset-card-ratio">
                       {RATIO_DISPLAY[p.ratio]}
                     </div>
-                    {p.platform_config && (
+                    {p.platformConfig && (
                       <div className="preset-card-desc text-xs text-muted">
-                        {p.platform_config.target_width}×
-                        {p.platform_config.target_height}
+                        {p.platformConfig.targetWidth}×
+                        {p.platformConfig.targetHeight}
                       </div>
                     )}
-                    {!p.is_builtin && (
+                    {!p.isBuiltin && (
                       <span className="preset-card-badge">custom</span>
                     )}
                   </div>

@@ -1,29 +1,30 @@
 use aspectshift_htov_lib::video::{
     ffmpeg::VideoProgress,
     types::{
-        AspectRatio, BatchJobSettings, BatchProgress, ConversionOptions, ConversionRequestDTO,
-        FileProgress, FileReadiness, JobStatus, JobTarget, LogoOptions, LogoPosition,
-        OrientationInfo, OutputFormat, PartialConversionOptions, PlatformConfig, QualityPreset,
-        StructuredError, VideoPreset, VideoTransform,
+        AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
+        EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions, LogoPosition,
+        OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset, StructuredError,
+        VideoEffectsSettings, VideoPreset, VideoTransform,
     },
 };
-use std::path::PathBuf;
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let types = TypeCollection::default()
         .register::<AspectRatio>()
-        .register::<QualityPreset>()
+        .register::<EncodingProfile>()
         .register::<OutputFormat>()
         .register::<LogoPosition>()
         .register::<PlatformConfig>()
         .register::<VideoTransform>()
         .register::<LogoOptions>()
-        .register::<ConversionOptions>()
-        .register::<PartialConversionOptions>()
+        .register::<VideoEffectsSettings>()
+        .register::<OutputJob>()
+        .register::<AspectRatioTarget>()
+        .register::<PlatformPreset>()
         .register::<ConversionRequestDTO>()
-        .register::<JobTarget>()
         .register::<BatchJobSettings>()
         .register::<JobStatus>()
         .register::<FileProgress>()

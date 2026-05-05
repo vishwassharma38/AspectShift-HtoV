@@ -1,43 +1,121 @@
 use crate::video::types::{
-    AspectRatio, ConversionOptions, OutputFormat, PlatformConfig, VideoError,
+    EncodingProfile, OutputFormat, OutputJob, PlatformConfig, PlatformPreset, VideoEffectsSettings,
+    VideoError,
 };
 
-#[derive(Debug, Clone)]
-pub struct FinalConfig {
-    pub ratio: AspectRatio,
-    pub options: ConversionOptions,
-    pub platform_config: Option<PlatformConfig>,
+const SPEED_PRESETS: &[&str] = &[
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+];
+
+const QUALITY_PRESETS: &[&str] = &["draft", "standard", "high"];
+
+pub fn validate_encoding_profile(encoding: &EncodingProfile) -> Result<(), VideoError> {
+    if encoding.crf > 51 {
+        return Err(VideoError::InvalidInput(
+            "encoding.crf must be between 0 and 51".to_string(),
+        ));
+    }
+
+    let quality = encoding.quality_preset.trim().to_ascii_lowercase();
+    if !QUALITY_PRESETS.contains(&quality.as_str()) {
+        return Err(VideoError::InvalidInput(format!(
+            "Unsupported qualityPreset: {}",
+            encoding.quality_preset
+        )));
+    }
+
+    let speed = encoding.speed_preset.trim().to_ascii_lowercase();
+    if !SPEED_PRESETS.contains(&speed.as_str()) {
+        return Err(VideoError::InvalidInput(format!(
+            "Unsupported speedPreset: {}",
+            encoding.speed_preset
+        )));
+    }
+
+    validate_audio_bitrate(&encoding.audio_bitrate)
 }
 
-#[derive(Debug, Clone)]
-pub struct ValidatedConfig {
-    pub ratio: AspectRatio,
-    pub options: ConversionOptions,
-    pub platform_config: Option<PlatformConfig>,
+pub fn validate_preset(preset: &PlatformPreset) -> Result<(), VideoError> {
+    if preset.id.trim().is_empty() {
+        return Err(VideoError::InvalidInput(
+            "preset.id cannot be empty".to_string(),
+        ));
+    }
+    if preset.name.trim().is_empty() {
+        return Err(VideoError::InvalidInput(
+            "preset.name cannot be empty".to_string(),
+        ));
+    }
+    validate_encoding_profile(&preset.encoding)?;
+    validate_platform_ratio(&preset.ratio, preset.platform_config.as_ref())
 }
 
-pub fn validate_config(config: FinalConfig) -> Result<ValidatedConfig, VideoError> {
-    validate_platform_ratio(&config.ratio, config.platform_config.as_ref())?;
-    validate_blur_sigma(config.options.blur_sigma)?;
-    validate_custom_encoding(
-        config.options.custom_encoding_enabled,
-        config.options.crf,
-        config.options.preset.as_deref(),
-    )?;
-    validate_audio_bitrate(config.options.remove_audio, config.options.audio_bitrate.as_deref())?;
-    validate_transform(config.options.transform.as_ref())?;
-    validate_logo(config.options.logo.as_ref())?;
-    validate_format_compatibility(&config.options.output_format, config.options.remove_audio)?;
+pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError> {
+    if let Some(blur_sigma) = effects.blur_sigma {
+        if !blur_sigma.is_finite() || !(0.0..=100.0).contains(&blur_sigma) {
+            return Err(VideoError::InvalidInput(
+                "effects.blurSigma must be between 0.0 and 100.0".to_string(),
+            ));
+        }
+    }
 
-    Ok(ValidatedConfig {
-        ratio: config.ratio,
-        options: config.options,
-        platform_config: config.platform_config,
-    })
+    if let Some(transform) = &effects.transform {
+        if !matches!(transform.rotate, 0 | 90 | 180 | 270) {
+            return Err(VideoError::InvalidInput(
+                "effects.transform.rotate must be one of: 0, 90, 180, 270".to_string(),
+            ));
+        }
+    }
+
+    if let Some(logo) = &effects.logo {
+        if !(0.0..=1.0).contains(&logo.opacity) {
+            return Err(VideoError::InvalidInput(
+                "effects.logo.opacity must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if !(0.01..=1.0).contains(&logo.scale) {
+            return Err(VideoError::InvalidInput(
+                "effects.logo.scale must be between 0.01 and 1.0".to_string(),
+            ));
+        }
+        if logo.gap > 2000 {
+            return Err(VideoError::InvalidInput(
+                "effects.logo.gap is too large".to_string(),
+            ));
+        }
+    }
+
+    match effects.output_format.as_ref().unwrap_or(&OutputFormat::Mp4) {
+        OutputFormat::Mp4 | OutputFormat::Mov | OutputFormat::Webm => Ok(()),
+    }
+}
+
+pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
+    if job.id.trim().is_empty() {
+        return Err(VideoError::InvalidInput(
+            "job.id cannot be empty".to_string(),
+        ));
+    }
+    if job.source_preset_id.trim().is_empty() {
+        return Err(VideoError::InvalidInput(
+            "job.sourcePresetId cannot be empty".to_string(),
+        ));
+    }
+    validate_encoding_profile(&job.encoding)?;
+    validate_effects(&job.effects)?;
+    validate_platform_ratio(&job.ratio, job.platform_config.as_ref())
 }
 
 fn validate_platform_ratio(
-    ratio: &AspectRatio,
+    ratio: &crate::video::types::AspectRatio,
     platform_config: Option<&PlatformConfig>,
 ) -> Result<(), VideoError> {
     if let Some(config) = platform_config {
@@ -63,110 +141,18 @@ fn validate_platform_ratio(
     Ok(())
 }
 
-fn validate_blur_sigma(blur_sigma: f32) -> Result<(), VideoError> {
-    if !blur_sigma.is_finite() || !(0.0..=100.0).contains(&blur_sigma) {
-        return Err(VideoError::InvalidInput(
-            "blur_sigma must be between 0.0 and 100.0".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_custom_encoding(
-    custom_encoding_enabled: bool,
-    crf: Option<u8>,
-    preset: Option<&str>,
-) -> Result<(), VideoError> {
-    if custom_encoding_enabled {
-        if let Some(v) = crf {
-            if v > 51 {
-                return Err(VideoError::InvalidInput(
-                    "crf must be between 0 and 51".to_string(),
-                ));
-            }
-        }
-
-        if let Some(p) = preset {
-            let normalized = p.trim().to_ascii_lowercase();
-            let allowed = [
-                "ultrafast",
-                "superfast",
-                "veryfast",
-                "faster",
-                "fast",
-                "medium",
-                "slow",
-                "slower",
-                "veryslow",
-            ];
-            if !allowed.contains(&normalized.as_str()) {
-                return Err(VideoError::InvalidInput(format!(
-                    "Unsupported encoding preset: {}",
-                    p
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_audio_bitrate(remove_audio: bool, bitrate: Option<&str>) -> Result<(), VideoError> {
-    if remove_audio {
-        return Ok(());
-    }
-
-    let raw = bitrate.unwrap_or("128k").trim().to_ascii_lowercase();
+fn validate_audio_bitrate(bitrate: &str) -> Result<(), VideoError> {
+    let raw = bitrate.trim().to_ascii_lowercase();
     let numeric = raw.strip_suffix('k').ok_or_else(|| {
-        VideoError::InvalidInput("audio_bitrate must use 'k' suffix, e.g. 128k".to_string())
+        VideoError::InvalidInput("encoding.audioBitrate must use 'k' suffix, e.g. 128k".to_string())
     })?;
     let parsed = numeric.parse::<u32>().map_err(|_| {
-        VideoError::InvalidInput("audio_bitrate must be numeric, e.g. 128k".to_string())
+        VideoError::InvalidInput("encoding.audioBitrate must be numeric, e.g. 128k".to_string())
     })?;
     if !(32..=512).contains(&parsed) {
         return Err(VideoError::InvalidInput(
-            "audio_bitrate must be between 32k and 512k".to_string(),
+            "encoding.audioBitrate must be between 32k and 512k".to_string(),
         ));
     }
     Ok(())
-}
-
-fn validate_transform(transform: Option<&crate::video::types::VideoTransform>) -> Result<(), VideoError> {
-    if let Some(t) = transform {
-        if !matches!(t.rotate, 0 | 90 | 180 | 270) {
-            return Err(VideoError::InvalidInput(
-                "transform.rotate must be one of: 0, 90, 180, 270".to_string(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_logo(logo: Option<&crate::video::types::LogoOptions>) -> Result<(), VideoError> {
-    if let Some(l) = logo {
-        if !(0.0..=1.0).contains(&l.opacity) {
-            return Err(VideoError::InvalidInput(
-                "logo.opacity must be between 0.0 and 1.0".to_string(),
-            ));
-        }
-        if !(0.01..=1.0).contains(&l.scale) {
-            return Err(VideoError::InvalidInput(
-                "logo.scale must be between 0.01 and 1.0".to_string(),
-            ));
-        }
-        if l.gap > 2000 {
-            return Err(VideoError::InvalidInput(
-                "logo.gap is too large".to_string(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_format_compatibility(
-    output_format: &OutputFormat,
-    _remove_audio: bool,
-) -> Result<(), VideoError> {
-    match output_format {
-        OutputFormat::Mp4 | OutputFormat::Mov | OutputFormat::Webm => Ok(()),
-    }
 }

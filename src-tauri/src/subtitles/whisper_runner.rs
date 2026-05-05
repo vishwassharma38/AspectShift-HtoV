@@ -8,12 +8,10 @@ use crate::subtitles::SubtitleSegment;
 use crate::video::types::VideoError;
 
 fn get_whisper_binary_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
-    let _sidecar = app.shell()
-        .sidecar("whisper")
-        .map_err(|e| {
-            error!("Failed to create whisper sidecar: {}", e);
-            VideoError::WhisperNotFound
-        })?;
+    let _sidecar = app.shell().sidecar("whisper").map_err(|e| {
+        error!("Failed to create whisper sidecar: {}", e);
+        VideoError::WhisperNotFound
+    })?;
     Ok(PathBuf::from("whisper"))
 }
 
@@ -22,12 +20,15 @@ fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
     let path = app
         .path()
         .resolve("resources/ggml-small.en.bin", BaseDirectory::Resource)
-        .or_else(|_| app.path().resolve("ggml-small.en.bin", BaseDirectory::Resource))
+        .or_else(|_| {
+            app.path()
+                .resolve("ggml-small.en.bin", BaseDirectory::Resource)
+        })
         .map_err(|e| {
             error!("Failed to resolve whisper model path: {}", e);
             VideoError::WhisperModelNotFound
         })?;
-    
+
     info!("Checking whisper model at: {}", path.display());
     if path.exists() {
         Ok(path)
@@ -118,19 +119,26 @@ async fn extract_audio_for_whisper(
     let wav_filename = format!("whisper_audio_{}.wav", Uuid::new_v4());
     let wav_path = temp_dir.join(wav_filename);
 
-    info!("Extracting audio for Whisper transcription: {}", video_path.display());
+    info!(
+        "Extracting audio for Whisper transcription: {}",
+        video_path.display()
+    );
     info!("Temporary audio destination: {}", wav_path.display());
 
-    let output = app.shell()
+    let output = app
+        .shell()
         .sidecar("ffmpeg")
         .map_err(|_| VideoError::FfmpegNotFound)?
         .args(&[
             "-y",
             "-i",
             &video_path.to_string_lossy(),
-            "-ar", "16000",
-            "-ac", "1",
-            "-c:a", "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
             &wav_path.to_string_lossy(),
         ])
         .output()
@@ -166,7 +174,8 @@ pub async fn transcribe_to_segments(
     );
 
     // 2. Execute Whisper with the extracted WAV file
-    let whisper_result = app.shell()
+    let whisper_result = app
+        .shell()
         .sidecar("whisper")
         .map_err(|_| VideoError::WhisperNotFound)?
         .arg("-m")

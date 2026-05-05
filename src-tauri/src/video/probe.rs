@@ -1,48 +1,70 @@
-use std::path::Path;
-use serde_json::Value;
-use tauri::AppHandle;
-use crate::video::types::{OrientationInfo, VideoError, FileReadiness};
-use crate::video::ffmpeg::run_ffprobe;
 use crate::os_utils::OsUtils;
+use crate::video::ffmpeg::run_ffprobe;
+use crate::video::types::{FileReadiness, OrientationInfo, VideoError};
+use serde_json::Value;
+use std::path::Path;
+use tauri::AppHandle;
 
-pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<OrientationInfo, VideoError> {
+pub async fn detect_orientation(
+    app: &AppHandle,
+    file_path: &str,
+) -> Result<OrientationInfo, VideoError> {
     let input_path = Path::new(file_path);
     // Validate early so ffprobe is never invoked for folders/unsupported paths.
     if !input_path.exists() {
         return Err(VideoError::FileNotFound(file_path.to_string()));
     }
     if !input_path.is_file() {
-        return Err(VideoError::InvalidInput(format!("Input path is not a file: {}", file_path)));
+        return Err(VideoError::InvalidInput(format!(
+            "Input path is not a file: {}",
+            file_path
+        )));
     }
     if !OsUtils::has_supported_video_extension(input_path) {
-        return Err(VideoError::InvalidInput(format!("Unsupported video file type: {}", file_path)));
+        return Err(VideoError::InvalidInput(format!(
+            "Unsupported video file type: {}",
+            file_path
+        )));
     }
 
-    let output = run_ffprobe(app, &[
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_streams",
-        file_path
-    ]).await?;
+    let output = run_ffprobe(
+        app,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            file_path,
+        ],
+    )
+    .await?;
 
     let json: Value = serde_json::from_str(&output.stdout)?;
-    
-    let streams = json["streams"].as_array().ok_or_else(|| VideoError::InvalidInput("No streams found".into()))?;
-    let video_stream = streams.iter().find(|s| s["codec_type"] == "video")
+
+    let streams = json["streams"]
+        .as_array()
+        .ok_or_else(|| VideoError::InvalidInput("No streams found".into()))?;
+    let video_stream = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
         .ok_or_else(|| VideoError::InvalidInput("No video stream found".into()))?;
 
     let width = video_stream["width"].as_u64().unwrap_or(0) as u32;
     let height = video_stream["height"].as_u64().unwrap_or(0) as u32;
-    
+
     let mut rotation = 0;
-    
+
     // Rotation can be in tags or side_data
     if let Some(tags) = video_stream["tags"].as_object() {
         if let Some(rotate) = tags.get("rotate") {
-            rotation = rotate.as_str().and_then(|r| r.parse::<i32>().ok()).unwrap_or(0);
+            rotation = rotate
+                .as_str()
+                .and_then(|r| r.parse::<i32>().ok())
+                .unwrap_or(0);
         }
     }
-    
+
     if rotation == 0 {
         if let Some(side_data) = video_stream["side_data_list"].as_array() {
             for data in side_data {
@@ -54,11 +76,12 @@ pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<Orie
         }
     }
 
-    let (display_width, display_height) = if rotation == 90 || rotation == 270 || rotation == -90 || rotation == -270 {
-        (height, width)
-    } else {
-        (width, height)
-    };
+    let (display_width, display_height) =
+        if rotation == 90 || rotation == 270 || rotation == -90 || rotation == -270 {
+            (height, width)
+        } else {
+            (width, height)
+        };
 
     let is_vertical = display_width < display_height;
 
@@ -74,21 +97,27 @@ pub async fn detect_orientation(app: &AppHandle, file_path: &str) -> Result<Orie
 
 pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadiness, VideoError> {
     let path_buf = Path::new(path);
-    
+
     // Validate early so ffprobe is never invoked for folders/unsupported paths.
     if !path_buf.exists() {
         return Err(VideoError::FileNotFound(path.to_string()));
     }
     if !path_buf.is_file() {
-        return Err(VideoError::InvalidInput(format!("Input path is not a file: {}", path)));
+        return Err(VideoError::InvalidInput(format!(
+            "Input path is not a file: {}",
+            path
+        )));
     }
     if !OsUtils::has_supported_video_extension(path_buf) {
-        return Err(VideoError::InvalidInput(format!("Unsupported video file type: {}", path)));
+        return Err(VideoError::InvalidInput(format!(
+            "Unsupported video file type: {}",
+            path
+        )));
     }
 
     let metadata = std::fs::metadata(path)?;
     let file_size_bytes = metadata.len();
-    
+
     // Check if readable by attempting to open it
     let is_readable = std::fs::File::open(path).is_ok();
 
@@ -96,12 +125,19 @@ pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadine
     let is_locked = OsUtils::is_file_locked(path_buf);
 
     // Get duration via ffprobe
-    let output = run_ffprobe(app, &[
-        "-v", "quiet",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path
-    ]).await?;
+    let output = run_ffprobe(
+        app,
+        &[
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+    )
+    .await?;
 
     let estimated_duration_secs = output.stdout.trim().parse::<f64>().unwrap_or(0.0);
 

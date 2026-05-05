@@ -1,6 +1,6 @@
 use crate::os_utils::OsUtils;
 use crate::subtitles::positioning::get_subtitle_style;
-use crate::video::preset_adapter::FfmpegPreset;
+use crate::video::preset_adapter::RenderPlan;
 
 fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str, subtitle_style: &str) -> String {
     let escaped_path = OsUtils::escape_filter_path(subtitle_path);
@@ -50,12 +50,12 @@ pub fn build_ffmpeg_args(
     input: &str,
     output: &str,
     filter_graph: &str,
-    preset: &FfmpegPreset,
+    plan: &RenderPlan,
     subtitle_path: Option<&str>,
 ) -> Vec<String> {
-    let final_filter_graph = if preset.burn_subtitles {
+    let final_filter_graph = if plan.job.effects.burn_subtitles_enabled() {
         if let Some(path) = subtitle_path {
-            let style = get_subtitle_style(preset.ratio.get_ratio());
+            let style = get_subtitle_style(plan.job.ratio.get_ratio());
             with_subtitle_filter(filter_graph, path, &style)
         } else {
             filter_graph.to_string()
@@ -66,7 +66,7 @@ pub fn build_ffmpeg_args(
 
     let mut args = vec!["-i".to_string(), input.to_string()];
 
-    if let Some(logo) = &preset.logo {
+    if let Some(logo) = &plan.logo {
         args.push("-i".to_string());
         args.push(logo.path.clone());
     }
@@ -86,22 +86,21 @@ pub fn build_ffmpeg_args(
         args.push("[v]".to_string());
 
         // Map audio if present
-        if !preset.remove_audio {
+        if !plan.job.effects.remove_audio_enabled() {
             args.push("-map".to_string());
             args.push("0:a?".to_string());
         }
     }
 
-    if preset.remove_audio {
+    if plan.job.effects.remove_audio_enabled() {
         args.push("-an".to_string());
     } else {
-        let bitrate = preset.audio_bitrate.as_deref().unwrap_or("128k");
         let audio_codec = get_audio_codec(output);
         args.extend_from_slice(&[
             "-c:a".to_string(),
             audio_codec.to_string(),
             "-b:a".to_string(),
-            bitrate.to_string(),
+            plan.job.encoding.audio_bitrate.clone(),
         ]);
     }
 
@@ -109,28 +108,14 @@ pub fn build_ffmpeg_args(
     args.push("-c:v".to_string());
     args.push(codec.to_string());
 
-    // Use custom quality settings if explicitly enabled and supported by codec
-    if preset.custom_encoding_enabled {
-        if let Some(crf) = preset.crf {
-            if supports_crf(codec) {
-                let clamped_crf = crf.clamp(0, 51);
-                args.push("-crf".to_string());
-                args.push(clamped_crf.to_string());
-            }
-        }
+    if supports_crf(codec) {
+        args.push("-crf".to_string());
+        args.push(plan.job.encoding.crf.to_string());
+    }
 
-        if let Some(speed_preset) = &preset.preset {
-            if supports_preset(codec) {
-                args.push("-preset".to_string());
-                args.push(speed_preset.clone());
-            }
-        }
-    } else {
-        // Fallback to legacy quality preset system
-        let quality_args = preset.quality.get_ffmpeg_args();
-        for arg in quality_args {
-            args.push(arg.to_string());
-        }
+    if supports_preset(codec) {
+        args.push("-preset".to_string());
+        args.push(plan.job.encoding.speed_preset.clone());
     }
 
     // Web optimization: fast start for MP4

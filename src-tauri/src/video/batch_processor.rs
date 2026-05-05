@@ -1,9 +1,10 @@
-use crate::video::convert::{convert_to_ratio, prepare_subtitles};
-use crate::video::presets::resolve_conversion_config;
-use crate::video::queue::{BatchManager, BatchState};
-use crate::video::types::{BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus, AspectRatio};
-use crate::video::validation::{validate_config, FinalConfig};
 use crate::os_utils::OsUtils;
+use crate::video::convert::{prepare_subtitles, render_single};
+use crate::video::queue::{BatchManager, BatchState};
+use crate::video::targets::normalize_targets;
+use crate::video::types::{
+    BatchJob, BatchJobSettings, BatchProgress, FileProgress, JobStatus,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,7 +22,11 @@ fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
         let metadata = match std::fs::metadata(&entry_path) {
             Ok(metadata) => metadata,
             Err(e) => {
-                warn!("Skipping input entry (metadata failed): {} ({})", entry_path.display(), e);
+                warn!(
+                    "Skipping input entry (metadata failed): {} ({})",
+                    entry_path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -31,7 +36,11 @@ fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
             let read_dir = match std::fs::read_dir(&entry_path) {
                 Ok(read_dir) => read_dir,
                 Err(e) => {
-                    warn!("Skipping input folder (read_dir failed): {} ({})", entry_path.display(), e);
+                    warn!(
+                        "Skipping input folder (read_dir failed): {} ({})",
+                        entry_path.display(),
+                        e
+                    );
                     continue;
                 }
             };
@@ -40,7 +49,11 @@ fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
                 let child = match child {
                     Ok(child) => child,
                     Err(e) => {
-                        warn!("Skipping folder entry (invalid dir entry): {} ({})", entry_path.display(), e);
+                        warn!(
+                            "Skipping folder entry (invalid dir entry): {} ({})",
+                            entry_path.display(),
+                            e
+                        );
                         continue;
                     }
                 };
@@ -49,7 +62,11 @@ fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
                 let child_metadata = match child.metadata() {
                     Ok(metadata) => metadata,
                     Err(e) => {
-                        warn!("Skipping entry (metadata failed): {} ({})", child_path.display(), e);
+                        warn!(
+                            "Skipping entry (metadata failed): {} ({})",
+                            child_path.display(),
+                            e
+                        );
                         continue;
                     }
                 };
@@ -110,74 +127,28 @@ pub async fn start_batch(
     }
 
     let mut jobs = Vec::new();
-    let resolved_targets = settings
-        .targets
-        .iter()
-        .map(|t| -> Result<crate::video::presets::ResolvedConversionConfig, String> {
-            let resolved = resolve_conversion_config(&app, t).map_err(|e| e.to_string())?;
-            let crate::video::presets::ResolvedConversionConfig {
-                ratio,
-                options,
-                platform_config,
-                preset_name,
-            } = resolved;
-            let validated = validate_config(FinalConfig {
-                ratio,
-                options,
-                platform_config,
-            })
-            .map_err(|e| e.to_string())?;
-
-            Ok(crate::video::presets::ResolvedConversionConfig {
-                ratio: validated.ratio,
-                options: validated.options,
-                platform_config: validated.platform_config,
-                preset_name,
-            })
-        })
-        .collect::<Result<Vec<crate::video::presets::ResolvedConversionConfig>, String>>()?;
-
-    // Determine unique ratios and presets to decide on subfolder names
-    let unique_ratios: HashSet<AspectRatio> = resolved_targets.iter().map(|t| t.ratio.clone()).collect();
-    let unique_presets: HashSet<String> = resolved_targets.iter()
-        .filter_map(|t| t.preset_name.clone())
-        .collect();
-
-    let is_preset_mode = !unique_presets.is_empty();
-    let use_subfolders = settings.enable_subfolders && (
-        (is_preset_mode && unique_presets.len() > 1) || 
-        (!is_preset_mode && unique_ratios.len() > 1)
-    );
+    let targets = normalize_targets(&settings.targets)?;
 
     for file in valid_input_files {
-        for target in &resolved_targets {
-            // Determine subfolder if enabled
-            let subfolder = if use_subfolders {
-                if is_preset_mode {
-                    target.preset_name.as_ref().map(|name| {
-                        let base_name = name.split('(').next().unwrap_or(name).trim();
-                        OsUtils::sanitize_path_component(base_name)
-                    })
-                } else {
-                    Some(target.ratio.get_tag().replace(':', "x"))
-                }
-            } else {
-                None
-            };
-
+        for target in &targets {
             // Use the shared path resolver
-            let output_path = crate::video::paths::resolve_output_path(crate::video::paths::OutputPathResolver {
-                input_path: Path::new(&file),
-                output_dir: &root_output_dir,
-                ratio: &target.ratio,
-                options: &target.options,
-                preset_name: target.preset_name.as_deref(),
-                subfolder,
-            });
+            let output_path =
+                crate::video::paths::resolve_output_path(
+                    &root_output_dir,
+                    Path::new(&file),
+                    target,
+                    settings.enable_subfolders,
+                );
 
             // B. Ensure directory exists BEFORE skip logic
-            if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap()) {
-                return Err(format!("Failed to create output directory {}: {}", output_path.parent().unwrap().display(), e));
+            if let Some(parent) = output_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return Err(format!(
+                        "Failed to create output directory {}: {}",
+                        parent.display(),
+                        e
+                    ));
+                }
             }
 
             let output_path_str = output_path.to_string_lossy().to_string();
@@ -186,17 +157,13 @@ pub async fn start_batch(
             info!("Resolved output path: {}", output_path_str);
 
             // Skip logic
-            if target.options.skip_existing && output_path.exists() {
+            if target.job.effects.skip_existing_enabled() && output_path.exists() {
                 continue;
             }
 
             jobs.push(BatchJob {
-                id: uuid::Uuid::new_v4().to_string(),
                 input_path: file.clone(),
-                target_ratio: target.ratio.clone(),
-                target_preset: target.options.preset.clone(),
-                active_effects: target.options.clone(),
-                platform_config: target.platform_config.clone(),
+                output: target.job.clone(),
                 resolved_output_path: output_path_str,
             });
         }
@@ -241,7 +208,7 @@ pub async fn start_batch(
                     break;
                 }
                 let job = s.queue.pop_front();
-                s.current_job_id = job.as_ref().map(|j| j.id.clone());
+                s.current_job_id = job.as_ref().map(|j| j.output.id.clone());
                 (job, s.cancellation_token.clone())
             };
 
@@ -258,9 +225,9 @@ pub async fn start_batch(
             // Emit batch progress
             emit_batch_progress(&app_clone, &state_clone).await;
 
-            let job_id = job.id.clone();
+            let job_id = job.output.id.clone();
             let input_path = job.input_path.clone();
-            let ratio = job.target_ratio.clone();
+            let ratio = job.output.ratio.clone();
 
             // Emit Processing status
             let _ = app_clone.emit(
@@ -274,9 +241,9 @@ pub async fn start_batch(
                 },
             );
 
-            let should_prepare_subtitles =
-                job.active_effects.generate_subtitles || job.active_effects.burn_subtitles;
-            
+            let should_prepare_subtitles = job.output.effects.generate_subtitles_enabled()
+                || job.output.effects.burn_subtitles_enabled();
+
             let mut prepared_subtitle = None;
             if should_prepare_subtitles {
                 if let Some(path) = subtitle_cache.get(&input_path) {
@@ -305,7 +272,7 @@ pub async fn start_batch(
                                     status: JobStatus::Failed(failure),
                                 },
                             );
-                            
+
                             {
                                 let mut s = state_clone.lock().await;
                                 s.failed_jobs += 1;
@@ -323,18 +290,21 @@ pub async fn start_batch(
                 break;
             }
 
-            let result = convert_to_ratio(
+            let result = render_single(
                 &app_clone,
                 job_id.clone(),
                 input_path.clone(),
-                Path::new(&job.resolved_output_path).parent().unwrap().to_string_lossy().to_string(),
-                ratio.clone(),
-                job.active_effects.clone(),
-                job.platform_config.clone(),
+                Path::new(&job.resolved_output_path)
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                job.output.clone(),
                 prepared_subtitle,
                 Some(token.clone()),
                 Some(job.resolved_output_path.clone()),
-            ).await;
+            )
+            .await;
 
             match result {
                 Ok(_) => {

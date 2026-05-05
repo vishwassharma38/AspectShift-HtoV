@@ -1,8 +1,8 @@
+use crate::video::types::BatchJob;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use crate::video::types::BatchJob;
 
 pub struct BatchState {
     pub queue: VecDeque<BatchJob>,

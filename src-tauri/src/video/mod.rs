@@ -9,10 +9,11 @@ pub mod preset_adapter;
 pub mod presets;
 pub mod probe;
 pub mod queue;
+pub mod targets;
 pub mod types;
 pub mod validation;
 
-pub use presets::{delete_preset, get_all_presets, save_preset};
+pub use presets::{delete_preset, get_all_aspect_ratio_targets, get_all_presets, save_preset};
 use tauri::{AppHandle, State};
 use types::{
     BatchJobSettings, BatchProgress, ConversionRequest, ConversionRequestDTO, ConversionResult,
@@ -37,19 +38,15 @@ pub async fn convert_to_ratio(
     let ConversionRequest {
         input,
         output_dir,
-        ratio,
-        options,
-        platform_config,
+        job,
     } = request.into();
 
-    convert::convert_to_ratio(
+    convert::render_single(
         &app,
         "single-job".to_string(),
         input,
         output_dir,
-        ratio,
-        options,
-        platform_config,
+        job,
         None,
         None,
         None,
@@ -72,32 +69,41 @@ pub async fn start_batch(
 
 #[tauri::command]
 pub async fn cancel_batch(manager: State<'_, queue::BatchManager>) -> Result<(), StructuredError> {
-    batch_processor::cancel_batch(manager).await.map_err(|e| StructuredError {
-        code: "operation_failed".to_string(),
-        message: e,
-    })
+    batch_processor::cancel_batch(manager)
+        .await
+        .map_err(|e| StructuredError {
+            code: "operation_failed".to_string(),
+            message: e,
+        })
 }
 
 #[tauri::command]
 pub async fn get_batch_status(
     manager: State<'_, queue::BatchManager>,
 ) -> Result<BatchProgress, StructuredError> {
-    batch_processor::get_batch_status(manager).await.map_err(|e| StructuredError {
-        code: "operation_failed".to_string(),
-        message: e,
-    })
+    batch_processor::get_batch_status(manager)
+        .await
+        .map_err(|e| StructuredError {
+            code: "operation_failed".to_string(),
+            message: e,
+        })
 }
 
 #[tauri::command]
 pub async fn clear_batch(manager: State<'_, queue::BatchManager>) -> Result<(), StructuredError> {
-    batch_processor::clear_batch(manager).await.map_err(|e| StructuredError {
-        code: "operation_failed".to_string(),
-        message: e,
-    })
+    batch_processor::clear_batch(manager)
+        .await
+        .map_err(|e| StructuredError {
+            code: "operation_failed".to_string(),
+            message: e,
+        })
 }
 
 #[tauri::command]
-pub async fn check_file_ready(app: AppHandle, path: String) -> Result<FileReadiness, StructuredError> {
+pub async fn check_file_ready(
+    app: AppHandle,
+    path: String,
+) -> Result<FileReadiness, StructuredError> {
     probe::check_file_ready(&app, &path)
         .await
         .map_err(StructuredError::from)
@@ -106,8 +112,10 @@ pub async fn check_file_ready(app: AppHandle, path: String) -> Result<FileReadin
 #[tauri::command]
 pub async fn open_output_folder(app: AppHandle, path: String) -> Result<(), StructuredError> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_path(&path, None::<&str>).map_err(|e| StructuredError {
-        code: "operation_failed".to_string(),
-        message: e.to_string(),
-    })
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| StructuredError {
+            code: "operation_failed".to_string(),
+            message: e.to_string(),
+        })
 }

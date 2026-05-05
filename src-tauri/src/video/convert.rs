@@ -4,12 +4,12 @@ use crate::video::ffmpeg::run_ffmpeg;
 use crate::video::ffmpeg_args_builder::build_ffmpeg_args;
 use crate::video::filter_builder::{build_filter_graph, validate_preset_consistency};
 use crate::video::lock::ProcessingLock;
-use crate::video::preset_adapter::legacy_to_preset;
+use crate::video::preset_adapter::create_render_plan;
 use crate::video::probe::{check_file_ready, detect_orientation};
 use crate::video::types::{
-    AspectRatio, ConversionOptions, ConversionResult, PlatformConfig, VideoError,
+    ConversionResult, OutputJob, OutputTarget, VideoError,
 };
-use crate::video::validation::{validate_config, FinalConfig};
+use crate::video::validation::validate_output_job;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tracing::info;
@@ -34,82 +34,116 @@ pub async fn prepare_subtitles(
 pub fn get_deterministic_output_path(
     input: &str,
     output_dir: &str,
-    ratio: &AspectRatio,
-    options: &ConversionOptions,
+    target: &OutputTarget,
+    use_subfolders: bool,
 ) -> String {
-    crate::video::paths::resolve_output_path(crate::video::paths::OutputPathResolver {
-        input_path: Path::new(input),
-        output_dir: Path::new(output_dir),
-        ratio,
-        options,
-        preset_name: None,
-        subfolder: None,
-    })
-    .to_string_lossy()
-    .to_string()
+    crate::video::paths::resolve_output_path(Path::new(output_dir), Path::new(input), target, use_subfolders)
+        .to_string_lossy()
+        .to_string()
+}
+
+// LEGACY COMPATIBILITY ONLY:
+// This reproduces pre-refactor label derivation.
+// It must NEVER be used for new output paths.
+// Exists solely for migration fallback checks.
+// TODO: Remove once all users have migrated to the new normalization system.
+// This function reproduces legacy label derivation and must not diverge from
+// normalize_targets. Any changes to target classification logic must be
+// reflected here until this is deleted.
+fn derive_legacy_label(job: &OutputJob) -> String {
+    if let Some(ref name) = job.preset_name {
+        name.clone()
+    } else {
+        job.ratio.get_tag().to_string()
+    }
+}
+
+// LEGACY: This function exists ONLY for backward compatibility checks.
+// DO NOT use for new output generation.
+// DO NOT expose outside this module.
+fn legacy_sanitize_label(label: &str) -> String {
+    label
+        .replace(':', "x")
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "")
+        .to_lowercase()
 }
 
 pub fn check_already_processed(
     input: &str,
     output_dir: &str,
-    ratio: &AspectRatio,
-    options: &ConversionOptions,
+    target: &OutputTarget,
+    use_subfolders: bool,
     resolved_output_path: Option<&str>,
 ) -> bool {
-    if !options.skip_existing {
+    if !target.job.effects.skip_existing_enabled() {
         return false;
     }
 
-    let output_path = if let Some(path) = resolved_output_path {
-        path.to_string()
-    } else {
-        get_deterministic_output_path(input, output_dir, ratio, options)
-    };
+    if let Some(path) = resolved_output_path {
+        if Path::new(path).exists() {
+            return true;
+        }
+    }
 
-    Path::new(&output_path).exists()
+    // Check new sanitized path
+    let output_path = get_deterministic_output_path(input, output_dir, target, use_subfolders);
+    if Path::new(&output_path).exists() {
+        return true;
+    }
+
+    // Backward compatibility: Check legacy sanitized path
+    if use_subfolders {
+        let mut legacy_target = target.clone();
+        let raw_label = derive_legacy_label(&target.job);
+        legacy_target.label = legacy_sanitize_label(&raw_label);
+        let legacy_path = get_deterministic_output_path(input, output_dir, &legacy_target, true);
+        if Path::new(&legacy_path).exists() {
+            return true;
+        }
+    }
+
+    false
 }
 
-pub async fn convert_to_ratio(
+pub async fn render_single(
     app: &AppHandle,
     job_id: String,
     input: String,
     output_dir: String,
-    ratio: AspectRatio,
-    options: ConversionOptions,
-    platform_config: Option<PlatformConfig>,
+    job: OutputJob,
     subtitle_path: Option<PathBuf>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     resolved_output_path: Option<String>,
 ) -> Result<ConversionResult, VideoError> {
-    let validated = validate_config(FinalConfig {
-        ratio: ratio.clone(),
-        options: options.clone(),
-        platform_config: platform_config.clone(),
-    })?;
+    validate_output_job(&job)?;
 
-    let ratio = validated.ratio;
-    let options = validated.options;
-    let platform_config = validated.platform_config;
+    // Normalize target ONCE at entry point
+    let target = crate::video::targets::normalize_targets(&[job])
+        .map_err(|e| VideoError::InvalidInput(e))?
+        .pop()
+        .unwrap();
 
     // 1. Determine final output path
     let output_path = if let Some(path) = resolved_output_path {
         path
     } else {
-        get_deterministic_output_path(&input, &output_dir, &ratio, &options)
+        get_deterministic_output_path(&input, &output_dir, &target, false)
     };
 
     let output_path_buf = PathBuf::from(&output_path);
-    let final_output_dir = output_path_buf.parent().ok_or_else(|| VideoError::InvalidInput("Invalid output path".to_string()))?;
+    let final_output_dir = output_path_buf
+        .parent()
+        .ok_or_else(|| VideoError::InvalidInput("Invalid output path".to_string()))?;
 
     // 2. File Readiness Check
     let readiness = check_file_ready(app, &input).await?;
     let duration = readiness.estimated_duration_secs;
 
-    // 3. Already Processed Check
-    if options.skip_existing && Path::new(&output_path).exists() {
+    // 3. Already Processed Check (including migration-aware logic)
+    if check_already_processed(&input, &output_dir, &target, false, Some(&output_path)) {
         return Ok(ConversionResult {
             output_path,
-            ratio,
+            ratio: target.job.ratio,
             skipped: true,
         });
     }
@@ -118,7 +152,8 @@ pub async fn convert_to_ratio(
     let _lock = ProcessingLock::acquire(app, &input)?;
 
     // 5. Subtitle Preparation
-    let should_generate_subtitles = options.generate_subtitles || options.burn_subtitles;
+    let should_generate_subtitles =
+        target.job.effects.generate_subtitles_enabled() || target.job.effects.burn_subtitles_enabled();
     let subtitle_path = if should_generate_subtitles {
         if let Some(existing) = subtitle_path {
             Some(existing)
@@ -147,46 +182,20 @@ pub async fn convert_to_ratio(
         .unwrap_or("video");
 
     let file_label = stem.to_string();
-    let ratio_label = ratio.get_tag().to_string();
+    let ratio_label = target.job.ratio.get_tag().to_string();
 
-    // 8. Logo Detection
-    let logo_path = if let Some(logo_opts) = &options.logo {
-        if logo_opts.enabled {
-            if let Some(path) = &logo_opts.path {
-                if Path::new(path).exists() {
-                    Some(path.clone())
-                } else {
-                    None
-                }
-            } else {
-                let input_path = Path::new(&input);
-                let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
-                let logo_file = parent.join("logo.png");
-                if logo_file.exists() {
-                    Some(logo_file.to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // 9. Bridge to Preset System
-    let preset = legacy_to_preset(ratio.clone(), options.clone(), logo_path, platform_config);
+    // 9. Resolved render plan
+    let plan = create_render_plan(target.job.clone(), &input)?;
 
     // 10. Consistency Validation
-    validate_preset_consistency(&preset).map_err(|e| VideoError::InvalidInput(e))?;
+    validate_preset_consistency(&plan).map_err(VideoError::InvalidInput)?;
 
     // 11. Passthrough Check
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
-    let target_ratio = ratio.get_ratio();
+    let target_ratio = target.job.ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
 
-    let has_transform = if let Some(t) = &options.transform {
+    let has_transform = if let Some(t) = &target.job.effects.transform {
         t.rotate != 0 || t.flip_h || t.flip_v
     } else {
         false
@@ -194,10 +203,10 @@ pub async fn convert_to_ratio(
 
     if orientation.is_vertical
         && ratio_diff < 0.02
-        && !options.blur_background
-        && !options.remove_audio
-        && !options.burn_subtitles
-        && preset.logo.is_none()
+        && !target.job.effects.blur_enabled()
+        && !target.job.effects.remove_audio_enabled()
+        && !target.job.effects.burn_subtitles_enabled()
+        && plan.logo.is_none()
         && !has_transform
     {
         let args = ["-i", &input, "-c", "copy", "-y", &output_path];
@@ -209,20 +218,21 @@ pub async fn convert_to_ratio(
             &ratio_label,
             duration,
             cancel_token,
-        ).await?;
+        )
+        .await?;
         return Ok(ConversionResult {
             output_path,
-            ratio,
+            ratio: target.job.ratio,
             skipped: false,
         });
     }
 
     // 12. Filter Construction
-    let filter = build_filter_graph(&preset, &orientation);
+    let filter = build_filter_graph(&plan, &orientation);
 
     // 13. FFmpeg Command Building
     let subtitle_str = subtitle_path.as_ref().and_then(|p| p.to_str());
-    let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &preset, subtitle_str);
+    let args_vec = build_ffmpeg_args(&input, &output_path, &filter, &plan, subtitle_str);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
     run_ffmpeg(
@@ -233,11 +243,12 @@ pub async fn convert_to_ratio(
         &ratio_label,
         duration,
         cancel_token,
-    ).await?;
+    )
+    .await?;
 
     Ok(ConversionResult {
         output_path,
-        ratio,
+        ratio: target.job.ratio,
         skipped: false,
     })
 }

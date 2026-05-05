@@ -1,6 +1,6 @@
+pub mod os_utils;
 pub mod subtitles;
 pub mod video;
-pub mod os_utils;
 
 use tauri::Manager;
 
@@ -32,6 +32,7 @@ pub fn run() {
             video::clear_batch,
             video::open_output_folder,
             video::presets::get_all_presets,
+            video::presets::get_all_aspect_ratio_targets,
             video::presets::save_preset,
             video::presets::delete_preset
         ])

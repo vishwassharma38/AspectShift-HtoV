@@ -1,7 +1,7 @@
+use crate::video::types::VideoError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
-use crate::video::types::VideoError;
 
 pub struct ProcessingLock {
     lock_file: PathBuf,
@@ -69,4 +69,3 @@ pub fn cleanup_stale_locks(app: &AppHandle) -> Result<(), VideoError> {
     }
     Ok(())
 }
-
