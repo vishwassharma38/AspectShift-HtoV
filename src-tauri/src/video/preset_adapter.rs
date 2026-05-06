@@ -1,13 +1,15 @@
 use crate::video::types::{
-    LogoPreset, OutputJob, PlatformConfig, VideoEffectsSettings, VideoError,
+    AspectRatio, EncodingProfile, LogoPreset, PlatformConfig, VideoEffectsSettings, VideoError,
 };
 use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct RenderPlan {
-    pub job: OutputJob,
-    pub logo: Option<LogoPreset>,
+    pub ratio: AspectRatio,
+    pub encoding: EncodingProfile,
+    pub effects: VideoEffectsSettings,
     pub platform_config: Option<PlatformConfig>,
+    pub logo: Option<LogoPreset>,
 }
 
 fn resolve_logo(effects: &VideoEffectsSettings, input: &str) -> Option<LogoPreset> {
@@ -17,12 +19,6 @@ fn resolve_logo(effects: &VideoEffectsSettings, input: &str) -> Option<LogoPrese
     }
 
     let path = if let Some(path) = &logo_opts.path {
-        if Path::new(path).exists() {
-            Some(path.clone())
-        } else {
-            None
-        }
-    } else if let Some(path) = &effects.watermark {
         if Path::new(path).exists() {
             Some(path.clone())
         } else {
@@ -48,11 +44,13 @@ fn resolve_logo(effects: &VideoEffectsSettings, input: &str) -> Option<LogoPrese
     })
 }
 
-pub fn create_render_plan(job: OutputJob, input: &str) -> Result<RenderPlan, VideoError> {
-    let logo = resolve_logo(&job.effects, input);
+pub fn create_render_plan_resolved(job: &crate::video::types::ResolvedJob) -> Result<RenderPlan, VideoError> {
+    let logo = resolve_logo(&job.effects, &job.input_path);
     Ok(RenderPlan {
+        ratio: job.ratio.clone(),
+        encoding: job.encoding.clone(),
+        effects: job.effects.clone(),
         platform_config: job.platform_config.clone(),
-        job,
         logo,
     })
 }

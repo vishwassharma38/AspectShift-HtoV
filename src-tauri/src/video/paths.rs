@@ -71,7 +71,6 @@ mod tests {
         fn default() -> Self {
             Self {
                 blur: None,
-                watermark: None,
                 overlays: None,
                 subtitles: None,
                 color_filter: None,

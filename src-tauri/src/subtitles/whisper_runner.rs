@@ -19,10 +19,10 @@ fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
     // Try resolving as a resource in the "resources" subdirectory
     let path = app
         .path()
-        .resolve("resources/ggml-small.en.bin", BaseDirectory::Resource)
+        .resolve("resources/ggml-medium.en.bin", BaseDirectory::Resource)
         .or_else(|_| {
             app.path()
-                .resolve("ggml-small.en.bin", BaseDirectory::Resource)
+                .resolve("ggml-medium.en.bin", BaseDirectory::Resource)
         })
         .map_err(|e| {
             error!("Failed to resolve whisper model path: {}", e);
@@ -36,7 +36,7 @@ fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
         // Fallback: try relative to executable directory in dev mode
         let exe_path = std::env::current_exe().unwrap_or_default();
         if let Some(exe_dir) = exe_path.parent() {
-            let fallback = exe_dir.join("resources/ggml-small.en.bin");
+            let fallback = exe_dir.join("resources/ggml-medium.en.bin");
             info!("Trying fallback whisper model at: {}", fallback.display());
             if fallback.exists() {
                 return Ok(fallback);

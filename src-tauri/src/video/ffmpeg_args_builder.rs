@@ -53,9 +53,9 @@ pub fn build_ffmpeg_args(
     plan: &RenderPlan,
     subtitle_path: Option<&str>,
 ) -> Vec<String> {
-    let final_filter_graph = if plan.job.effects.burn_subtitles_enabled() {
+    let final_filter_graph = if plan.effects.burn_subtitles_enabled() {
         if let Some(path) = subtitle_path {
-            let style = get_subtitle_style(plan.job.ratio.get_ratio());
+            let style = get_subtitle_style(plan.ratio.get_ratio());
             with_subtitle_filter(filter_graph, path, &style)
         } else {
             filter_graph.to_string()
@@ -86,13 +86,13 @@ pub fn build_ffmpeg_args(
         args.push("[v]".to_string());
 
         // Map audio if present
-        if !plan.job.effects.remove_audio_enabled() {
+        if !plan.effects.remove_audio_enabled() {
             args.push("-map".to_string());
             args.push("0:a?".to_string());
         }
     }
 
-    if plan.job.effects.remove_audio_enabled() {
+    if plan.effects.remove_audio_enabled() {
         args.push("-an".to_string());
     } else {
         let audio_codec = get_audio_codec(output);
@@ -100,7 +100,7 @@ pub fn build_ffmpeg_args(
             "-c:a".to_string(),
             audio_codec.to_string(),
             "-b:a".to_string(),
-            plan.job.encoding.audio_bitrate.clone(),
+            plan.encoding.audio_bitrate.clone(),
         ]);
     }
 
@@ -110,12 +110,12 @@ pub fn build_ffmpeg_args(
 
     if supports_crf(codec) {
         args.push("-crf".to_string());
-        args.push(plan.job.encoding.crf.to_string());
+        args.push(plan.encoding.crf.to_string());
     }
 
     if supports_preset(codec) {
         args.push("-preset".to_string());
-        args.push(plan.job.encoding.speed_preset.clone());
+        args.push(plan.encoding.speed_preset.clone());
     }
 
     // Web optimization: fast start for MP4

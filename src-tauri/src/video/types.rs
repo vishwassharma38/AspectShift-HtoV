@@ -78,12 +78,18 @@ pub struct PlatformPreset {
     pub description: Option<String>,
     pub ratio: AspectRatio,
     pub encoding: EncodingProfile,
-    pub logo_path: Option<String>,
     pub platform_config: Option<PlatformConfig>,
     pub is_builtin: bool,
 }
 
-pub type VideoPreset = PlatformPreset;
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomPreset {
+    pub id: String,
+    pub name: String,
+    pub ratio: AspectRatio,
+    pub encoding: EncodingProfile,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Type)]
 pub struct VideoTransform {
@@ -151,7 +157,6 @@ impl OutputFormat {
 #[serde(rename_all = "camelCase")]
 pub struct VideoEffectsSettings {
     pub blur: Option<bool>,
-    pub watermark: Option<String>,
     pub overlays: Option<Vec<String>>,
     pub subtitles: Option<String>,
     pub color_filter: Option<String>,
@@ -196,6 +201,13 @@ impl VideoEffectsSettings {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum VideoPresetDTO {
+    Platform(PlatformPreset),
+    Custom(CustomPreset),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputJob {
     pub id: String,
@@ -207,7 +219,19 @@ pub struct OutputJob {
     pub preset_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
+#[derive(Debug, Clone)]
+pub struct ResolvedJob {
+    pub id: String,
+    pub input_path: String,
+    pub output_path: String,
+    pub ratio: AspectRatio,
+    pub encoding: EncodingProfile,
+    pub effects: VideoEffectsSettings,
+    pub platform_config: Option<PlatformConfig>,
+    pub subtitle_path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum TargetType {
     AspectRatio,

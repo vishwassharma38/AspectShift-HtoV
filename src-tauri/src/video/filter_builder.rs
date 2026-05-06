@@ -39,7 +39,7 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
         (orientation.display_width, orientation.display_height);
     let mut transform_filter = String::new();
 
-    if let Some(transform) = &plan.job.effects.transform {
+    if let Some(transform) = &plan.effects.transform {
         let (filters, swaps) = get_transform_filters(transform);
         transform_filter = filters;
         if swaps {
@@ -55,7 +55,7 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
         } else {
             // Preset has platform config but DOES NOT enforce dimensions
             // Fall back to dynamic scaling based on ratio
-            let target_ratio = plan.job.ratio.get_ratio();
+            let target_ratio = plan.ratio.get_ratio();
             let h = effective_display_height.min(max_height);
             let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
             let w = (rounded_h as f32 * target_ratio) as u32;
@@ -63,7 +63,7 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
         }
     } else {
         // No platform config, use dynamic scaling based on target ratio
-        let target_ratio = plan.job.ratio.get_ratio();
+        let target_ratio = plan.ratio.get_ratio();
         let h = effective_display_height.min(max_height);
         let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
         let w = (rounded_h as f32 * target_ratio) as u32;
@@ -77,18 +77,18 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
     let mut filter_stages = Vec::new();
     let has_transform = !transform_filter.is_empty();
     let uses_complex_graph =
-        plan.job.effects.blur_enabled() || plan.logo.is_some() || has_transform;
+        plan.effects.blur_enabled() || plan.logo.is_some() || has_transform;
 
     // Stage 1: Base Video Processing (Transform/Crop/Blur)
     if has_transform {
-        if plan.job.effects.blur_enabled() {
+        if plan.effects.blur_enabled() {
             filter_stages.push(format!(
                 "[0:v]{transform}[v_transformed];\
                  [v_transformed]split[bg][fg];\
                  [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
                  [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
                  [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
-                transform = transform_filter, tw = tw, th = th, sigma = plan.job.effects.blur_sigma_value()
+                transform = transform_filter, tw = tw, th = th, sigma = plan.effects.blur_sigma_value()
             ));
         } else if uses_complex_graph {
             filter_stages.push(format!(
@@ -102,13 +102,13 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
                 transform = transform_filter, tw = tw, th = th
             ));
         }
-    } else if plan.job.effects.blur_enabled() {
+    } else if plan.effects.blur_enabled() {
         filter_stages.push(format!(
             "[0:v]split[bg][fg];\
              [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
              [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
              [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
-            tw = tw, th = th, sigma = plan.job.effects.blur_sigma_value()
+            tw = tw, th = th, sigma = plan.effects.blur_sigma_value()
         ));
     } else if uses_complex_graph {
         filter_stages.push(format!(
@@ -161,13 +161,13 @@ pub fn validate_preset_consistency(plan: &RenderPlan) -> Result<(), String> {
     if let Some(config) = &plan.platform_config {
         if config.enforce_dimensions {
             let config_ratio = config.target_width as f32 / config.target_height as f32;
-            let preset_ratio = plan.job.ratio.get_ratio();
+            let preset_ratio = plan.ratio.get_ratio();
 
             // Allow for small floating point differences
             if (config_ratio - preset_ratio).abs() > 0.01 {
                 return Err(format!(
                     "Ratio conflict: Preset ratio is {}, but platform requires {}x{} ({:.2})",
-                    plan.job.ratio.get_tag(),
+                    plan.ratio.get_tag(),
                     config.target_width,
                     config.target_height,
                     config_ratio

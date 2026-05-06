@@ -2,9 +2,9 @@ use aspectshift_htov_lib::video::{
     ffmpeg::VideoProgress,
     types::{
         AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
-        EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions, LogoPosition,
-        OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset, StructuredError,
-        VideoEffectsSettings, VideoPreset, VideoTransform,
+        CustomPreset, EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions,
+        LogoPosition, OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
+        StructuredError, VideoEffectsSettings, VideoTransform,
     },
 };
 use specta::TypeCollection;
@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<OutputJob>()
         .register::<AspectRatioTarget>()
         .register::<PlatformPreset>()
+        .register::<CustomPreset>()
         .register::<ConversionRequestDTO>()
         .register::<BatchJobSettings>()
         .register::<JobStatus>()
@@ -31,7 +32,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<BatchProgress>()
         .register::<OrientationInfo>()
         .register::<FileReadiness>()
-        .register::<VideoPreset>()
         .register::<StructuredError>()
         .register::<VideoProgress>();
 

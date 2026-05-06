@@ -100,17 +100,31 @@ pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError
 
 pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
     if job.id.trim().is_empty() {
-        return Err(VideoError::InvalidInput(
-            "job.id cannot be empty".to_string(),
-        ));
+        return Err(VideoError::InvalidInput("job.id cannot be empty".to_string()));
     }
+    
+    // Traceability Requirement: Ensure source_preset_id is provided
     if job.source_preset_id.trim().is_empty() {
-        return Err(VideoError::InvalidInput(
-            "job.sourcePresetId cannot be empty".to_string(),
-        ));
+         return Err(VideoError::InvalidInput("job.sourcePresetId must be specified for traceability".to_string()));
     }
+    
+    // 1. Encoding Bounds
     validate_encoding_profile(&job.encoding)?;
+    
+    // 2. Video Effects Bounds
     validate_effects(&job.effects)?;
+    
+    // 3. Platform / Resolution Safety
+    if let Some(config) = &job.platform_config {
+        if config.target_width == 0 || config.target_height == 0 {
+            return Err(VideoError::InvalidInput("Platform dimensions must be non-zero".to_string()));
+        }
+        if config.target_width > 16384 || config.target_height > 16384 {
+             return Err(VideoError::InvalidInput("Platform dimensions exceed maximum resolution".to_string()));
+        }
+    }
+    
+    // 4. Aspect Ratio Consistency
     validate_platform_ratio(&job.ratio, job.platform_config.as_ref())
 }
 

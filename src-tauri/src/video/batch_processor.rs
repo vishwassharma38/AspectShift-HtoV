@@ -241,6 +241,7 @@ pub async fn start_batch(
                 },
             );
 
+            // RESOLUTION PHASE: Combine Spec + Input into ResolvedJob
             let should_prepare_subtitles = job.output.effects.generate_subtitles_enabled()
                 || job.output.effects.burn_subtitles_enabled();
 
@@ -249,7 +250,6 @@ pub async fn start_batch(
                 if let Some(path) = subtitle_cache.get(&input_path) {
                     prepared_subtitle = Some(path.clone());
                 } else {
-                    // Get output dir from resolved path
                     let output_dir = Path::new(&job.resolved_output_path)
                         .parent()
                         .map(|p| p.to_string_lossy().to_string())
@@ -284,25 +284,28 @@ pub async fn start_batch(
                 }
             }
 
+            let resolved_job = crate::video::types::ResolvedJob {
+                id: job_id.clone(),
+                input_path: input_path.clone(),
+                output_path: job.resolved_output_path.clone(),
+                ratio: job.output.ratio.clone(),
+                encoding: job.output.encoding.clone(),
+                effects: job.output.effects.clone(),
+                platform_config: job.output.platform_config.clone(),
+                subtitle_path: prepared_subtitle,
+            };
+
             if token.is_cancelled() {
                 let mut s = state_clone.lock().await;
                 s.is_running = false;
                 break;
             }
 
+            // RENDER PHASE: Consume ResolvedJob
             let result = render_single(
                 &app_clone,
-                job_id.clone(),
-                input_path.clone(),
-                Path::new(&job.resolved_output_path)
-                    .parent()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string(),
-                job.output.clone(),
-                prepared_subtitle,
+                resolved_job,
                 Some(token.clone()),
-                Some(job.resolved_output_path.clone()),
             )
             .await;
 

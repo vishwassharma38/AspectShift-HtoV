@@ -18,14 +18,20 @@ import type {
   VideoProgress,
   VideoTransform,
   VideoEffectsSettings,
+  VideoPreset,
+  CustomPreset,
 } from "./types/backend";
 import "./App.css";
-type VideoPreset = PlatformPreset;
+
 interface PresetComparableState {
   ratio: AspectRatio;
   encoding: EncodingProfile;
 }
-type ModifiedPreset = Record<string, EncodingProfile>;
+interface ModifiedPreset {
+  basePresetId: string;
+  overriddenEncoding: EncodingProfile;
+  isDirty: true;
+}
 type Selection =
   | { type: "aspectRatio"; id: string }
   | { type: "platform"; id: string };
@@ -49,7 +55,6 @@ const DEFAULT_ENCODING: EncodingProfile = {
 
 const DEFAULT_EFFECTS: VideoEffectsSettings = {
   blur: false,
-  watermark: null,
   overlays: null,
   subtitles: null,
   colorFilter: null,
@@ -284,7 +289,9 @@ export default function App() {
   const [presets, setPresets] = useState<VideoPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
-  const [modifiedPresets, setModifiedPresets] = useState<ModifiedPreset>({});
+  const [modifiedPresets, setModifiedPresets] = useState<
+    Record<string, ModifiedPreset>
+  >({});
   // Kept for dirty-check display in the UI (against the most recently loaded preset)
   const [presetBaseValues, setPresetBaseValues] =
     useState<PresetComparableState | null>(null);
@@ -448,7 +455,7 @@ export default function App() {
     [currentValues, presetBaseValues],
   );
 
-  const isDirty = presetOverrideCount > 0;
+  const isDirty = !!modifiedPresets[selectedPresetId]?.isDirty;
 
   useEffect(() => {
     if (!selectedPresetId) return;
@@ -463,7 +470,11 @@ export default function App() {
     }
     setModifiedPresets((prev) => ({
       ...prev,
-      [selectedPresetId]: deepClone(encodingState),
+      [selectedPresetId]: {
+        basePresetId: selectedPresetId,
+        overriddenEncoding: deepClone(encodingState),
+        isDirty: true,
+      },
     }));
   }, [encodingState, presetOverrideCount, selectedPresetId]);
 
@@ -659,7 +670,7 @@ export default function App() {
     ratio: AspectRatio,
     encoding: EncodingProfile,
     presetName: string | null,
-    platformConfig: VideoPreset["platformConfig"],
+    platformConfig: PlatformConfig | null,
   ): OutputJob => ({
     id: generateId(),
     sourcePresetId,
@@ -678,13 +689,14 @@ export default function App() {
           throw new Error(`Unknown platform preset: ${selection.id}`);
         }
         const encoding =
-          modifiedPresets[preset.id] ?? deepClone(preset.encoding);
+          modifiedPresets[preset.id]?.overriddenEncoding ??
+          deepClone(preset.encoding);
         return createOutputJob(
           `platform:${preset.id}`,
           preset.ratio,
           encoding,
           preset.name,
-          preset.platformConfig,
+          preset.kind === "platform" ? preset.platformConfig : null,
         );
       }
 
@@ -703,15 +715,11 @@ export default function App() {
 
   const handleSavePreset = async () => {
     if (!newPresetName.trim()) return;
-    const p: VideoPreset = {
+    const p: CustomPreset = {
       id: Date.now().toString(),
       name: newPresetName,
-      description: "Custom preset",
       ratio: previewRatio,
       encoding: deepClone(encodingState),
-      logoPath: effectsState.logo?.enabled ? effectsState.logo.path : null,
-      platformConfig: selectedPreset?.platformConfig || null,
-      isBuiltin: false,
     };
     try {
       await invoke("save_preset", { preset: p });

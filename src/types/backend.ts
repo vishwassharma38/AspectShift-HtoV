@@ -27,6 +27,13 @@ export type ConversionRequestDTO = {
 	job: OutputJob,
 };
 
+export type CustomPreset = {
+	id: string,
+	name: string,
+	ratio: AspectRatio,
+	encoding: EncodingProfile,
+};
+
 export type EncodingProfile = {
 	crf: number,
 	qualityPreset: string,
@@ -96,7 +103,6 @@ export type PlatformPreset = {
 	description: string | null,
 	ratio: AspectRatio,
 	encoding: EncodingProfile,
-	logoPath: string | null,
 	platformConfig: PlatformConfig | null,
 	isBuiltin: boolean,
 };
@@ -108,7 +114,6 @@ export type StructuredError = {
 
 export type VideoEffectsSettings = {
 	blur: boolean | null,
-	watermark: string | null,
 	overlays: string[] | null,
 	subtitles: string | null,
 	colorFilter: string | null,

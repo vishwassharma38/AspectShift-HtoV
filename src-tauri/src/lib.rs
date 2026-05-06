@@ -31,7 +31,8 @@ pub fn run() {
             video::get_batch_status,
             video::clear_batch,
             video::open_output_folder,
-            video::presets::get_all_presets,
+            video::get_all_presets,
+            video::presets::get_builtin_platform_presets,
             video::presets::get_all_aspect_ratio_targets,
             video::presets::save_preset,
             video::presets::delete_preset

@@ -13,12 +13,28 @@ pub mod targets;
 pub mod types;
 pub mod validation;
 
-pub use presets::{delete_preset, get_all_aspect_ratio_targets, get_all_presets, save_preset};
+pub use presets::{
+    delete_preset, get_all_aspect_ratio_targets, get_builtin_platform_presets, save_preset,
+};
+
 use tauri::{AppHandle, State};
 use types::{
     BatchJobSettings, BatchProgress, ConversionRequest, ConversionRequestDTO, ConversionResult,
     FileReadiness, OrientationInfo, StructuredError, VideoError,
 };
+
+#[tauri::command]
+pub async fn get_all_presets(app: AppHandle) -> Result<Vec<types::VideoPresetDTO>, String> {
+    let mut presets = Vec::new();
+    for p in presets::get_builtin_presets() {
+        presets.push(types::VideoPresetDTO::Platform(p));
+    }
+    let custom = presets::load_custom_presets(&app).map_err(|e| e.to_string())?;
+    for c in custom {
+        presets.push(types::VideoPresetDTO::Custom(c));
+    }
+    Ok(presets)
+}
 
 #[tauri::command]
 pub async fn detect_orientation(
@@ -41,18 +57,35 @@ pub async fn convert_to_ratio(
         job,
     } = request.into();
 
-    convert::render_single(
-        &app,
-        "single-job".to_string(),
-        input,
-        output_dir,
-        job,
-        None,
-        None,
-        None,
+    // RESOLUTION: Resolve Spec + Input into ResolvedJob
+    let target = crate::video::targets::normalize_targets(&[job.clone()])
+        .map_err(|e| StructuredError::from(VideoError::InvalidInput(e)))?
+        .pop()
+        .unwrap();
+
+    let output_path = crate::video::paths::resolve_output_path(
+        std::path::Path::new(&output_dir),
+        std::path::Path::new(&input),
+        &target,
+        false,
     )
-    .await
-    .map_err(StructuredError::from)
+    .to_string_lossy()
+    .to_string();
+
+    let resolved_job = crate::video::types::ResolvedJob {
+        id: "single-job".to_string(),
+        input_path: input,
+        output_path,
+        ratio: job.ratio,
+        encoding: job.encoding,
+        effects: job.effects,
+        platform_config: job.platform_config,
+        subtitle_path: None,
+    };
+
+    convert::render_single(&app, resolved_job, None)
+        .await
+        .map_err(StructuredError::from)
 }
 
 #[tauri::command]
