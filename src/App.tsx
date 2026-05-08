@@ -6,32 +6,34 @@ import type {
   AspectRatio,
   AspectRatioTarget,
   BatchProgress,
+  CustomPreset,
   EncodingProfile,
   FileProgress,
   FileReadiness,
+  LogoOptions,
   LogoPosition,
   OrientationInfo,
+  OutputFormat,
   OutputJob,
+  PlatformPreset,
+  VideoEffectsSettings,
   VideoProgress,
   VideoTransform,
-  VideoEffectsSettings,
-  CustomPreset,
-  LogoOptions,
-  PlatformPreset,
 } from "./types/backend";
 import "./App.css";
 import { VideoCanvas } from "./components/VideoCanvas";
-import { PresetsPanel } from "./components/PresetsPanel";
+import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
 
-interface PresetComparableState {
-  ratio: AspectRatio;
-  encoding: EncodingProfile;
-}
-interface ModifiedPreset {
-  basePresetId: string;
-  overriddenEncoding: EncodingProfile;
-  isDirty: true;
-}
+// ── Types ─────────────────────────────────────────────────────
+
+/**
+ * The tagged-union shape that `get_all_presets` actually returns from Rust.
+ * Matches VideoPresetDTO in Rust: #[serde(tag = "kind", rename_all = "camelCase")]
+ */
+type VideoPresetDTO =
+  | ({ kind: "platform" } & PlatformPreset)
+  | ({ kind: "custom" } & CustomPreset);
+
 type SelectionItem =
   | { type: "aspectRatio"; id: AspectRatio }
   | { type: "platform"; id: string };
@@ -41,25 +43,13 @@ interface LogEntry {
   msg: string;
   type: "info" | "success" | "error" | "warn" | "accent";
 }
+
 interface BackendError {
   code?: string;
   message?: string;
 }
 
 // ── Constants ────────────────────────────────────────────────
-const EDITOR_UI_LABELS = {
-  effects: {
-    category: "Effects",
-    blur: "Blur Background",
-  },
-  encode: {
-    category: "Encoding",
-  },
-  presets: {
-    category: "Presets",
-  },
-} as const;
-
 const DEFAULT_ENCODING: EncodingProfile = {
   crf: 18,
   qualityPreset: "standard",
@@ -108,15 +98,29 @@ const RATIO_VALUE: Record<AspectRatio, number> = {
 
 export const PLATFORM_ICONS: Record<string, string> = {
   youtube: "▶",
-  youtube_shorts: "▲",
+  shorts: "▲",
   instagram: "◈",
-  instagram_reels: "◈",
+  reels: "◈",
   tiktok: "♪",
-  twitter_x: "✕",
+  twitter: "✕",
   reddit: "◉",
+  x: "✕",
 };
 
+const SPEED_PRESETS = [
+  "ultrafast",
+  "superfast",
+  "veryfast",
+  "faster",
+  "fast",
+  "medium",
+  "slow",
+  "slower",
+  "veryslow",
+] as const;
+
 // ── Helpers ──────────────────────────────────────────────────
+
 function formatTime(ts: Date) {
   return ts.toTimeString().slice(0, 8);
 }
@@ -187,15 +191,6 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
-function normalizeEncoding(encoding: EncodingProfile): EncodingProfile {
-  return {
-    crf: Number(encoding.crf),
-    qualityPreset: encoding.qualityPreset,
-    speedPreset: encoding.speedPreset,
-    audioBitrate: encoding.audioBitrate,
-  };
-}
-
 function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
   return {
     ...effects,
@@ -204,38 +199,82 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
   };
 }
 
-function buildCurrentState(
-  ratio: AspectRatio,
-  encoding: EncodingProfile,
-): PresetComparableState {
-  return {
-    ratio,
-    encoding: normalizeEncoding(encoding),
-  };
+/**
+ * Resolves JobStatus (which can be a string or {error: string}) to a stable
+ * string key safe for CSS class names and display logic.
+ */
+function resolveJobStatusKey(
+  status: FileProgress["status"],
+): "queued" | "pending" | "processing" | "completed" | "failed" | "cancelled" {
+  if (typeof status === "string") {
+    if (status === "queued") return "queued";
+    if (status === "pending") return "pending";
+    if (status === "processing") return "processing";
+    if (status === "completed") return "completed";
+    if (status === "cancelled") return "cancelled";
+  }
+  if (typeof status === "object" && status !== null && "error" in status) {
+    return "failed";
+  }
+  return "queued";
 }
 
-function getOverrideCount(
-  current: PresetComparableState,
-  defaults: PresetComparableState | null,
-): number {
-  if (!defaults) return 0;
-  const keys: (keyof EncodingProfile)[] = [
-    "crf",
-    "qualityPreset",
-    "speedPreset",
-    "audioBitrate",
-  ];
+function getJobStatusError(status: FileProgress["status"]): string | null {
+  if (typeof status === "object" && status !== null && "error" in status) {
+    return status.error;
+  }
+  return null;
+}
 
-  let diff = current.ratio === defaults.ratio ? 0 : 1;
-  for (const key of keys) {
-    if (
-      JSON.stringify(current.encoding[key]) !==
-      JSON.stringify(defaults.encoding[key])
-    ) {
-      diff += 1;
+/**
+ * Normalizes the VideoPresetDTO tagged union returned by get_all_presets.
+ * Produces a flat list of DisplayPreset items usable by the UI without
+ * knowledge of the internal union discriminant.
+ */
+function normalizeDTOsToDisplayPresets(dtos: VideoPresetDTO[]): {
+  platformPresets: PlatformPreset[];
+  customPresets: CustomPreset[];
+  displayPresets: DisplayPreset[];
+} {
+  const platformPresets: PlatformPreset[] = [];
+  const customPresets: CustomPreset[] = [];
+
+  for (const dto of dtos) {
+    if (dto.kind === "platform") {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { kind: _kind, ...preset } = dto;
+      platformPresets.push(preset as PlatformPreset);
+    } else if (dto.kind === "custom") {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { kind: _kind, ...preset } = dto;
+      customPresets.push(preset as CustomPreset);
     }
   }
-  return diff;
+
+  const displayPresets: DisplayPreset[] = [
+    ...platformPresets.map(
+      (p): DisplayPreset => ({
+        id: p.id,
+        name: p.name,
+        ratioLabel: RATIO_DISPLAY[p.ratio] ?? p.ratio,
+        isBuiltin: p.isBuiltin,
+        isCustom: false,
+        source: p,
+      }),
+    ),
+    ...customPresets.map(
+      (p): DisplayPreset => ({
+        id: p.id,
+        name: p.name,
+        ratioLabel: RATIO_DISPLAY[p.ratio] ?? p.ratio,
+        isBuiltin: false,
+        isCustom: true,
+        source: p,
+      }),
+    ),
+  ];
+
+  return { platformPresets, customPresets, displayPresets };
 }
 
 // ── Toggle Component ─────────────────────────────────────────
@@ -276,7 +315,7 @@ export default function App() {
   const [enableSubfolders, setEnableSubfolders] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // Selection & Ratios
+  // Selection
   const [selectionHistory, setSelectionHistory] = useState<SelectionItem[]>([]);
   const [selectedRatios, setSelectedRatios] = useState<AspectRatio[]>([]);
   const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
@@ -284,18 +323,16 @@ export default function App() {
     AspectRatioTarget[]
   >([]);
 
+  // Resolved preset stores — kept in sync with get_all_presets response
+  const [platformPresets, setPlatformPresets] = useState<PlatformPreset[]>([]);
+  const [customPresets, setCustomPresets] = useState<CustomPreset[]>([]);
+  const [displayPresets, setDisplayPresets] = useState<DisplayPreset[]>([]);
+
   // Settings State
   const [encodingState, setEncodingState] =
     useState<EncodingProfile>(DEFAULT_ENCODING);
   const [effectsState, setEffectsState] =
     useState<VideoEffectsSettings>(DEFAULT_EFFECTS);
-  const [presets, setPresets] = useState<PlatformPreset[]>([]);
-  const [selectedPresetId, setSelectedPresetId] = useState<string>("");
-  const [modifiedPresets, setModifiedPresets] = useState<
-    Record<string, ModifiedPreset>
-  >({});
-  const [presetBaseValues, setPresetBaseValues] =
-    useState<PresetComparableState | null>(null);
 
   // Custom preset builder
   const [newPresetName, setNewPresetName] = useState("");
@@ -322,11 +359,12 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
-  // ETA
-  const [batchStartTime, setBatchStartTime] = useState<number | null>(null);
+  // Guides overlay
+  const [showGuides, setShowGuides] = useState(true);
+  const [showSafeFrames, setShowSafeFrames] = useState(false);
 
-  // Derived Active State
-  const activeSelection = selectionHistory[selectionHistory.length - 1] || null;
+  // Derived: last active selection drives preview ratio
+  const activeSelection = selectionHistory[selectionHistory.length - 1] ?? null;
 
   const effectivePreviewRatio = useMemo(() => {
     if (!activeSelection) {
@@ -337,34 +375,21 @@ export default function App() {
     if (activeSelection.type === "aspectRatio") {
       return RATIO_VALUE[activeSelection.id];
     }
-    const p = presets.find((x) => x.id === activeSelection.id);
-    return p ? RATIO_VALUE[p.ratio] : 9 / 16;
-  }, [activeSelection, orientation, presets]);
+    const p = platformPresets.find((x) => x.id === activeSelection.id);
+    if (p) return RATIO_VALUE[p.ratio];
+    const cp = customPresets.find((x) => x.id === activeSelection.id);
+    if (cp) return RATIO_VALUE[cp.ratio];
+    return 9 / 16;
+  }, [activeSelection, orientation, platformPresets, customPresets]);
 
-  // Sync settings when active selection changes
+  // Sync encoding when a platform preset becomes the active selection
   useEffect(() => {
-    if (!activeSelection) {
-      setSelectedPresetId("");
-      setPresetBaseValues(null);
-      return;
+    if (!activeSelection || activeSelection.type !== "platform") return;
+    const p = platformPresets.find((x) => x.id === activeSelection.id);
+    if (p) {
+      setEncodingState(deepClone(p.encoding));
     }
-
-    if (activeSelection.type === "platform") {
-      const p = presets.find((x) => x.id === activeSelection.id);
-      if (p) {
-        setSelectedPresetId(p.id);
-        const modified = modifiedPresets[p.id];
-        const appliedEncoding = modified
-          ? deepClone(modified.overriddenEncoding)
-          : deepClone(p.encoding);
-        setEncodingState(appliedEncoding);
-        setPresetBaseValues(buildCurrentState(p.ratio, p.encoding));
-      }
-    } else {
-      setSelectedPresetId("");
-      setPresetBaseValues(null);
-    }
-  }, [activeSelection, presets]);
+  }, [activeSelection, platformPresets]);
 
   // ── Theme ──────────────────────────────────────────────────
   useEffect(() => {
@@ -380,66 +405,72 @@ export default function App() {
 
   // ── Tauri Event Listeners ─────────────────────────────────
   useEffect(() => {
-    const u1 = listen<BatchProgress>("batch://progress", (e) => {
-      setBatchProgress(e.payload);
-      if (e.payload.status === "processing" && e.payload.percentage === 0) {
-        setBatchStartTime(Date.now());
-      }
+    const unsubscribers: Array<() => void> = [];
 
-      if (e.payload.status === "completed") {
-        addLog("Batch complete ✓", "success");
-      } else if (e.payload.status === "cancelled") {
-        addLog("Batch cancelled by user", "warn");
-      } else if (e.payload.status === "failed") {
-        addLog("Batch finished with errors", "error");
-      }
-    });
+    const setupListeners = async () => {
+      const u1 = await listen<BatchProgress>("batch://progress", (e) => {
+        setBatchProgress(e.payload);
 
-    const u2 = listen<FileProgress>("batch://file-status", (e) => {
-      const name = basename(e.payload.filePath);
-      const ratio = RATIO_DISPLAY[e.payload.ratio];
-      const s = e.payload.status;
+        if (e.payload.status === "completed") {
+          addLog("Batch complete ✓", "success");
+        } else if (e.payload.status === "cancelled") {
+          addLog("Batch cancelled by user", "warn");
+        } else if (e.payload.status === "failed") {
+          addLog("Batch finished with errors", "error");
+        }
+      });
+      unsubscribers.push(u1);
 
-      if (s === "processing")
-        addLog(`Processing: ${name} → ${ratio}`, "accent");
-      else if (s === "completed") addLog(`Done: ${name} → ${ratio}`, "success");
-      else if (s === "cancelled")
-        addLog(`Cancelled: ${name} → ${ratio}`, "warn");
-      else if (typeof s === "object" && s.error)
-        addLog(`Failed: ${name} — ${s.error}`, "error");
-    });
+      const u2 = await listen<FileProgress>("batch://file-status", (e) => {
+        const name = basename(e.payload.filePath);
+        const ratio = RATIO_DISPLAY[e.payload.ratio] ?? e.payload.ratio;
+        const statusKey = resolveJobStatusKey(e.payload.status);
+        const err = getJobStatusError(e.payload.status);
 
-    const u3 = listen<VideoProgress>("video://progress", (e) => {
-      setVideoProgresses((prev) => ({
-        ...prev,
-        [e.payload.jobId]: e.payload.percent,
-      }));
-    });
+        if (statusKey === "processing")
+          addLog(`Processing: ${name} → ${ratio}`, "accent");
+        else if (statusKey === "completed")
+          addLog(`Done: ${name} → ${ratio}`, "success");
+        else if (statusKey === "cancelled")
+          addLog(`Cancelled: ${name} → ${ratio}`, "warn");
+        else if (statusKey === "failed")
+          addLog(`Failed: ${name} — ${err ?? "unknown error"}`, "error");
+      });
+      unsubscribers.push(u2);
 
+      const u3 = await listen<VideoProgress>("video://progress", (e) => {
+        setVideoProgresses((prev) => ({
+          ...prev,
+          [e.payload.jobId]: e.payload.percent,
+        }));
+      });
+      unsubscribers.push(u3);
+    };
+
+    setupListeners();
     return () => {
-      u1.then((f) => f());
-      u2.then((f) => f());
-      u3.then((f) => f());
+      unsubscribers.forEach((u) => u());
     };
   }, []);
 
   // ── Orientation detect on file change ─────────────────────
   useEffect(() => {
-    if (inputFile && isVideoPath(inputFile)) {
-      invoke<OrientationInfo>("detect_orientation", { filePath: inputFile })
-        .then((info) => setOrientation(info))
-        .catch(() => setOrientation(null));
-
-      invoke<FileReadiness>("check_file_ready", { path: inputFile })
-        .then((info) => setFileReadiness(info))
-        .catch((e) => {
-          setFileReadiness(null);
-          addLog(`File readiness check failed: ${errorMessage(e)}`, "warn");
-        });
-    } else {
+    if (!inputFile || !isVideoPath(inputFile)) {
       setOrientation(null);
       setFileReadiness(null);
+      return;
     }
+
+    invoke<OrientationInfo>("detect_orientation", { filePath: inputFile })
+      .then(setOrientation)
+      .catch(() => setOrientation(null));
+
+    invoke<FileReadiness>("check_file_ready", { path: inputFile })
+      .then(setFileReadiness)
+      .catch((e) => {
+        setFileReadiness(null);
+        addLog(`File readiness check failed: ${errorMessage(e)}`, "warn");
+      });
   }, [inputFile]);
 
   // ── Auto-scroll log ────────────────────────────────────────
@@ -459,8 +490,15 @@ export default function App() {
 
   const loadPresets = async () => {
     try {
-      const all = await invoke<PlatformPreset[]>("get_all_presets");
-      setPresets(all);
+      const dtos = await invoke<VideoPresetDTO[]>("get_all_presets");
+      const {
+        platformPresets: pp,
+        customPresets: cp,
+        displayPresets: dp,
+      } = normalizeDTOsToDisplayPresets(dtos);
+      setPlatformPresets(pp);
+      setCustomPresets(cp);
+      setDisplayPresets(dp);
     } catch (e) {
       addLog(`Failed to load presets: ${errorMessage(e)}`, "error");
     }
@@ -480,56 +518,8 @@ export default function App() {
     }
   };
 
-  // ── Dirty check ────────────────────────────────────────────
-  const currentRatioTag = useMemo(() => {
-    if (!activeSelection) return "ratio9x16"; // Dummy for buildCurrentState
-    if (activeSelection.type === "aspectRatio") return activeSelection.id;
-    const p = presets.find((x) => x.id === activeSelection.id);
-    return p ? p.ratio : "ratio9x16";
-  }, [activeSelection, presets]);
+  // ── Handlers ───────────────────────────────────────────────
 
-  const presetOverrideCount = useMemo(() => {
-    if (!selectedPresetId) return 0;
-    return getOverrideCount(
-      buildCurrentState(currentRatioTag, encodingState),
-      presetBaseValues,
-    );
-  }, [selectedPresetId, currentRatioTag, encodingState, presetBaseValues]);
-
-  const isDirty = !!modifiedPresets[selectedPresetId]?.isDirty;
-
-  useEffect(() => {
-    if (!selectedPresetId) return;
-    if (presetOverrideCount === 0) {
-      setModifiedPresets((prev) => {
-        if (!prev[selectedPresetId]) return prev;
-        const next = { ...prev };
-        delete next[selectedPresetId];
-        return next;
-      });
-      return;
-    }
-    setModifiedPresets((prev) => ({
-      ...prev,
-      [selectedPresetId]: {
-        basePresetId: selectedPresetId,
-        overriddenEncoding: deepClone(encodingState),
-        isDirty: true,
-      },
-    }));
-  }, [encodingState, presetOverrideCount, selectedPresetId]);
-
-  // ── ETA calculation ────────────────────────────────────────
-  const eta = useMemo(() => {
-    if (!batchProgress || !batchStartTime || batchProgress.percentage <= 0)
-      return null;
-    const elapsed = (Date.now() - batchStartTime) / 1000;
-    const remaining =
-      (elapsed / batchProgress.percentage) * (100 - batchProgress.percentage);
-    return remaining;
-  }, [batchProgress, batchStartTime]);
-
-  // ── Handlers ───────────────────────────────────────────
   const handlePickFile = async () => {
     try {
       const sel = await open({
@@ -558,7 +548,7 @@ export default function App() {
     try {
       const sel = await open({ multiple: false, directory: true });
       if (sel && typeof sel === "string") {
-        addLog(`Input folder selected, scanning...`, "info");
+        addLog("Input folder selected, scanning...", "info");
         setBatchFiles([sel]);
         setInputFile("");
       }
@@ -627,14 +617,11 @@ export default function App() {
         setEffectsState((prev) => ({
           ...prev,
           logo: {
-            ...(prev.logo || {
-              position: "bottom_right",
-              opacity: 1,
-              gap: 20,
-              scale: 0.15,
-              path: null,
-            }),
             enabled: true,
+            position: prev.logo?.position ?? "bottom_right",
+            opacity: prev.logo?.opacity ?? 1,
+            gap: prev.logo?.gap ?? 20,
+            scale: prev.logo?.scale ?? 0.15,
             path: sel,
           },
         }));
@@ -646,18 +633,16 @@ export default function App() {
   };
 
   const handleToggleRatio = (r: AspectRatio) => {
-    setSelectedRatios((prev) => {
-      const isSelected = prev.includes(r);
-      if (isSelected) {
-        setSelectionHistory((h) =>
-          h.filter((x) => !(x.type === "aspectRatio" && x.id === r)),
-        );
-        return prev.filter((x) => x !== r);
-      } else {
-        setSelectionHistory((h) => [...h, { type: "aspectRatio", id: r }]);
-        return [...prev, r];
-      }
-    });
+    const isSelected = selectedRatios.includes(r);
+    if (isSelected) {
+      setSelectedRatios((prev) => prev.filter((x) => x !== r));
+      setSelectionHistory((h) =>
+        h.filter((x) => !(x.type === "aspectRatio" && x.id === r)),
+      );
+    } else {
+      setSelectedRatios((prev) => [...prev, r]);
+      setSelectionHistory((h) => [...h, { type: "aspectRatio", id: r }]);
+    }
   };
 
   const handleTogglePreset = (id: string) => {
@@ -688,52 +673,73 @@ export default function App() {
       addLog("Please select at least one file", "warn");
       return;
     }
-
-    const selections = [
-      ...selectedPresetIds.map((id) => ({ type: "platform" as const, id })),
-      ...selectedRatios.map((id) => ({ type: "aspectRatio" as const, id })),
-    ];
-
-    if (selections.length === 0) {
+    if (selectedRatios.length === 0 && selectedPresetIds.length === 0) {
       addLog("Select at least one preset or ratio", "warn");
       return;
     }
 
-    const targets: OutputJob[] = selections.map((sel) => {
-      if (sel.type === "platform") {
-        const p = presets.find((x) => x.id === sel.id)!;
-        const encoding =
-          modifiedPresets[p.id]?.overriddenEncoding ?? deepClone(p.encoding);
-        return {
-          id: generateId(),
-          sourcePresetId: `platform:${p.id}`,
-          ratio: p.ratio,
-          encoding,
-          effects: deepClone(normalizeEffects(effectsState)),
-          platformConfig: p.platformConfig,
-          presetName: p.name,
-        };
-      } else {
-        const target = aspectRatioTargets.find((t) => t.ratio === sel.id)!;
-        return {
-          id: generateId(),
-          sourcePresetId: `aspectRatio:${sel.id}`,
-          ratio: sel.id,
-          encoding: deepClone(target?.encoding ?? DEFAULT_ENCODING),
-          effects: deepClone(normalizeEffects(effectsState)),
-          platformConfig: null,
-          presetName: null,
-        };
+    const normalizedEffects = deepClone(normalizeEffects(effectsState));
+
+    // Build targets from platform presets
+    const platformTargets: OutputJob[] = selectedPresetIds.flatMap((id) => {
+      const p = platformPresets.find((x) => x.id === id);
+      const cp = customPresets.find((x) => x.id === id);
+
+      if (p) {
+        return [
+          {
+            id: generateId(),
+            sourcePresetId: `platform:${p.id}`,
+            ratio: p.ratio,
+            encoding: deepClone(encodingState),
+            effects: normalizedEffects,
+            platformConfig: p.platformConfig ?? null,
+            presetName: p.name,
+          } satisfies OutputJob,
+        ];
       }
+      if (cp) {
+        return [
+          {
+            id: generateId(),
+            sourcePresetId: `custom:${cp.id}`,
+            ratio: cp.ratio,
+            encoding: deepClone(cp.encoding),
+            effects: normalizedEffects,
+            platformConfig: null,
+            presetName: cp.name,
+          } satisfies OutputJob,
+        ];
+      }
+      return [];
     });
+
+    // Build targets from aspect ratio selections
+    const ratioTargets: OutputJob[] = selectedRatios.map((ratio) => {
+      const target = aspectRatioTargets.find((t) => t.ratio === ratio);
+      return {
+        id: generateId(),
+        sourcePresetId: `aspectRatio:${ratio}`,
+        ratio,
+        encoding: deepClone(target?.encoding ?? DEFAULT_ENCODING),
+        effects: normalizedEffects,
+        platformConfig: null,
+        presetName: null,
+      } satisfies OutputJob;
+    });
+
+    const targets = [...platformTargets, ...ratioTargets];
 
     try {
       setVideoProgresses({});
-      setBatchStartTime(Date.now());
       await invoke("start_batch", {
         files,
         settings: { targets, outputDir, enableSubfolders },
       });
+      addLog(
+        `Batch started: ${files.length} file(s) × ${targets.length / (files.length || 1)} target(s)`,
+        "accent",
+      );
     } catch (e) {
       addLog(`Batch start failed: ${errorMessage(e)}`, "error");
     }
@@ -753,7 +759,6 @@ export default function App() {
       await invoke("clear_batch");
       setBatchProgress(null);
       setVideoProgresses({});
-      setBatchStartTime(null);
       addLog("Queue cleared", "info");
     } catch (e) {
       addLog(`Clear failed: ${errorMessage(e)}`, "error");
@@ -761,11 +766,22 @@ export default function App() {
   };
 
   const handleSavePreset = async () => {
-    if (!newPresetName.trim() || !activeSelection) return;
+    if (!newPresetName.trim()) return;
+
+    // Determine ratio from active selection or first selected ratio
+    const ratio: AspectRatio =
+      activeSelection?.type === "aspectRatio"
+        ? activeSelection.id
+        : activeSelection?.type === "platform"
+          ? (platformPresets.find((p) => p.id === activeSelection.id)?.ratio ??
+            selectedRatios[0] ??
+            "ratio9x16")
+          : (selectedRatios[0] ?? "ratio9x16");
+
     const p: CustomPreset = {
       id: Date.now().toString(),
-      name: newPresetName,
-      ratio: currentRatioTag,
+      name: newPresetName.trim(),
+      ratio,
       encoding: deepClone(encodingState),
     };
     try {
@@ -792,31 +808,32 @@ export default function App() {
     }
   };
 
-  // UI state for guides
-  const [showGuides, setShowGuides] = useState(true);
-  const [showSafeFrames, setShowSafeFrames] = useState(false);
+  // ── Derived state ──────────────────────────────────────────
 
   const isRunning = batchProgress?.status === "processing";
+  const isFileLocked = !!fileReadiness?.isLocked;
 
-  // Authoritative queue from backend, sorted so current/completed are visible
+  const jobCount =
+    (batchFiles.length || (inputFile ? 1 : 0)) *
+    (selectedPresetIds.length + selectedRatios.length);
+
+  // Queue sorted: processing first, queued next, then rest
   const queueItems = useMemo(() => {
     if (!batchProgress?.queue) return [];
-    // Sort: Processing first, then Queued, then others (Completed/Failed)
     return [...batchProgress.queue].sort((a, b) => {
-      const score = (s: typeof a.status) => {
-        if (s === "processing") return 0;
-        if (s === "queued") return 1;
-        if (s === "completed") return 2;
+      const score = (s: FileProgress["status"]) => {
+        const k = resolveJobStatusKey(s);
+        if (k === "processing") return 0;
+        if (k === "queued" || k === "pending") return 1;
+        if (k === "completed") return 2;
         return 3;
       };
       return score(a.status) - score(b.status);
     });
   }, [batchProgress?.queue]);
 
-  const jobCount =
-    (batchFiles.length || (inputFile ? 1 : 0)) *
-    (selectedPresetIds.length + selectedRatios.length);
-  const isFileLocked = !!fileReadiness?.isLocked;
+  // ETA from backend (more accurate than client-side calc)
+  const etaSeconds = batchProgress?.etaSeconds ?? null;
 
   return (
     <div className="app-shell">
@@ -829,8 +846,13 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-right">
-          {batchProgress && batchProgress.percentage >= 100 && (
-            <span className="badge badge-success">✓ Complete</span>
+          {batchProgress &&
+            batchProgress.percentage >= 100 &&
+            batchProgress.status === "completed" && (
+              <span className="badge badge-success">✓ Complete</span>
+            )}
+          {batchProgress && batchProgress.status === "failed" && (
+            <span className="badge badge-error">⚠ Errors</span>
           )}
           <button
             className="theme-toggle"
@@ -842,6 +864,7 @@ export default function App() {
       </header>
 
       <div className="main-content">
+        {/* ── Left Sidebar ───────────────────────────────────── */}
         <aside className="sidebar">
           <div className="sidebar-section">
             <div className="sidebar-section-title">Import Files</div>
@@ -910,33 +933,30 @@ export default function App() {
               className={`tab${settingsTab === "effects" ? " active" : ""}`}
               onClick={() => setSettingsTab("effects")}
             >
-              {EDITOR_UI_LABELS.effects.category}
+              Effects
             </button>
             <button
               className={`tab${settingsTab === "encode" ? " active" : ""}`}
               onClick={() => setSettingsTab("encode")}
             >
-              {EDITOR_UI_LABELS.encode.category}
+              Encode
             </button>
             <button
               className={`tab${settingsTab === "presets" ? " active" : ""}`}
               onClick={() => setSettingsTab("presets")}
             >
-              {EDITOR_UI_LABELS.presets.category}
+              Presets
             </button>
           </div>
 
           <div className="settings-scroll">
+            {/* ── Effects Tab ─────────────────────────────── */}
             {settingsTab === "effects" && (
               <>
                 <div className="settings-group">
-                  <div className="settings-group-title">
-                    {EDITOR_UI_LABELS.effects.category}
-                  </div>
+                  <div className="settings-group-title">Effects</div>
                   <div className="toggle-row">
-                    <span className="toggle-label">
-                      {EDITOR_UI_LABELS.effects.blur}
-                    </span>
+                    <span className="toggle-label">Blur Background</span>
                     <Toggle
                       checked={!!effectsState.blur}
                       onChange={(v) =>
@@ -966,6 +986,25 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                <div className="settings-group">
+                  <div className="settings-group-title">Output Format</div>
+                  <select
+                    className="input select"
+                    value={effectsState.outputFormat ?? "mp4"}
+                    onChange={(e) =>
+                      setEffectsState({
+                        ...effectsState,
+                        outputFormat: e.target.value as OutputFormat,
+                      })
+                    }
+                  >
+                    <option value="mp4">MP4 (H.264)</option>
+                    <option value="mov">MOV (H.264)</option>
+                    <option value="webm">WebM (VP9)</option>
+                  </select>
+                </div>
+
                 <div className="settings-group">
                   <div className="settings-group-title">Audio</div>
                   <div className="toggle-row">
@@ -978,6 +1017,7 @@ export default function App() {
                     />
                   </div>
                 </div>
+
                 <div className="settings-group">
                   <div className="settings-group-title">Subtitles</div>
                   <div className="toggle-row">
@@ -1001,12 +1041,29 @@ export default function App() {
                           ...effectsState,
                           burnSubtitles: v,
                           generateSubtitles:
-                            v || effectsState.generateSubtitles,
+                            v || !!effectsState.generateSubtitles,
                         })
                       }
                     />
                   </div>
                 </div>
+
+                <div className="settings-group">
+                  <div className="settings-group-title">Skip Existing</div>
+                  <div className="toggle-row">
+                    <span className="toggle-label">
+                      Skip if output exists
+                      <span className="label-desc">Saves time on re-runs</span>
+                    </span>
+                    <Toggle
+                      checked={!!effectsState.skipExisting}
+                      onChange={(v) =>
+                        setEffectsState({ ...effectsState, skipExisting: v })
+                      }
+                    />
+                  </div>
+                </div>
+
                 <div className="settings-group">
                   <div className="settings-group-title">Transform</div>
                   <div className="transform-grid">
@@ -1057,7 +1114,9 @@ export default function App() {
                           })
                         }
                       />
-                      <label htmlFor="fh">Flip H</label>
+                      <label className="checkbox-label" htmlFor="fh">
+                        Flip H
+                      </label>
                     </div>
                     <div className="checkbox-row">
                       <input
@@ -1074,10 +1133,13 @@ export default function App() {
                           })
                         }
                       />
-                      <label htmlFor="fv">Flip V</label>
+                      <label className="checkbox-label" htmlFor="fv">
+                        Flip V
+                      </label>
                     </div>
                   </div>
                 </div>
+
                 <div className="settings-group">
                   <div className="settings-group-title">Logo</div>
                   <div className="toggle-row mb-2">
@@ -1089,14 +1151,13 @@ export default function App() {
                           ...effectsState,
                           logo: v
                             ? {
-                                ...(effectsState.logo || {
-                                  position: "bottom_right",
-                                  opacity: 1,
-                                  gap: 20,
-                                  scale: 0.15,
-                                  path: null,
-                                }),
                                 enabled: true,
+                                position:
+                                  effectsState.logo?.position ?? "bottom_right",
+                                opacity: effectsState.logo?.opacity ?? 1,
+                                gap: effectsState.logo?.gap ?? 20,
+                                scale: effectsState.logo?.scale ?? 0.15,
+                                path: effectsState.logo?.path ?? null,
                               }
                             : null,
                         })
@@ -1168,14 +1229,40 @@ export default function App() {
                           {Math.round(effectsState.logo.opacity * 100)}%
                         </span>
                       </div>
+                      <div className="slider-row mt-2">
+                        <span className="text-xs">Scale</span>
+                        <input
+                          className="slider"
+                          type="range"
+                          min="0.05"
+                          max="0.5"
+                          step="0.01"
+                          value={effectsState.logo.scale}
+                          onChange={(e) =>
+                            setEffectsState({
+                              ...effectsState,
+                              logo: {
+                                ...effectsState.logo!,
+                                scale: parseFloat(e.target.value),
+                              },
+                            })
+                          }
+                        />
+                        <span className="slider-value">
+                          {Math.round(effectsState.logo.scale * 100)}%
+                        </span>
+                      </div>
                     </>
                   )}
                 </div>
               </>
             )}
+
+            {/* ── Encode Tab ──────────────────────────────── */}
             {settingsTab === "encode" && (
               <div className="settings-group">
                 <div className="settings-group-title">Quality</div>
+                <label className="input-label">Quality Preset</label>
                 <select
                   className="input select"
                   value={encodingState.qualityPreset}
@@ -1190,6 +1277,7 @@ export default function App() {
                   <option value="standard">Standard</option>
                   <option value="high">High</option>
                 </select>
+
                 <div className="slider-row mt-4">
                   <span className="text-xs">CRF</span>
                   <input
@@ -1207,14 +1295,55 @@ export default function App() {
                   />
                   <span className="slider-value">{encodingState.crf}</span>
                 </div>
+
+                <label className="input-label mt-4">Speed Preset</label>
+                <select
+                  className="input select"
+                  value={encodingState.speedPreset}
+                  onChange={(e) =>
+                    setEncodingState({
+                      ...encodingState,
+                      speedPreset: e.target.value,
+                    })
+                  }
+                >
+                  {SPEED_PRESETS.map((s) => (
+                    <option key={s} value={s}>
+                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </option>
+                  ))}
+                </select>
+
+                <label className="input-label mt-4">Audio Bitrate</label>
+                <select
+                  className="input select"
+                  value={encodingState.audioBitrate}
+                  onChange={(e) =>
+                    setEncodingState({
+                      ...encodingState,
+                      audioBitrate: e.target.value,
+                    })
+                  }
+                >
+                  <option value="64k">64k (Low)</option>
+                  <option value="96k">96k</option>
+                  <option value="128k">128k (Standard)</option>
+                  <option value="192k">192k</option>
+                  <option value="256k">256k (High)</option>
+                  <option value="320k">320k (Max)</option>
+                </select>
               </div>
             )}
+
+            {/* ── Presets Tab ─────────────────────────────── */}
             {settingsTab === "presets" && (
               <div className="settings-group">
-                <div className="settings-group-title">Save Preset</div>
+                <div className="settings-group-title">
+                  Save Current Encoding as Preset
+                </div>
                 <input
                   className="input"
-                  placeholder="Name"
+                  placeholder="Preset name"
                   value={newPresetName}
                   onChange={(e) => setNewPresetName(e.target.value)}
                 />
@@ -1223,28 +1352,37 @@ export default function App() {
                   onClick={handleSavePreset}
                   disabled={!newPresetName.trim()}
                 >
-                  Save
+                  Save Preset
                 </button>
-                {presets.filter((p) => !p.isBuiltin).length > 0 && (
+
+                {customPresets.length > 0 && (
                   <div className="mt-8">
-                    {presets
-                      .filter((p) => !p.isBuiltin)
-                      .map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex items-center justify-between py-1 border-b border-[var(--border)]"
-                        >
-                          <span className="text-sm font-semibold">
+                    <div className="settings-group-title">My Presets</div>
+                    {customPresets.map((p) => (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between"
+                        style={{
+                          padding: "6px 0",
+                          borderBottom: "1px solid var(--border)",
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>
                             {p.name}
-                          </span>
-                          <button
-                            className="btn btn-danger btn-sm"
-                            onClick={() => handleDeletePreset(p.id)}
-                          >
-                            ✕
-                          </button>
+                          </div>
+                          <div className="text-xs text-muted">
+                            {RATIO_DISPLAY[p.ratio]} · CRF {p.encoding.crf}
+                          </div>
                         </div>
-                      ))}
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDeletePreset(p.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -1252,11 +1390,18 @@ export default function App() {
           </div>
         </aside>
 
+        {/* ── Center Panel ──────────────────────────────────── */}
         <main className="center-panel">
-          <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-card)] shrink-0">
+          <div
+            style={{
+              padding: "14px 20px 12px",
+              borderBottom: "1px solid var(--border)",
+              background: "var(--bg-card)",
+              flexShrink: 0,
+            }}
+          >
             <div className="flex items-center justify-between mb-4">
               <span className="section-title">Aspect Ratio Targets</span>
-              {isDirty && <span className="badge badge-accent">Modified</span>}
             </div>
             <div className="ratio-pills">
               {ASPECT_RATIOS.map((r) => (
@@ -1315,9 +1460,16 @@ export default function App() {
             )}
           </div>
 
-          <div className="p-2 px-5 border-t border-[var(--border)] bg-[var(--bg-card)] shrink-0">
+          <div
+            style={{
+              padding: "8px 20px 12px",
+              borderTop: "1px solid var(--border)",
+              background: "var(--bg-card)",
+              flexShrink: 0,
+            }}
+          >
             <PresetsPanel
-              presets={presets}
+              presets={displayPresets}
               selectedPresetIds={selectedPresetIds}
               onToggle={handleTogglePreset}
               icons={PLATFORM_ICONS}
@@ -1365,6 +1517,7 @@ export default function App() {
           </div>
         </main>
 
+        {/* ── Right Panel ───────────────────────────────────── */}
         <aside className="right-panel">
           {batchProgress && (
             <div className="batch-stats">
@@ -1384,8 +1537,10 @@ export default function App() {
               </div>
               <div className="progress-bar mb-1">
                 <div
-                  className="progress-bar-fill"
-                  style={{ width: `${batchProgress.percentage}%` }}
+                  className={`progress-bar-fill${isRunning ? " animated" : ""}`}
+                  style={{
+                    width: `${Math.min(100, batchProgress.percentage)}%`,
+                  }}
                 />
               </div>
               <div className="batch-stats-nums">
@@ -1397,21 +1552,41 @@ export default function App() {
                     ✕ {batchProgress.failedJobs}
                   </span>
                 )}
-                {isRunning && eta !== null && (
-                  <span className="stat-pill bg-[var(--accent-subtle)] text-accent">
-                    ⏱ {formatETA(eta)}
+                <span className="stat-pill stat-pending">
+                  / {batchProgress.totalJobs}
+                </span>
+                {isRunning && etaSeconds !== null && (
+                  <span
+                    className="stat-pill"
+                    style={{
+                      background: "var(--accent-subtle)",
+                      color: "var(--accent)",
+                    }}
+                  >
+                    ⏱ {formatETA(etaSeconds)}
                   </span>
                 )}
               </div>
+              {isRunning && batchProgress.speed > 0 && (
+                <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+                  {batchProgress.speed.toFixed(2)}× realtime ·{" "}
+                  {formatDuration(batchProgress.totalDurationSecs)} total
+                </div>
+              )}
             </div>
           )}
 
-          <div className="tabs mt-2">
+          <div className="tabs" style={{ marginTop: batchProgress ? 0 : 8 }}>
             <button
               className={`tab${rightTab === "queue" ? " active" : ""}`}
               onClick={() => setRightTab("queue")}
             >
               Queue
+              {batchProgress && batchProgress.totalJobs > 0 && (
+                <span className="badge badge-muted" style={{ marginLeft: 4 }}>
+                  {batchProgress.totalJobs}
+                </span>
+              )}
             </button>
             <button
               className={`tab${rightTab === "log" ? " active" : ""}`}
@@ -1430,26 +1605,28 @@ export default function App() {
                 </div>
               )}
               {queueItems.map((job) => {
-                const isProc = job.status === "processing";
-                const isDone = job.status === "completed";
-                const isFail =
-                  typeof job.status === "object" && "error" in job.status;
-                const isCancelled = job.status === "cancelled";
+                const statusKey = resolveJobStatusKey(job.status);
+                const errorMsg = getJobStatusError(job.status);
+                const isProc = statusKey === "processing";
+                const isDone = statusKey === "completed";
+                const isFail = statusKey === "failed";
+                const isCancelled = statusKey === "cancelled";
 
                 const progress = isProc
-                  ? (videoProgresses[job.jobId] ?? job.progress)
+                  ? Math.max(videoProgresses[job.jobId] ?? 0, job.progress)
                   : job.progress;
 
                 return (
                   <div
                     key={job.jobId}
-                    className={`queue-item ${job.status} ${isProc ? "is-processing" : ""}`}
+                    className={`queue-item${isProc ? " is-processing" : ""}`}
                   >
                     {job.thumbnailPath && (
                       <div className="queue-item-thumb">
                         <img
                           src={convertFileSrc(job.thumbnailPath)}
                           alt="thumb"
+                          loading="lazy"
                         />
                       </div>
                     )}
@@ -1459,10 +1636,11 @@ export default function App() {
                       </div>
                       <div className="queue-item-meta">
                         <span className="queue-item-ratio">
-                          {RATIO_DISPLAY[job.ratio]}
+                          {RATIO_DISPLAY[job.ratio] ?? job.ratio}
                         </span>
                         <span
-                          className={`queue-item-status-text ${isFail ? "text-error" : ""}`}
+                          className={`queue-item-status-text${isFail ? " text-error" : ""}`}
+                          title={errorMsg ?? undefined}
                         >
                           {isProc
                             ? `${progress.toFixed(0)}%`
@@ -1475,12 +1653,21 @@ export default function App() {
                                   : "Queued"}
                         </span>
                       </div>
-                      {(isProc || (progress > 0 && !isDone)) && (
+                      {isProc && (
                         <div className="queue-item-progress">
                           <div
                             className="queue-item-progress-fill"
                             style={{ width: `${progress}%` }}
                           />
+                        </div>
+                      )}
+                      {isFail && errorMsg && (
+                        <div
+                          className="text-xs text-error truncate"
+                          title={errorMsg}
+                          style={{ marginTop: 2 }}
+                        >
+                          {errorMsg}
                         </div>
                       )}
                     </div>
@@ -1491,6 +1678,11 @@ export default function App() {
           ) : (
             <div className="log-panel">
               <div className="log-body" ref={logRef}>
+                {logs.length === 0 && (
+                  <div className="text-muted text-sm" style={{ padding: 8 }}>
+                    No log entries yet.
+                  </div>
+                )}
                 {logs.map((entry, i) => (
                   <div key={i} className="log-entry">
                     <span className="log-time">{entry.time}</span>
