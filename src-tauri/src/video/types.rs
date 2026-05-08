@@ -268,11 +268,14 @@ impl OutputTarget {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchJob {
+    pub id: String,
     pub input_path: String,
     pub output: OutputJob,
     pub resolved_output_path: String,
+    pub thumbnail_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -348,6 +351,7 @@ impl OutputTags {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
+    Queued,
     Pending,
     Processing,
     Completed,
@@ -357,24 +361,45 @@ pub enum JobStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct FileProgress {
     pub job_id: String,
     pub file_path: String,
     pub ratio: AspectRatio,
     pub progress: f32,
     pub status: JobStatus,
+    pub thumbnail_path: Option<String>,
+    pub duration_secs: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BatchStatus {
+    Idle,
+    Processing,
+    Cancelled,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchProgress {
     pub total_jobs: usize,
     pub completed_jobs: usize,
     pub failed_jobs: usize,
     pub percentage: f32,
+    pub status: BatchStatus,
     pub current_job_id: Option<String>,
+    pub queue: Vec<FileProgress>,
+    pub eta_seconds: Option<f64>,
+    pub speed: f32,
+    pub total_duration_secs: f64,
+    pub processed_duration_secs: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct OrientationInfo {
     pub width: u32,
     pub height: u32,
@@ -392,6 +417,7 @@ pub struct ConversionResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct FileReadiness {
     pub exists: bool,
     pub is_readable: bool,

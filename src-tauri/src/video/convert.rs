@@ -32,6 +32,7 @@ pub async fn render_single(
     app: &AppHandle,
     job: crate::video::types::ResolvedJob,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<ConversionResult, VideoError> {
     let input = &job.input_path;
     let output_path = &job.output_path;
@@ -108,6 +109,7 @@ pub async fn render_single(
             &ratio_label,
             duration,
             cancel_token,
+            on_progress,
         )
         .await?;
         return Ok(ConversionResult {
@@ -133,6 +135,7 @@ pub async fn render_single(
         &ratio_label,
         duration,
         cancel_token,
+        on_progress,
     )
     .await?;
 

@@ -83,7 +83,7 @@ pub async fn convert_to_ratio(
         subtitle_path: None,
     };
 
-    convert::render_single(&app, resolved_job, None)
+    convert::render_single(&app, resolved_job, None, None)
         .await
         .map_err(StructuredError::from)
 }

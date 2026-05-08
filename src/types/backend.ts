@@ -14,12 +14,20 @@ export type BatchJobSettings = {
 };
 
 export type BatchProgress = {
-	total_jobs: number,
-	completed_jobs: number,
-	failed_jobs: number,
+	totalJobs: number,
+	completedJobs: number,
+	failedJobs: number,
 	percentage: number,
-	current_job_id: string | null,
+	status: BatchStatus,
+	currentJobId: string | null,
+	queue: FileProgress[],
+	etaSeconds: number | null,
+	speed: number,
+	totalDurationSecs: number,
+	processedDurationSecs: number,
 };
+
+export type BatchStatus = "idle" | "processing" | "cancelled" | "completed" | "failed";
 
 export type ConversionRequestDTO = {
 	input: string,
@@ -42,22 +50,24 @@ export type EncodingProfile = {
 };
 
 export type FileProgress = {
-	job_id: string,
-	file_path: string,
+	jobId: string,
+	filePath: string,
 	ratio: AspectRatio,
 	progress: number,
 	status: JobStatus,
+	thumbnailPath: string | null,
+	durationSecs: number,
 };
 
 export type FileReadiness = {
 	exists: boolean,
-	is_readable: boolean,
-	file_size_bytes: number,
-	is_locked: boolean,
-	estimated_duration_secs: number,
+	isReadable: boolean,
+	fileSizeBytes: number,
+	isLocked: boolean,
+	estimatedDurationSecs: number,
 };
 
-export type JobStatus = "pending" | "processing" | "completed" | { error: string } | "cancelled";
+export type JobStatus = "queued" | "pending" | "processing" | "completed" | { error: string } | "cancelled";
 
 export type LogoOptions = {
 	enabled?: boolean,
@@ -74,9 +84,9 @@ export type OrientationInfo = {
 	width: number,
 	height: number,
 	rotation: number,
-	is_vertical: boolean,
-	display_width: number,
-	display_height: number,
+	isVertical: boolean,
+	displayWidth: number,
+	displayHeight: number,
 };
 
 export type OutputFormat = "mp4" | "mov" | "webm";
@@ -128,7 +138,7 @@ export type VideoEffectsSettings = {
 };
 
 export type VideoProgress = {
-	job_id: string,
+	jobId: string,
 	file: string,
 	ratio: string,
 	percent: number,

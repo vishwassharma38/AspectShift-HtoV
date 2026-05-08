@@ -7,6 +7,7 @@ use tauri_plugin_shell::ShellExt;
 use tracing::error;
 
 #[derive(Debug, Serialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct VideoProgress {
     pub job_id: String,
     pub file: String,
@@ -28,6 +29,7 @@ pub async fn run_ffmpeg(
     ratio_label: &str,
     duration_secs: f64,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<FfmpegOutput, VideoError> {
     // Progress flags will be added manually or ensure they are after input
     let mut final_args = vec![];
@@ -55,9 +57,9 @@ pub async fn run_ffmpeg(
     let mut stderr_str = String::new();
     let mut exit_code = -1;
     let app_handle = app.clone();
-    let job_id = job_id.to_string();
-    let file_label = file_label.to_string();
-    let ratio_label = ratio_label.to_string();
+    let job_id_str = job_id.to_string();
+    let file_label_str = file_label.to_string();
+    let ratio_label_str = ratio_label.to_string();
 
     // Read progress in real-time
     loop {
@@ -88,27 +90,34 @@ pub async fn run_ffmpeg(
                     let current_secs = time_ms / 1_000_000.0;
                     if duration_secs > 0.0 {
                         let percent = (current_secs / duration_secs) * 100.0;
+                        let percent_f32 = percent as f32;
                         let _ = app_handle.emit(
                             "video://progress",
                             VideoProgress {
-                                job_id: job_id.clone(),
-                                file: file_label.clone(),
-                                ratio: ratio_label.clone(),
-                                percent: percent as f32,
+                                job_id: job_id_str.clone(),
+                                file: file_label_str.clone(),
+                                ratio: ratio_label_str.clone(),
+                                percent: percent_f32,
                             },
                         );
+                        if let Some(ref cb) = on_progress {
+                            cb(percent_f32);
+                        }
                     }
                 }
                 if l == "progress=end" {
                     let _ = app_handle.emit(
                         "video://progress",
                         VideoProgress {
-                            job_id: job_id.clone(),
-                            file: file_label.clone(),
-                            ratio: ratio_label.clone(),
+                            job_id: job_id_str.clone(),
+                            file: file_label_str.clone(),
+                            ratio: ratio_label_str.clone(),
                             percent: 100.0,
                         },
                     );
+                    if let Some(ref cb) = on_progress {
+                        cb(100.0);
+                    }
                 }
             }
             CommandEvent::Stderr(line_bytes) => {

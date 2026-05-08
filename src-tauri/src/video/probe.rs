@@ -4,6 +4,7 @@ use crate::video::types::{FileReadiness, OrientationInfo, VideoError};
 use serde_json::Value;
 use std::path::Path;
 use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
 
 pub async fn detect_orientation(
     app: &AppHandle,
@@ -148,4 +149,66 @@ pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadine
         is_locked,
         estimated_duration_secs,
     })
+}
+
+pub async fn generate_thumbnail(
+    app: &AppHandle,
+    input_path: &str,
+    output_path: &str,
+) -> Result<String, VideoError> {
+    let input = Path::new(input_path);
+    if !input.exists() {
+        return Err(VideoError::FileNotFound(input_path.to_string()));
+    }
+
+    // Extract frame at 1s, or 0s if very short. 
+    // -vf "thumbnail,scale=320:-1" to make it small and representative
+    let args = [
+        "-ss", "00:00:01",
+        "-i", input_path,
+        "-vframes", "1",
+        "-vf", "scale=320:-1",
+        "-f", "image2",
+        "-y",
+        output_path,
+    ];
+
+    let sidecar = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|_| VideoError::FfmpegNotFound)?
+        .args(args);
+
+    let output: tauri_plugin_shell::process::Output = sidecar.output().await.map_err(|e| VideoError::ProcessingFailed {
+        stderr: format!("Failed to generate thumbnail: {e}"),
+    })?;
+
+    if !output.status.success() {
+        // Try at 0s if 1s failed (video might be < 1s)
+        let args_fallback = [
+            "-i", input_path,
+            "-vframes", "1",
+            "-vf", "scale=320:-1",
+            "-f", "image2",
+            "-y",
+            output_path,
+        ];
+        let sidecar_fallback = app
+            .shell()
+            .sidecar("ffmpeg")
+            .map_err(|_| VideoError::FfmpegNotFound)?
+            .args(args_fallback);
+        
+        let output_fallback: tauri_plugin_shell::process::Output = sidecar_fallback.output().await.map_err(|e| VideoError::ProcessingFailed {
+            stderr: format!("Failed to generate thumbnail fallback: {e}"),
+        })?;
+
+        if !output_fallback.status.success() {
+            return Err(VideoError::ProcessingFailed {
+                stderr: String::from_utf8_lossy(&output_fallback.stderr).to_string(),
+            });
+        }
+    }
+
+    Ok(output_path.to_string())
 }
