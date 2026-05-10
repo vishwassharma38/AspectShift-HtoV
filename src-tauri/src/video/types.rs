@@ -162,7 +162,7 @@ pub struct VideoEffectsSettings {
     pub color_filter: Option<String>,
     pub blur_sigma: Option<f32>,
     pub remove_audio: Option<bool>,
-    pub generate_subtitles: Option<bool>,
+    pub export_subtitles: Option<bool>,
     pub burn_subtitles: Option<bool>,
     pub skip_existing: Option<bool>,
     pub output_format: Option<OutputFormat>,
@@ -183,8 +183,8 @@ impl VideoEffectsSettings {
         self.remove_audio.unwrap_or(false)
     }
 
-    pub fn generate_subtitles_enabled(&self) -> bool {
-        self.generate_subtitles.unwrap_or(false)
+    pub fn export_subtitles_enabled(&self) -> bool {
+        self.export_subtitles.unwrap_or(false)
     }
 
     pub fn burn_subtitles_enabled(&self) -> bool {

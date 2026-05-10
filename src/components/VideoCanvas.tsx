@@ -1,13 +1,12 @@
 import React, { useMemo, useRef, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type {
-  OrientationInfo,
-  VideoEffectsSettings,
-} from "../types/backend";
+import type { OrientationInfo, VideoEffectsSettings } from "../types/backend";
+import { resolveVideoGeometry } from "../utils/resolvedVideoGeometry";
 
 interface VideoCanvasProps {
   videoSrc: string;
-  ratio: number; // Numerical ratio (w/h)
+  /** Numerical ratio (w/h). null means geometry is not yet known — render nothing. */
+  ratio: number | null;
   effects: VideoEffectsSettings;
   orientation: OrientationInfo | null;
   showGuides?: boolean;
@@ -26,11 +25,23 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   videoSrc,
   ratio,
   effects,
+  orientation,
   showGuides = true,
   showSafeFrames = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerDims, setContainerDims] = useState({ width: 0, height: 0 });
+  // Tracks whether the video element has decoded enough to display.
+  // Reset to false whenever videoSrc changes so the box stays hidden
+  // until canplay fires, preventing a flash of the first frame at the
+  // wrong size.
+  const [videoReady, setVideoReady] = useState(false);
+  const showBlur = !!effects.blur;
+
+  // Reset readiness every time the source changes.
+  useEffect(() => {
+    setVideoReady(false);
+  }, [videoSrc]);
 
   // Update container dims on resize
   useEffect(() => {
@@ -50,7 +61,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // Calculate the actual size of the canvas box within the container
   const canvasSize = useMemo(() => {
     const { width, height } = containerDims;
-    if (width === 0 || height === 0) return { width: 0, height: 0 };
+    // ratio=null means geometry is not yet known — return zero so the box
+    // collapses to nothing while we wait for orientation data.
+    if (width === 0 || height === 0 || ratio === null)
+      return { width: 0, height: 0 };
 
     const containerRatio = width / height;
     if (containerRatio > ratio) {
@@ -62,17 +76,50 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     }
   }, [containerDims, ratio]);
 
+  const resolvedCoverGeometry = useMemo(() => {
+    if (ratio === null) return null;
+    return resolveVideoGeometry({
+      orientation,
+      transform: effects.transform,
+      targetAspectRatio: ratio,
+      frameWidth: canvasSize.width,
+      frameHeight: canvasSize.height,
+      fitMode: "cover",
+    });
+  }, [ratio, orientation, effects.transform, canvasSize]);
+
+  const resolvedContainGeometry = useMemo(() => {
+    if (ratio === null || !showBlur) return null;
+    return resolveVideoGeometry({
+      orientation,
+      transform: effects.transform,
+      targetAspectRatio: ratio,
+      frameWidth: canvasSize.width,
+      frameHeight: canvasSize.height,
+      fitMode: "contain",
+    });
+  }, [ratio, orientation, effects.transform, canvasSize, showBlur]);
+
   const transformStyle = useMemo(() => {
-    if (!effects.transform) return {};
-    const { rotate, flip_h, flip_v } = effects.transform;
-    let t = `rotate(${rotate}deg)`;
-    if (flip_h) t += " scaleX(-1)";
-    if (flip_v) t += " scaleY(-1)";
-    return { transform: t };
-  }, [effects.transform]);
+    const rotate = resolvedCoverGeometry?.rotation ?? 0;
+    const flipH = !!effects.transform?.flip_h;
+    const flipV = !!effects.transform?.flip_v;
+    let t = `translate(-50%, -50%) rotate(${rotate}deg)`;
+    if (flipH) t += " scaleX(-1)";
+    if (flipV) t += " scaleY(-1)";
+    return {
+      transform: t,
+      transformOrigin: "center center",
+    };
+  }, [
+    resolvedCoverGeometry?.rotation,
+    effects.transform?.flip_h,
+    effects.transform?.flip_v,
+  ]);
 
   const logoStyle = useMemo(() => {
-    if (!effects.logo || !effects.logo.enabled || !effects.logo.path) return null;
+    if (!effects.logo || !effects.logo.enabled || !effects.logo.path)
+      return null;
     const { position, opacity, gap, scale } = effects.logo;
 
     // Logo scale is relative to the canvas width (mirroring backend)
@@ -117,8 +164,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     return style;
   }, [effects.logo, canvasSize]);
 
-  const showBlur = !!effects.blur;
-
   return (
     <div
       ref={containerRef}
@@ -133,213 +178,266 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }}
     >
       {videoSrc ? (
-        <div
-          className="video-canvas-box"
-          style={{
-            width: canvasSize.width,
-            height: canvasSize.height,
-            position: "relative",
-            overflow: "hidden",
-            backgroundColor: "#000",
-            borderRadius: "4px",
-            boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-            transition: "width 0.3s ease, height 0.3s ease",
-          }}
-        >
-          {/* Main Video Layer */}
-          {showBlur ? (
-            <>
+        // ratio===null means orientation invoke hasn't resolved yet.
+        // Render nothing so the layout never snaps through a wrong aspect ratio.
+        ratio !== null && resolvedCoverGeometry && (
+          <div
+            className="video-canvas-box"
+            style={{
+              width: canvasSize.width,
+              height: canvasSize.height,
+              position: "relative",
+              overflow: "hidden",
+              backgroundColor: "#000",
+              borderRadius: "10px",
+              // Only animate width/height after the video is ready to avoid
+              // the layout-shift frame being visible during ratio transitions.
+              transition: "width 0.3s ease, height 0.3s ease",
+              // Fade the entire box in once the video can play. This keeps the
+              // preview blank while metadata is loading without any layout jump.
+              opacity: videoReady ? 1 : 0,
+              transitionProperty: "width, height, opacity",
+              transitionDuration: "0.3s, 0.3s, 0.25s",
+              transitionTimingFunction: "ease, ease, ease-in",
+            }}
+          >
+            {/* Main Video Layer */}
+            {showBlur ? (
+              <>
+                <video
+                  src={convertFileSrc(videoSrc)}
+                  className="canvas-video-blur"
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: "50%",
+                    width:
+                      resolvedCoverGeometry.sourceWidth *
+                      resolvedCoverGeometry.scale,
+                    height:
+                      resolvedCoverGeometry.sourceHeight *
+                      resolvedCoverGeometry.scale,
+                    objectFit: "fill",
+                    filter: `blur(${effects.blurSigma ?? 20}px)`,
+                    opacity: 0.6,
+                    ...transformStyle,
+                  }}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                />
+                <video
+                  src={convertFileSrc(videoSrc)}
+                  className="canvas-video-fg"
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: "50%",
+                    width:
+                      (resolvedContainGeometry ?? resolvedCoverGeometry)
+                        .sourceWidth *
+                      (resolvedContainGeometry ?? resolvedCoverGeometry).scale,
+                    height:
+                      (resolvedContainGeometry ?? resolvedCoverGeometry)
+                        .sourceHeight *
+                      (resolvedContainGeometry ?? resolvedCoverGeometry).scale,
+                    objectFit: "fill",
+                    zIndex: 2,
+                    ...transformStyle,
+                  }}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  onCanPlay={() => setVideoReady(true)}
+                />
+              </>
+            ) : (
               <video
                 src={convertFileSrc(videoSrc)}
-                className="canvas-video-blur"
+                className="canvas-video-main"
                 style={{
                   position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  filter: `blur(${effects.blurSigma ?? 20}px)`,
-                  opacity: 0.6,
+                  left: "50%",
+                  top: "50%",
+                  width:
+                    resolvedCoverGeometry.sourceWidth *
+                    resolvedCoverGeometry.scale,
+                  height:
+                    resolvedCoverGeometry.sourceHeight *
+                    resolvedCoverGeometry.scale,
+                  objectFit: "fill",
                   ...transformStyle,
                 }}
                 autoPlay
                 muted
                 loop
                 playsInline
+                onCanPlay={() => setVideoReady(true)}
               />
-              <video
-                src={convertFileSrc(videoSrc)}
-                className="canvas-video-fg"
+            )}
+
+            {/* Logo Layer */}
+            {effects.logo?.enabled && effects.logo.path && (
+              <img
+                src={convertFileSrc(effects.logo.path)}
+                style={logoStyle!}
+                alt="Logo"
+              />
+            )}
+
+            {/* Subtitles Layer */}
+            {(effects.exportSubtitles || effects.burnSubtitles) && (
+              <div
+                className="canvas-subtitles"
+                style={{
+                  position: "absolute",
+                  bottom: "10%",
+                  left: "10%",
+                  right: "10%",
+                  textAlign: "center",
+                  color: "white",
+                  textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                  fontSize: Math.max(12, canvasSize.width / 20),
+                  fontWeight: 600,
+                  zIndex: 20,
+                  pointerEvents: "none",
+                }}
+              >
+                [ Subtitles Preview ]
+              </div>
+            )}
+
+            {/* Composition Guides */}
+            {showGuides && (
+              <div
+                className="canvas-guides"
                 style={{
                   position: "absolute",
                   inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  zIndex: 2,
-                  ...transformStyle,
+                  pointerEvents: "none",
+                  zIndex: 30,
+                  opacity: 0.3,
                 }}
-                autoPlay
-                muted
-                loop
-                playsInline
-              />
-            </>
-          ) : (
-            <video
-              src={convertFileSrc(videoSrc)}
-              className="canvas-video-main"
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
-                ...transformStyle,
-              }}
-              autoPlay
-              muted
-              loop
-              playsInline
-            />
-          )}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "33.33%",
+                    top: 0,
+                    bottom: 0,
+                    width: "1px",
+                    borderLeft: "1px dashed white",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "66.66%",
+                    top: 0,
+                    bottom: 0,
+                    width: "1px",
+                    borderLeft: "1px dashed white",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "33.33%",
+                    left: 0,
+                    right: 0,
+                    height: "1px",
+                    borderTop: "1px dashed white",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "66.66%",
+                    left: 0,
+                    right: 0,
+                    height: "1px",
+                    borderTop: "1px dashed white",
+                  }}
+                />
+              </div>
+            )}
 
-          {/* Logo Layer */}
-          {effects.logo?.enabled && effects.logo.path && (
-            <img
-              src={convertFileSrc(effects.logo.path)}
-              style={logoStyle!}
-              alt="Logo"
-            />
-          )}
+            {/* Safe Frame Guides */}
+            {showSafeFrames && (
+              <div
+                className="canvas-safe-frames"
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  pointerEvents: "none",
+                  zIndex: 31,
+                  opacity: 0.2,
+                }}
+              >
+                {/* 90% Safe Area */}
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: "5%",
+                    border: "1px solid white",
+                    borderRadius: "2px",
+                  }}
+                />
+                {/* 80% Safe Area */}
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: "10%",
+                    border: "1px solid rgba(255,255,255,0.5)",
+                    borderRadius: "2px",
+                  }}
+                />
+              </div>
+            )}
 
-          {/* Subtitles Layer */}
-          {(effects.generateSubtitles || effects.burnSubtitles) && (
+            {/* Label Overlay */}
             <div
-              className="canvas-subtitles"
               style={{
                 position: "absolute",
-                bottom: "10%",
-                left: "10%",
-                right: "10%",
-                textAlign: "center",
+                top: 10,
+                left: 10,
+                padding: "2px 6px",
+                background: "rgba(0,0,0,0.6)",
                 color: "white",
-                textShadow: "0 2px 4px rgba(0,0,0,0.8)",
-                fontSize: Math.max(12, canvasSize.width / 20),
-                fontWeight: 600,
-                zIndex: 20,
-                pointerEvents: "none",
+                fontSize: 10,
+                borderRadius: 3,
+                fontFamily: "monospace",
+                zIndex: 40,
               }}
             >
-              [ Subtitles Preview ]
+              {ratio !== null
+                ? RATIO_LABELS[ratio.toString()] || ratio.toFixed(2)
+                : ""}
             </div>
-          )}
-
-          {/* Composition Guides */}
-          {showGuides && (
-            <div
-              className="canvas-guides"
-              style={{
-                position: "absolute",
-                inset: 0,
-                pointerEvents: "none",
-                zIndex: 30,
-                opacity: 0.3,
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  left: "33.33%",
-                  top: 0,
-                  bottom: 0,
-                  width: "1px",
-                  borderLeft: "1px dashed white",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  left: "66.66%",
-                  top: 0,
-                  bottom: 0,
-                  width: "1px",
-                  borderLeft: "1px dashed white",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  top: "33.33%",
-                  left: 0,
-                  right: 0,
-                  height: "1px",
-                  borderTop: "1px dashed white",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  top: "66.66%",
-                  left: 0,
-                  right: 0,
-                  height: "1px",
-                  borderTop: "1px dashed white",
-                }}
-              />
-            </div>
-          )}
-
-          {/* Safe Frame Guides */}
-          {showSafeFrames && (
-            <div
-              className="canvas-safe-frames"
-              style={{
-                position: "absolute",
-                inset: 0,
-                pointerEvents: "none",
-                zIndex: 31,
-                opacity: 0.2,
-              }}
-            >
-              {/* 90% Safe Area */}
-              <div
-                style={{
-                  position: "absolute",
-                  inset: "5%",
-                  border: "1px solid white",
-                  borderRadius: "2px",
-                }}
-              />
-              {/* 80% Safe Area */}
-              <div
-                style={{
-                  position: "absolute",
-                  inset: "10%",
-                  border: "1px solid rgba(255,255,255,0.5)",
-                  borderRadius: "2px",
-                }}
-              />
-            </div>
-          )}
-          
-          {/* Label Overlay */}
-          <div style={{
-            position: 'absolute',
-            top: 10,
-            left: 10,
-            padding: '2px 6px',
-            background: 'rgba(0,0,0,0.6)',
-            color: 'white',
-            fontSize: 10,
-            borderRadius: 3,
-            fontFamily: 'monospace',
-            zIndex: 40
-          }}>
-            {RATIO_LABELS[ratio.toString()] || ratio.toFixed(2)}
           </div>
-        </div>
+        ) // closes ratio !== null &&
       ) : (
         <div className="preview-empty">
-          <div className="preview-empty-icon">🎬</div>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="48"
+            height="48"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="lucide lucide-clapperboard-icon lucide-clapperboard"
+            style={{ opacity: 0.5, marginBottom: "10px" }}
+          >
+            <path d="m12.296 3.464 3.02 3.956" />
+            <path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z" />
+            <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <path d="m6.18 5.276 3.1 3.899" />
+          </svg>
           <div className="preview-empty-text">No video selected</div>
         </div>
       )}

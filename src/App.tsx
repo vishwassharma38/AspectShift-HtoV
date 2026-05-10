@@ -23,6 +23,10 @@ import type {
 import "./App.css";
 import { VideoCanvas } from "./components/VideoCanvas";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
+import {
+  getSourceDisplaySize,
+  resolveVideoGeometry,
+} from "./utils/resolvedVideoGeometry";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -64,7 +68,7 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   colorFilter: null,
   blurSigma: 20.0,
   removeAudio: false,
-  generateSubtitles: false,
+  exportSubtitles: false,
   burnSubtitles: false,
   skipExisting: true,
   outputFormat: "mp4",
@@ -94,17 +98,6 @@ const RATIO_VALUE: Record<AspectRatio, number> = {
   ratio4x5: 4 / 5,
   ratio2x3: 2 / 3,
   ratio16x9: 16 / 9,
-};
-
-export const PLATFORM_ICONS: Record<string, string> = {
-  youtube: "▶",
-  shorts: "▲",
-  instagram: "◈",
-  reels: "◈",
-  tiktok: "♪",
-  twitter: "✕",
-  reddit: "◉",
-  x: "✕",
 };
 
 const SPEED_PRESETS = [
@@ -169,6 +162,46 @@ function normalizeTransform(
     flip_h: !!transform.flip_h,
     flip_v: !!transform.flip_v,
   };
+}
+
+function isOddQuarterTurn(rotate: number): boolean {
+  const normalized = ((rotate % 360) + 360) % 360;
+  return normalized === 90 || normalized === 270;
+}
+
+function transformToUiFlips(transform?: VideoTransform | null): {
+  flipH: boolean;
+  flipV: boolean;
+} {
+  const rotate = transform?.rotate ?? 0;
+  const flipH = !!transform?.flip_h;
+  const flipV = !!transform?.flip_v;
+  if (!isOddQuarterTurn(rotate)) {
+    return { flipH, flipV };
+  }
+  // At 90/270deg, backend flip axes are swapped relative to displayed axes.
+  return { flipH: flipV, flipV: flipH };
+}
+
+function uiFlipsToTransform(
+  transform: VideoTransform | null | undefined,
+  uiFlipH: boolean,
+  uiFlipV: boolean,
+): VideoTransform {
+  const rotate = transform?.rotate ?? 0;
+  const base: VideoTransform = {
+    rotate,
+    flip_h: false,
+    flip_v: false,
+  };
+  if (!isOddQuarterTurn(rotate)) {
+    base.flip_h = uiFlipH;
+    base.flip_v = uiFlipV;
+    return base;
+  }
+  base.flip_h = uiFlipV;
+  base.flip_v = uiFlipH;
+  return base;
 }
 
 function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
@@ -257,6 +290,9 @@ function normalizeDTOsToDisplayPresets(dtos: VideoPresetDTO[]): {
         id: p.id,
         name: p.name,
         ratioLabel: RATIO_DISPLAY[p.ratio] ?? p.ratio,
+        resolution: p.platformConfig
+          ? `${p.platformConfig.targetWidth}x${p.platformConfig.targetHeight}`
+          : undefined,
         isBuiltin: p.isBuiltin,
         isCustom: false,
         source: p,
@@ -365,12 +401,30 @@ export default function App() {
 
   // Derived: last active selection drives preview ratio
   const activeSelection = selectionHistory[selectionHistory.length - 1] ?? null;
+  const uiFlips = useMemo(
+    () => transformToUiFlips(effectsState.transform),
+    [effectsState.transform],
+  );
 
-  const effectivePreviewRatio = useMemo(() => {
+  // Whether orientation data has been fetched for the current inputFile.
+  // null = not yet resolved (async invoke in flight or no file).
+  // Used to suppress the preview box until we know the real geometry.
+  const effectivePreviewRatio = useMemo((): number | null => {
     if (!activeSelection) {
-      if (orientation)
-        return orientation.displayWidth / orientation.displayHeight;
-      return 9 / 16;
+      // No ratio selected: use source geometry resolved through the same
+      // transform-aware pipeline used by preview rendering.
+      const src = getSourceDisplaySize(orientation);
+      if (!src) return null;
+      const resolved = resolveVideoGeometry({
+        orientation,
+        transform: effectsState.transform,
+        targetAspectRatio: src.width / src.height,
+        frameWidth: src.width,
+        frameHeight: src.height,
+        fitMode: "cover",
+      });
+      if (resolved) return resolved.displayAspectRatio;
+      return null; // pending — VideoCanvas will render nothing
     }
     if (activeSelection.type === "aspectRatio") {
       return RATIO_VALUE[activeSelection.id];
@@ -379,8 +433,15 @@ export default function App() {
     if (p) return RATIO_VALUE[p.ratio];
     const cp = customPresets.find((x) => x.id === activeSelection.id);
     if (cp) return RATIO_VALUE[cp.ratio];
-    return 9 / 16;
-  }, [activeSelection, orientation, platformPresets, customPresets]);
+    // Preset selected but not resolved yet — same guard
+    return null;
+  }, [
+    activeSelection,
+    orientation,
+    platformPresets,
+    customPresets,
+    effectsState.transform,
+  ]);
 
   // Sync encoding when a platform preset becomes the active selection
   useEffect(() => {
@@ -393,8 +454,18 @@ export default function App() {
 
   // ── Theme ──────────────────────────────────────────────────
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    const html = document.documentElement;
+    // Add the transitioning class just before the attribute swap so every
+    // element inherits color/background transitions for the duration of the
+    // switch. Remove it after transitions complete (matches the 0.22s CSS
+    // duration with a small buffer) so normal interactions stay snappy.
+    html.classList.add("theme-transitioning");
+    html.setAttribute("data-theme", theme);
     localStorage.setItem("asp-theme", theme);
+    const timer = window.setTimeout(() => {
+      html.classList.remove("theme-transitioning");
+    }, 260);
+    return () => window.clearTimeout(timer);
   }, [theme]);
 
   // ── Init ──────────────────────────────────────────────────
@@ -460,6 +531,10 @@ export default function App() {
       setFileReadiness(null);
       return;
     }
+
+    // Reset orientation immediately so effectivePreviewRatio returns null
+    // and VideoCanvas stays hidden until the real geometry arrives.
+    setOrientation(null);
 
     invoke<OrientationInfo>("detect_orientation", { filePath: inputFile })
       .then(setOrientation)
@@ -875,10 +950,29 @@ export default function App() {
               onDrop={handleDrop}
               onClick={handlePickFile}
             >
-              <div className="drop-zone-icon">🎬</div>
+              <div className="drop-zone-icon">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="lucide lucide-import-icon lucide-import"
+                >
+                  <path d="M12 3v12" />
+                  <path d="m8 11 4 4 4-4" />
+                  <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
+                </svg>
+              </div>
               <div className="drop-zone-text">
                 {batchFiles.length > 1 ? (
                   <strong>{batchFiles.length} files selected</strong>
+                ) : batchFiles.length === 1 && !inputFile ? (
+                  <strong>Folder Selected: {basename(batchFiles[0])}</strong>
                 ) : inputFile ? (
                   <strong>{basename(inputFile)}</strong>
                 ) : (
@@ -1021,13 +1115,13 @@ export default function App() {
                 <div className="settings-group">
                   <div className="settings-group-title">Subtitles</div>
                   <div className="toggle-row">
-                    <span className="toggle-label">Generate Subtitles</span>
+                    <span className="toggle-label">Export Subtitles</span>
                     <Toggle
-                      checked={!!effectsState.generateSubtitles}
+                      checked={!!effectsState.exportSubtitles}
                       onChange={(v) =>
                         setEffectsState({
                           ...effectsState,
-                          generateSubtitles: v,
+                          exportSubtitles: v,
                         })
                       }
                     />
@@ -1040,8 +1134,6 @@ export default function App() {
                         setEffectsState({
                           ...effectsState,
                           burnSubtitles: v,
-                          generateSubtitles:
-                            v || !!effectsState.generateSubtitles,
                         })
                       }
                     />
@@ -1103,14 +1195,15 @@ export default function App() {
                       <input
                         type="checkbox"
                         id="fh"
-                        checked={!!effectsState.transform?.flip_h}
+                        checked={uiFlips.flipH}
                         onChange={(e) =>
                           setEffectsState({
                             ...effectsState,
-                            transform: {
-                              ...(effectsState.transform ?? { rotate: 0 }),
-                              flip_h: e.target.checked,
-                            },
+                            transform: uiFlipsToTransform(
+                              effectsState.transform,
+                              e.target.checked,
+                              uiFlips.flipV,
+                            ),
                           })
                         }
                       />
@@ -1122,14 +1215,15 @@ export default function App() {
                       <input
                         type="checkbox"
                         id="fv"
-                        checked={!!effectsState.transform?.flip_v}
+                        checked={uiFlips.flipV}
                         onChange={(e) =>
                           setEffectsState({
                             ...effectsState,
-                            transform: {
-                              ...(effectsState.transform ?? { rotate: 0 }),
-                              flip_v: e.target.checked,
-                            },
+                            transform: uiFlipsToTransform(
+                              effectsState.transform,
+                              uiFlips.flipH,
+                              e.target.checked,
+                            ),
                           })
                         }
                       />
@@ -1177,8 +1271,8 @@ export default function App() {
                             alt="logo"
                           />
                         ) : (
-                          <span>🖼</span>
-                        )}
+                          <span style={{ fontSize: 25 }}>🖼</span>
+                        )}{" "}
                         <div className="logo-upload-text">
                           <strong>
                             {effectsState.logo.path
@@ -1393,12 +1487,8 @@ export default function App() {
         {/* ── Center Panel ──────────────────────────────────── */}
         <main className="center-panel">
           <div
-            style={{
-              padding: "14px 20px 12px",
-              borderBottom: "1px solid var(--border)",
-              background: "var(--bg-card)",
-              flexShrink: 0,
-            }}
+            className="sidebar-section"
+            style={{ background: "var(--bg-card)" }}
           >
             <div className="flex items-center justify-between mb-4">
               <span className="section-title">Aspect Ratio Targets</span>
@@ -1461,18 +1551,17 @@ export default function App() {
           </div>
 
           <div
+            className="sidebar-section"
             style={{
-              padding: "8px 20px 12px",
-              borderTop: "1px solid var(--border)",
               background: "var(--bg-card)",
-              flexShrink: 0,
+              borderTop: "1px solid var(--border)",
+              borderBottom: "none",
             }}
           >
             <PresetsPanel
               presets={displayPresets}
               selectedPresetIds={selectedPresetIds}
               onToggle={handleTogglePreset}
-              icons={PLATFORM_ICONS}
             />
           </div>
 
@@ -1531,11 +1620,14 @@ export default function App() {
                     "Batch Status"
                   )}
                 </span>
-                <span className="text-accent font-mono font-bold">
+                <span
+                  className="text-accent font-mono font-bold"
+                  style={{ fontSize: 13 }}
+                >
                   {batchProgress.percentage.toFixed(1)}%
                 </span>
               </div>
-              <div className="progress-bar mb-1">
+              <div className="progress-bar">
                 <div
                   className={`progress-bar-fill${isRunning ? " animated" : ""}`}
                   style={{
@@ -1553,7 +1645,7 @@ export default function App() {
                   </span>
                 )}
                 <span className="stat-pill stat-pending">
-                  / {batchProgress.totalJobs}
+                  {batchProgress.totalJobs} TOTAL
                 </span>
                 {isRunning && etaSeconds !== null && (
                   <span
@@ -1561,6 +1653,7 @@ export default function App() {
                     style={{
                       background: "var(--accent-subtle)",
                       color: "var(--accent)",
+                      border: "1px solid var(--accent-glow)",
                     }}
                   >
                     ⏱ {formatETA(etaSeconds)}
@@ -1568,22 +1661,30 @@ export default function App() {
                 )}
               </div>
               {isRunning && batchProgress.speed > 0 && (
-                <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-                  {batchProgress.speed.toFixed(2)}× realtime ·{" "}
-                  {formatDuration(batchProgress.totalDurationSecs)} total
+                <div
+                  className="text-xs text-muted font-mono"
+                  style={{ marginTop: 2, fontSize: 9 }}
+                >
+                  {batchProgress.speed.toFixed(2)}× ·{" "}
+                  {formatDuration(batchProgress.totalDurationSecs)}
                 </div>
               )}
             </div>
           )}
 
-          <div className="tabs" style={{ marginTop: batchProgress ? 0 : 8 }}>
+          <div
+            className="tabs"
+            style={{
+              marginTop: batchProgress ? "var(--space-md)" : "var(--space-lg)",
+            }}
+          >
             <button
               className={`tab${rightTab === "queue" ? " active" : ""}`}
               onClick={() => setRightTab("queue")}
             >
               Queue
               {batchProgress && batchProgress.totalJobs > 0 && (
-                <span className="badge badge-muted" style={{ marginLeft: 4 }}>
+                <span className="badge badge-muted" style={{ marginLeft: 6 }}>
                   {batchProgress.totalJobs}
                 </span>
               )}
@@ -1600,7 +1701,21 @@ export default function App() {
             <div className="queue-list">
               {queueItems.length === 0 && (
                 <div className="queue-empty">
-                  <div className="queue-empty-icon">📂</div>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="48"
+                    height="48"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="lucide lucide-folder-open-icon lucide-folder-open"
+                    style={{ opacity: 0.5, marginBottom: "10px" }}
+                  >
+                    <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+                  </svg>
                   <div>Queue is empty</div>
                 </div>
               )}
@@ -1692,6 +1807,22 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              {logs.length > 0 && (
+                <div
+                  style={{
+                    padding: "6px 8px",
+                    borderTop: "1px solid var(--border)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setLogs([])}
+                  >
+                    Clear Log
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </aside>

@@ -31,7 +31,7 @@ pub fn resolve_output_path(
         blur: target.job.effects.blur_enabled(),
         logo: target.job.effects.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
         subtitles: target.job.effects.burn_subtitles_enabled()
-            || target.job.effects.generate_subtitles_enabled()
+            || target.job.effects.export_subtitles_enabled()
             || target.job.effects.subtitles.is_some(),
         no_audio: target.job.effects.remove_audio_enabled(),
     };
@@ -76,7 +76,7 @@ mod tests {
                 color_filter: None,
                 blur_sigma: None,
                 remove_audio: None,
-                generate_subtitles: None,
+                export_subtitles: None,
                 burn_subtitles: None,
                 skip_existing: None,
                 output_format: None,

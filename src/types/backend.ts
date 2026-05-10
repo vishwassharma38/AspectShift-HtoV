@@ -129,7 +129,7 @@ export type VideoEffectsSettings = {
 	colorFilter: string | null,
 	blurSigma: number | null,
 	removeAudio: boolean | null,
-	generateSubtitles: boolean | null,
+	exportSubtitles: boolean | null,
 	burnSubtitles: boolean | null,
 	skipExisting: boolean | null,
 	outputFormat: OutputFormat | null,
