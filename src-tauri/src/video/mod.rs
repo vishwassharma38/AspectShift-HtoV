@@ -72,10 +72,21 @@ pub async fn convert_to_ratio(
     .to_string_lossy()
     .to_string();
 
+    let alt_output_path = crate::video::paths::resolve_output_path(
+        std::path::Path::new(&output_dir),
+        std::path::Path::new(&input),
+        &target,
+        true,
+    )
+    .to_string_lossy()
+    .to_string();
+
     let resolved_job = crate::video::types::ResolvedJob {
         id: "single-job".to_string(),
+        session_id: "single-session".to_string(),
         input_path: input,
         output_path,
+        alt_output_path: Some(alt_output_path),
         ratio: job.ratio,
         encoding: job.encoding,
         effects: job.effects,

@@ -222,8 +222,10 @@ pub struct OutputJob {
 #[derive(Debug, Clone)]
 pub struct ResolvedJob {
     pub id: String,
+    pub session_id: String,
     pub input_path: String,
     pub output_path: String,
+    pub alt_output_path: Option<String>,
     pub ratio: AspectRatio,
     pub encoding: EncodingProfile,
     pub effects: VideoEffectsSettings,
@@ -275,6 +277,7 @@ pub struct BatchJob {
     pub input_path: String,
     pub output: OutputJob,
     pub resolved_output_path: String,
+    pub alt_output_path: Option<String>,
     pub thumbnail_path: Option<String>,
 }
 
@@ -363,6 +366,7 @@ pub enum JobStatus {
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct FileProgress {
+    pub session_id: String,
     pub job_id: String,
     pub file_path: String,
     pub ratio: AspectRatio,
@@ -385,6 +389,7 @@ pub enum BatchStatus {
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchProgress {
+    pub session_id: Option<String>,
     pub total_jobs: usize,
     pub completed_jobs: usize,
     pub failed_jobs: usize,
@@ -396,6 +401,8 @@ pub struct BatchProgress {
     pub speed: f32,
     pub total_duration_secs: f64,
     pub processed_duration_secs: f64,
+    pub current_stage_id: Option<String>,
+    pub current_stage_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]

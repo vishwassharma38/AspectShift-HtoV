@@ -11,14 +11,81 @@ use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tracing::info;
 
+async fn is_valid_completed_output(app: &AppHandle, output_path: &Path) -> bool {
+    if !output_path.exists() {
+        return false;
+    }
+
+    let meta = match std::fs::metadata(output_path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if meta.len() == 0 {
+        return false;
+    }
+
+    match check_file_ready(app, &output_path.to_string_lossy()).await {
+        Ok(readiness) => readiness.estimated_duration_secs > 0.0,
+        Err(_) => false,
+    }
+}
+
+pub async fn resolve_existing_output_for_skip(
+    app: &AppHandle,
+    output_path: &Path,
+    alt_output_path: Option<&Path>,
+) -> Option<PathBuf> {
+    if is_valid_completed_output(app, output_path).await {
+        return Some(output_path.to_path_buf());
+    }
+
+    if let Some(alt_path) = alt_output_path {
+        if is_valid_completed_output(app, alt_path).await {
+            return Some(alt_path.to_path_buf());
+        }
+    }
+
+    None
+}
+
+async fn finalize_temp_output(
+    app: &AppHandle,
+    temp_output_path: &Path,
+    final_output_path: &Path,
+) -> Result<(), VideoError> {
+    if !is_valid_completed_output(app, temp_output_path).await {
+        let _ = std::fs::remove_file(temp_output_path);
+        return Err(VideoError::ProcessingFailed {
+            stderr: "Temporary output failed validation".to_string(),
+        });
+    }
+
+    if final_output_path.exists() {
+        let _ = std::fs::remove_file(final_output_path);
+    }
+
+    std::fs::rename(temp_output_path, final_output_path)?;
+    Ok(())
+}
+
 pub async fn prepare_subtitles(
     app: &AppHandle,
     input: &str,
     output_dir: &str,
+    source_duration_secs: f64,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<PathBuf, VideoError> {
     let input_path = Path::new(input);
     let output_path = Path::new(output_dir);
-    let segments = transcribe_to_segments(app, input_path).await?;
+    let segments = transcribe_to_segments(
+        app,
+        input_path,
+        source_duration_secs,
+        cancel_token,
+        on_progress,
+    )
+    .await?;
     let srt_path = write_srt_for_input(input_path, output_path, &segments)?;
     info!(
         "Generated subtitle file for {} at {}",
@@ -36,6 +103,10 @@ pub async fn render_single(
 ) -> Result<ConversionResult, VideoError> {
     let input = &job.input_path;
     let output_path = &job.output_path;
+    let output_path_buf = PathBuf::from(output_path);
+    let temp_output_path = crate::video::paths::resolve_temp_output_path(&output_path_buf);
+    let temp_output_path_str = temp_output_path.to_string_lossy().to_string();
+    let session_id = &job.session_id;
     let job_id = &job.id;
 
     // 1. File Readiness Check
@@ -43,23 +114,38 @@ pub async fn render_single(
     let duration = readiness.estimated_duration_secs;
 
     // 2. Skip logic should be handled by caller, but we check existence for safety
-    if job.effects.skip_existing_enabled() && Path::new(output_path).exists() {
-        return Ok(ConversionResult {
-            output_path: output_path.clone(),
-            ratio: job.ratio.clone(),
-            skipped: true,
-        });
+    if job.effects.skip_existing_enabled() {
+        let alt_path_buf = job.alt_output_path.as_ref().map(PathBuf::from);
+        if let Some(existing_path) = resolve_existing_output_for_skip(
+            app,
+            &output_path_buf,
+            alt_path_buf.as_deref(),
+        )
+        .await
+        {
+            return Ok(ConversionResult {
+                output_path: existing_path.to_string_lossy().to_string(),
+                ratio: job.ratio.clone(),
+                skipped: true,
+            });
+        }
+
+        if output_path_buf.exists() {
+            let _ = std::fs::remove_file(&output_path_buf);
+        }
     }
 
     // 3. Acquire Lock
     let _lock = ProcessingLock::acquire(app, input)?;
 
     // 4. Ensure output directory exists
-    let output_path_buf = PathBuf::from(output_path);
     if let Some(parent) = output_path_buf.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
+    }
+    if temp_output_path.exists() {
+        let _ = std::fs::remove_file(&temp_output_path);
     }
 
     // 5. Orientation Detection
@@ -100,10 +186,11 @@ pub async fn render_single(
         && plan.logo.is_none()
         && !has_transform
     {
-        let args = ["-i", input, "-c", "copy", "-y", output_path];
+        let args = ["-i", input, "-c", "copy", "-y", &temp_output_path_str];
         run_ffmpeg(
             app,
             &args,
+            session_id,
             job_id,
             &file_label,
             &ratio_label,
@@ -112,6 +199,7 @@ pub async fn render_single(
             on_progress,
         )
         .await?;
+        finalize_temp_output(app, &temp_output_path, &output_path_buf).await?;
         return Ok(ConversionResult {
             output_path: output_path.clone(),
             ratio: job.ratio.clone(),
@@ -124,20 +212,33 @@ pub async fn render_single(
 
     // 10. FFmpeg Command Building
     let subtitle_str = job.subtitle_path.as_ref().and_then(|p| p.to_str());
-    let args_vec = build_ffmpeg_args(input, output_path, &filter, &plan, subtitle_str);
+    let args_vec = build_ffmpeg_args(input, &temp_output_path_str, &filter, &plan, subtitle_str);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
-    run_ffmpeg(
+    let ffmpeg_res = run_ffmpeg(
         app,
         &args,
+        session_id,
         job_id,
         &file_label,
         &ratio_label,
         duration,
-        cancel_token,
+        cancel_token.clone(),
         on_progress,
     )
-    .await?;
+    .await;
+
+    // 11. Cleanup on Failure/Cancellation
+    let is_cancelled = cancel_token.as_ref().map(|t| t.is_cancelled()).unwrap_or(false);
+    if ffmpeg_res.is_err() || is_cancelled {
+        if temp_output_path.exists() {
+            let _ = std::fs::remove_file(&temp_output_path);
+            info!("Cleaned up temporary output file: {}", temp_output_path.display());
+        }
+    }
+
+    ffmpeg_res?;
+    finalize_temp_output(app, &temp_output_path, &output_path_buf).await?;
 
     Ok(ConversionResult {
         output_path: output_path.clone(),

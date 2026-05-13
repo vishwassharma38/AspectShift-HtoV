@@ -45,6 +45,53 @@ pub fn resolve_output_path(
     }
 }
 
+pub fn resolve_temp_output_path(final_output: &Path) -> PathBuf {
+    let parent = final_output.parent().unwrap_or_else(|| Path::new(""));
+    let stem = final_output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+
+    match final_output.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => parent.join(format!("{stem}.tmp.{ext}")),
+        _ => parent.join(format!("{stem}.tmp")),
+    }
+}
+
+fn is_temporary_render_output(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("partial") || ext.eq_ignore_ascii_case("tmp") {
+        return true;
+    }
+
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    stem.ends_with(".partial") || stem.ends_with(".tmp")
+}
+
+pub fn cleanup_orphan_temp_outputs(root: &Path) -> std::io::Result<usize> {
+    fn visit(path: &Path, removed: &mut usize) -> std::io::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.is_dir() {
+                visit(&p, removed)?;
+            } else if is_temporary_render_output(&p) {
+                if std::fs::remove_file(&p).is_ok() {
+                    *removed += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut removed = 0usize;
+    visit(root, &mut removed)?;
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

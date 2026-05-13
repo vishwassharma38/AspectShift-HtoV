@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -114,6 +115,9 @@ use crate::os_utils::OsUtils;
 async fn extract_audio_for_whisper(
     app: &AppHandle,
     video_path: &Path,
+    source_duration_secs: f64,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    on_progress: Option<&(dyn Fn(f32) + Send + Sync)>,
 ) -> Result<PathBuf, VideoError> {
     let temp_dir = OsUtils::get_temp_dir(app);
     let wav_filename = format!("whisper_audio_{}.wav", Uuid::new_v4());
@@ -125,7 +129,7 @@ async fn extract_audio_for_whisper(
     );
     info!("Temporary audio destination: {}", wav_path.display());
 
-    let output = app
+    let sidecar = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|_| VideoError::FfmpegNotFound)?
@@ -139,16 +143,82 @@ async fn extract_audio_for_whisper(
             "1",
             "-c:a",
             "pcm_s16le",
+            "-progress",
+            "pipe:1",
             &wav_path.to_string_lossy(),
-        ])
-        .output()
-        .await
+        ]);
+    let (mut rx, child) = sidecar
+        .spawn()
         .map_err(|e| VideoError::ProcessingFailed {
             stderr: format!("Failed to execute ffmpeg for audio extraction: {e}"),
         })?;
+    let mut child = Some(child);
+    let mut stderr = String::new();
+    let mut exit_code = -1;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    loop {
+        let event = if let Some(token) = &cancel_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    if let Some(child) = child.take() {
+                        let _ = child.kill();
+                    }
+                    let _ = std::fs::remove_file(&wav_path);
+                    return Err(VideoError::ProcessingFailed {
+                        stderr: "Cancelled by user".to_string(),
+                    });
+                }
+                evt = rx.recv() => evt,
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else { break; };
+        match event {
+            CommandEvent::Stdout(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                let l = line.trim();
+                if let Some(raw) = l.strip_prefix("out_time_ms=") {
+                    let time_ms = raw.parse::<f64>().unwrap_or(0.0);
+                    let current_secs = time_ms / 1_000_000.0;
+                    if source_duration_secs > 0.0 {
+                        let pct = ((current_secs / source_duration_secs) * 100.0)
+                            .clamp(0.0, 100.0) as f32;
+                        if let Some(cb) = on_progress {
+                            cb(pct);
+                        }
+                    }
+                } else if l == "progress=end" {
+                    if let Some(cb) = on_progress {
+                        cb(100.0);
+                    }
+                }
+            }
+            CommandEvent::Stderr(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                stderr.push_str(&line);
+                stderr.push('\n');
+            }
+            CommandEvent::Error(err) => {
+                if !stderr.is_empty() && !stderr.ends_with('\n') {
+                    stderr.push('\n');
+                }
+                stderr.push_str(&err);
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code.unwrap_or(-1);
+                child = None;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(child) = child.take() {
+        let _ = child.kill();
+    }
+
+    if exit_code != 0 {
         error!("FFmpeg audio extraction failed: {}", stderr);
         // Attempt cleanup if file was created despite failure
         let _ = std::fs::remove_file(&wav_path);
@@ -161,12 +231,29 @@ async fn extract_audio_for_whisper(
 pub async fn transcribe_to_segments(
     app: &AppHandle,
     input_path: &Path,
+    source_duration_secs: f64,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<Vec<SubtitleSegment>, VideoError> {
     let _ = get_whisper_binary_path(app)?;
     let model_path = get_whisper_model_path(app)?;
 
     // 1. Extract 16kHz mono WAV audio required by Whisper.cpp
-    let wav_path = extract_audio_for_whisper(app, input_path).await?;
+    let progress_cb = on_progress.as_ref().map(|cb| cb.as_ref());
+    let wav_path = extract_audio_for_whisper(
+        app,
+        input_path,
+        source_duration_secs,
+        cancel_token.clone(),
+        progress_cb.map(|cb| {
+            let cb_ref: &(dyn Fn(f32) + Send + Sync) = cb;
+            cb_ref
+        }),
+    )
+    .await?;
+    if let Some(cb) = progress_cb {
+        cb(35.0);
+    }
 
     info!(
         "Starting whisper transcription for {}",
@@ -174,7 +261,7 @@ pub async fn transcribe_to_segments(
     );
 
     // 2. Execute Whisper with the extracted WAV file
-    let whisper_result = app
+    let sidecar = app
         .shell()
         .sidecar("whisper")
         .map_err(|_| VideoError::WhisperNotFound)?
@@ -184,22 +271,85 @@ pub async fn transcribe_to_segments(
         .arg(&wav_path)
         .arg("-l")
         .arg("auto")
-        .arg("-otxt")
-        .output()
-        .await;
+        .arg("-otxt");
+    let (mut rx, child) = sidecar.spawn().map_err(|e| VideoError::WhisperFailed {
+        stderr: format!("Failed to execute whisper sidecar: {e}"),
+    })?;
+    let mut child = Some(child);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_code = -1;
+
+    loop {
+        let event = if let Some(token) = &cancel_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    if let Some(child) = child.take() {
+                        let _ = child.kill();
+                    }
+                    let _ = std::fs::remove_file(&wav_path);
+                    return Err(VideoError::ProcessingFailed {
+                        stderr: "Cancelled by user".to_string(),
+                    });
+                }
+                evt = rx.recv() => evt,
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else { break; };
+        match event {
+            CommandEvent::Stdout(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                stdout.push_str(&line);
+                stdout.push('\n');
+                if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
+                    if source_duration_secs > 0.0 {
+                        let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
+                        let mapped = 35.0 + ((ratio as f32) * 60.0);
+                        if let Some(cb) = progress_cb {
+                            cb(mapped);
+                        }
+                    }
+                }
+            }
+            CommandEvent::Stderr(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes).to_string();
+                stderr.push_str(&line);
+                stderr.push('\n');
+                if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
+                    if source_duration_secs > 0.0 {
+                        let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
+                        let mapped = 35.0 + ((ratio as f32) * 60.0);
+                        if let Some(cb) = progress_cb {
+                            cb(mapped);
+                        }
+                    }
+                }
+            }
+            CommandEvent::Error(err) => {
+                if !stderr.is_empty() && !stderr.ends_with('\n') {
+                    stderr.push('\n');
+                }
+                stderr.push_str(&err);
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code.unwrap_or(-1);
+                child = None;
+                break;
+            }
+            _ => {}
+        }
+    }
 
     // 3. Clean up the temporary WAV file
     let _ = std::fs::remove_file(&wav_path);
 
     // 4. Handle Whisper execution result
-    let output = whisper_result.map_err(|e| VideoError::WhisperFailed {
-        stderr: format!("Failed to execute whisper sidecar: {e}"),
-    })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() {
+    if let Some(child) = child.take() {
+        let _ = child.kill();
+    }
+    if exit_code != 0 {
         error!("Whisper failed for {}: {}", input_path.display(), stderr);
         return Err(VideoError::WhisperFailed { stderr });
     }
@@ -223,6 +373,20 @@ pub async fn transcribe_to_segments(
         input_path.display(),
         segments.len()
     );
+    if let Some(cb) = progress_cb {
+        cb(100.0);
+    }
 
     Ok(segments)
+}
+
+fn parse_whisper_line_end_ms(raw_line: &str) -> Option<u64> {
+    let line = raw_line.trim();
+    if !line.starts_with('[') {
+        return None;
+    }
+    let closing_idx = line.find(']')?;
+    let timestamp_part = &line[1..closing_idx];
+    let (_, end_raw) = timestamp_part.split_once("-->")?;
+    parse_time_to_ms(end_raw.trim())
 }

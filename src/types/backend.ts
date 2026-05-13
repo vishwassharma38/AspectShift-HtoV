@@ -14,6 +14,7 @@ export type BatchJobSettings = {
 };
 
 export type BatchProgress = {
+	sessionId: string | null,
 	totalJobs: number,
 	completedJobs: number,
 	failedJobs: number,
@@ -25,6 +26,8 @@ export type BatchProgress = {
 	speed: number,
 	totalDurationSecs: number,
 	processedDurationSecs: number,
+	currentStageId: string | null,
+	currentStageMessage: string | null,
 };
 
 export type BatchStatus = "idle" | "processing" | "cancelled" | "completed" | "failed";
@@ -50,6 +53,7 @@ export type EncodingProfile = {
 };
 
 export type FileProgress = {
+	sessionId: string,
 	jobId: string,
 	filePath: string,
 	ratio: AspectRatio,
@@ -138,6 +142,7 @@ export type VideoEffectsSettings = {
 };
 
 export type VideoProgress = {
+	sessionId: string,
 	jobId: string,
 	file: string,
 	ratio: string,

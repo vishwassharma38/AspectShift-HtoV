@@ -9,6 +9,7 @@ use tracing::error;
 #[derive(Debug, Serialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoProgress {
+    pub session_id: String,
     pub job_id: String,
     pub file: String,
     pub ratio: String,
@@ -24,6 +25,7 @@ pub struct FfmpegOutput {
 pub async fn run_ffmpeg(
     app: &AppHandle,
     args: &[&str],
+    session_id: &str,
     job_id: &str,
     file_label: &str,
     ratio_label: &str,
@@ -58,24 +60,29 @@ pub async fn run_ffmpeg(
     let mut exit_code = -1;
     let app_handle = app.clone();
     let job_id_str = job_id.to_string();
+    let session_id_str = session_id.to_string();
     let file_label_str = file_label.to_string();
     let ratio_label_str = ratio_label.to_string();
 
     // Read progress in real-time
     loop {
-        // Check for cancellation
-        if let Some(ref token) = cancel_token {
-            if token.is_cancelled() {
-                if let Some(child) = child.take() {
-                    let _ = child.kill();
+        let event = if let Some(token) = &cancel_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    if let Some(child) = child.take() {
+                        let _ = child.kill();
+                    }
+                    return Err(VideoError::ProcessingFailed {
+                        stderr: "Cancelled by user".to_string(),
+                    });
                 }
-                return Err(VideoError::ProcessingFailed {
-                    stderr: "Cancelled by user".to_string(),
-                });
+                evt = rx.recv() => evt,
             }
-        }
+        } else {
+            rx.recv().await
+        };
 
-        let Some(event) = rx.recv().await else {
+        let Some(event) = event else {
             break;
         };
 
@@ -94,6 +101,7 @@ pub async fn run_ffmpeg(
                         let _ = app_handle.emit(
                             "video://progress",
                             VideoProgress {
+                                session_id: session_id_str.clone(),
                                 job_id: job_id_str.clone(),
                                 file: file_label_str.clone(),
                                 ratio: ratio_label_str.clone(),
@@ -109,6 +117,7 @@ pub async fn run_ffmpeg(
                     let _ = app_handle.emit(
                         "video://progress",
                         VideoProgress {
+                            session_id: session_id_str.clone(),
                             job_id: job_id_str.clone(),
                             file: file_label_str.clone(),
                             ratio: ratio_label_str.clone(),

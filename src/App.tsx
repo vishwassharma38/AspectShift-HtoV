@@ -384,6 +384,9 @@ export default function App() {
   const [videoProgresses, setVideoProgresses] = useState<
     Record<string, number>
   >({});
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const startRequestedRef = useRef(false);
 
   // UI tabs
   const [rightTab, setRightTab] = useState<"queue" | "log">("queue");
@@ -472,27 +475,62 @@ export default function App() {
   useEffect(() => {
     loadPresets();
     loadAspectRatioTargets();
+    invoke<BatchProgress>("get_batch_status")
+      .then((status) => {
+        if (!status.sessionId) return;
+        setBatchProgress(status);
+        setActiveSessionId(status.sessionId);
+        activeSessionIdRef.current = status.sessionId;
+        startRequestedRef.current = false;
+      })
+      .catch(() => {});
   }, []);
 
   // ── Tauri Event Listeners ─────────────────────────────────
   useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
     const unsubscribers: Array<() => void> = [];
+    let disposed = false;
 
     const setupListeners = async () => {
       const u1 = await listen<BatchProgress>("batch://progress", (e) => {
+        const sessionId = e.payload.sessionId;
+        if (!sessionId) return;
+
+        if (!activeSessionIdRef.current) {
+          if (startRequestedRef.current && e.payload.status === "processing") {
+            activeSessionIdRef.current = sessionId;
+            setActiveSessionId(sessionId);
+            startRequestedRef.current = false;
+          } else {
+            return;
+          }
+        }
+
+        if (activeSessionIdRef.current !== sessionId) return;
         setBatchProgress(e.payload);
 
         if (e.payload.status === "completed") {
           addLog("Batch complete ✓", "success");
+          startRequestedRef.current = false;
         } else if (e.payload.status === "cancelled") {
           addLog("Batch cancelled by user", "warn");
+          startRequestedRef.current = false;
         } else if (e.payload.status === "failed") {
           addLog("Batch finished with errors", "error");
+          setRightTab("log");
+          startRequestedRef.current = false;
         }
       });
-      unsubscribers.push(u1);
+      if (disposed) u1();
+      else unsubscribers.push(u1);
 
       const u2 = await listen<FileProgress>("batch://file-status", (e) => {
+        if (!activeSessionIdRef.current) return;
+        if (e.payload.sessionId !== activeSessionIdRef.current) return;
         const name = basename(e.payload.filePath);
         const ratio = RATIO_DISPLAY[e.payload.ratio] ?? e.payload.ratio;
         const statusKey = resolveJobStatusKey(e.payload.status);
@@ -507,19 +545,24 @@ export default function App() {
         else if (statusKey === "failed")
           addLog(`Failed: ${name} — ${err ?? "unknown error"}`, "error");
       });
-      unsubscribers.push(u2);
+      if (disposed) u2();
+      else unsubscribers.push(u2);
 
       const u3 = await listen<VideoProgress>("video://progress", (e) => {
+        if (!activeSessionIdRef.current) return;
+        if (e.payload.sessionId !== activeSessionIdRef.current) return;
         setVideoProgresses((prev) => ({
           ...prev,
           [e.payload.jobId]: e.payload.percent,
         }));
       });
-      unsubscribers.push(u3);
+      if (disposed) u3();
+      else unsubscribers.push(u3);
     };
 
     setupListeners();
     return () => {
+      disposed = true;
       unsubscribers.forEach((u) => u());
     };
   }, []);
@@ -806,6 +849,10 @@ export default function App() {
     const targets = [...platformTargets, ...ratioTargets];
 
     try {
+      startRequestedRef.current = true;
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
+      setBatchProgress(null);
       setVideoProgresses({});
       await invoke("start_batch", {
         files,
@@ -816,12 +863,14 @@ export default function App() {
         "accent",
       );
     } catch (e) {
+      startRequestedRef.current = false;
       addLog(`Batch start failed: ${errorMessage(e)}`, "error");
     }
   };
 
   const handleCancelBatch = async () => {
     try {
+      startRequestedRef.current = false;
       await invoke("cancel_batch");
       addLog("Cancellation requested...", "warn");
     } catch (e) {
@@ -831,9 +880,12 @@ export default function App() {
 
   const handleClearBatch = async () => {
     try {
+      startRequestedRef.current = false;
       await invoke("clear_batch");
       setBatchProgress(null);
       setVideoProgresses({});
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
       addLog("Queue cleared", "info");
     } catch (e) {
       addLog(`Clear failed: ${errorMessage(e)}`, "error");
@@ -909,6 +961,9 @@ export default function App() {
 
   // ETA from backend (more accurate than client-side calc)
   const etaSeconds = batchProgress?.etaSeconds ?? null;
+  const stageMessage =
+    batchProgress?.currentStageMessage ??
+    (isRunning ? "Preparing pipeline..." : "Idle");
 
   return (
     <div className="app-shell">
@@ -962,6 +1017,7 @@ export default function App() {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   className="lucide lucide-import-icon lucide-import"
+                  style={{ color: "var(--accent)" }}
                 >
                   <path d="M12 3v12" />
                   <path d="m8 11 4 4 4-4" />
@@ -1660,13 +1716,12 @@ export default function App() {
                   </span>
                 )}
               </div>
-              {isRunning && batchProgress.speed > 0 && (
+              {batchProgress && (
                 <div
                   className="text-xs text-muted font-mono"
                   style={{ marginTop: 2, fontSize: 9 }}
                 >
-                  {batchProgress.speed.toFixed(2)}× ·{" "}
-                  {formatDuration(batchProgress.totalDurationSecs)}
+                  {stageMessage}
                 </div>
               )}
             </div>
@@ -1712,7 +1767,11 @@ export default function App() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     className="lucide lucide-folder-open-icon lucide-folder-open"
-                    style={{ opacity: 0.5, marginBottom: "10px" }}
+                    style={{
+                      color: "var(--accent)",
+                      opacity: 0.5,
+                      marginBottom: "10px",
+                    }}
                   >
                     <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
                   </svg>
@@ -1794,8 +1853,35 @@ export default function App() {
             <div className="log-panel">
               <div className="log-body" ref={logRef}>
                 {logs.length === 0 && (
-                  <div className="text-muted text-sm" style={{ padding: 8 }}>
-                    No log entries yet.
+                  <div className="queue-empty">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="48"
+                      height="48"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="lucide lucide-logs-icon lucide-logs"
+                      style={{
+                        color: "var(--accent)",
+                        opacity: 0.5,
+                        marginBottom: "10px",
+                      }}
+                    >
+                      <path d="M3 5h1" />
+                      <path d="M3 12h1" />
+                      <path d="M3 19h1" />
+                      <path d="M8 5h1" />
+                      <path d="M8 12h1" />
+                      <path d="M8 19h1" />
+                      <path d="M13 5h8" />
+                      <path d="M13 12h8" />
+                      <path d="M13 19h8" />
+                    </svg>
+                    <div style={{ fontSize: 13 }}>No log entries yet</div>
                   </div>
                 )}
                 {logs.map((entry, i) => (

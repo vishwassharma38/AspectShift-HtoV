@@ -125,22 +125,43 @@ pub async fn check_file_ready(app: &AppHandle, path: &str) -> Result<FileReadine
     // Check if locked using OS-specific logic
     let is_locked = OsUtils::is_file_locked(path_buf);
 
-    // Get duration via ffprobe
+    // Get duration and check streams via ffprobe
     let output = run_ffprobe(
         app,
         &[
             "-v",
             "quiet",
+            "-show_streams",
             "-show_entries",
             "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "-print_format",
+            "json",
             path,
         ],
     )
     .await?;
 
-    let estimated_duration_secs = output.stdout.trim().parse::<f64>().unwrap_or(0.0);
+    let json: Value = serde_json::from_str(&output.stdout).map_err(|e| {
+        VideoError::ProcessingFailed {
+            stderr: format!("Failed to parse ffprobe JSON output: {e}"),
+        }
+    })?;
+
+    let streams = json["streams"].as_array().ok_or_else(|| {
+        VideoError::InvalidInput("No streams found in file (possible corruption)".into())
+    })?;
+
+    let has_video = streams.iter().any(|s| s["codec_type"] == "video");
+    if !has_video {
+        return Err(VideoError::InvalidInput(
+            "No video stream found in file".into(),
+        ));
+    }
+
+    let estimated_duration_secs = json["format"]["duration"]
+        .as_str()
+        .and_then(|d| d.parse::<f64>().ok())
+        .unwrap_or(0.0);
 
     Ok(FileReadiness {
         exists: true,

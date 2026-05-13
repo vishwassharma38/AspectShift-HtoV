@@ -431,7 +431,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             strokeLinecap="round"
             strokeLinejoin="round"
             className="lucide lucide-clapperboard-icon lucide-clapperboard"
-            style={{ opacity: 0.5, marginBottom: "10px" }}
+            style={{ color: 'var(--accent)', opacity: 0.5, marginBottom: '10px' }}
           >
             <path d="m12.296 3.464 3.02 3.956" />
             <path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z" />

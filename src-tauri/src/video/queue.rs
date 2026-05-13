@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub struct BatchState {
+    pub session_id: Option<String>,
     pub queue: VecDeque<BatchJob>,
     pub job_progress: HashMap<String, FileProgress>,
     pub all_job_ids: Vec<String>,
@@ -18,6 +19,9 @@ pub struct BatchState {
     pub start_time: Option<std::time::Instant>,
     pub total_duration_secs: f64,
     pub processed_duration_secs: f64,
+    pub current_stage_id: Option<String>,
+    pub current_stage_message: Option<String>,
+    pub current_job_lifecycle_progress: f32,
 }
 
 pub struct BatchManager {
@@ -28,6 +32,7 @@ impl BatchManager {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(BatchState {
+                session_id: None,
                 queue: VecDeque::new(),
                 job_progress: HashMap::new(),
                 all_job_ids: Vec::new(),
@@ -40,6 +45,9 @@ impl BatchManager {
                 start_time: None,
                 total_duration_secs: 0.0,
                 processed_duration_secs: 0.0,
+                current_stage_id: None,
+                current_stage_message: None,
+                current_job_lifecycle_progress: 0.0,
             })),
         }
     }
@@ -59,7 +67,11 @@ impl BatchManager {
 
     pub async fn clear(&self) {
         let mut state = self.state.lock().await;
+        // If a worker is still active, force cancellation before resetting state
+        // so old tasks cannot keep mutating a "new" cleared session.
+        state.cancellation_token.cancel();
         state.queue.clear();
+        state.session_id = None;
         state.job_progress.clear();
         state.all_job_ids.clear();
         state.current_job_id = None;
@@ -71,6 +83,9 @@ impl BatchManager {
         state.start_time = None;
         state.total_duration_secs = 0.0;
         state.processed_duration_secs = 0.0;
+        state.current_stage_id = None;
+        state.current_stage_message = None;
+        state.current_job_lifecycle_progress = 0.0;
     }
 
     pub async fn cancel(&self) {
