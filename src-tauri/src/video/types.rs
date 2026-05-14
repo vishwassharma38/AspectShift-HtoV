@@ -200,6 +200,22 @@ impl VideoEffectsSettings {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    pub last_input_dir: Option<String>,
+    pub last_output_dir: Option<String>,
+    pub last_preset_id: Option<String>, // Deprecated, kept for migration
+    pub selected_ratio_ids: Vec<AspectRatio>,
+    pub selected_preset_ids: Vec<String>,
+    pub logo_path: Option<String>,
+    pub logo_opacity: Option<f32>,
+    pub logo_position: Option<LogoPosition>,
+    pub blur: Option<bool>,
+    pub blur_sigma: Option<f32>,
+    pub enable_subfolders: Option<bool>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum VideoPresetDTO {

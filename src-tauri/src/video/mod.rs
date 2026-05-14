@@ -1,4 +1,5 @@
 pub mod batch_processor;
+pub mod config;
 pub mod convert;
 pub mod ffmpeg;
 pub mod ffmpeg_args_builder;

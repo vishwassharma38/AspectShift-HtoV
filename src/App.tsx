@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AppConfig,
   AspectRatio,
   AspectRatioTarget,
   BatchProgress,
@@ -473,6 +474,7 @@ export default function App() {
 
   // ── Init ──────────────────────────────────────────────────
   useEffect(() => {
+    loadConfig();
     loadPresets();
     loadAspectRatioTargets();
     invoke<BatchProgress>("get_batch_status")
@@ -485,6 +487,109 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
+
+  // ── Persistence ───────────────────────────────────────────
+  const isInitialLoad = useRef(true);
+
+  const loadConfig = async () => {
+    try {
+      const config = await invoke<AppConfig>("get_config");
+      if (config.lastOutputDir) setOutputDir(config.lastOutputDir);
+      if (config.enableSubfolders !== null) setEnableSubfolders(config.enableSubfolders ?? false);
+      
+      if (config.logoPath || config.logoOpacity !== null) {
+        setEffectsState((prev) => ({
+          ...prev,
+          logo: config.logoPath
+            ? {
+                enabled: true,
+                path: config.logoPath,
+                opacity: config.logoOpacity ?? 1.0,
+                position: config.logoPosition ?? prev.logo?.position ?? "bottom_right",
+                gap: prev.logo?.gap ?? 20,
+                scale: prev.logo?.scale ?? 0.15,
+              }
+            : null,
+          blur: config.blur ?? prev.blur,
+          blurSigma: config.blurSigma ?? prev.blurSigma,
+        }));
+      }
+
+      // Migrate old single selection
+      let ratiosToRestore = [...config.selectedRatioIds];
+      let presetsToRestore = [...config.selectedPresetIds];
+      
+      if (config.lastPresetId && presetsToRestore.length === 0 && ratiosToRestore.length === 0) {
+        restorePresetRef.current = config.lastPresetId;
+      } else {
+        setSelectedRatios(ratiosToRestore);
+        setSelectedPresetIds(presetsToRestore);
+      }
+      
+      isInitialLoad.current = false;
+    } catch (e) {
+      addLog(`Failed to load config: ${errorMessage(e)}`, "error");
+      isInitialLoad.current = false;
+    }
+  };
+
+  const restorePresetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      restorePresetRef.current &&
+      (platformPresets.length > 0 || customPresets.length > 0)
+    ) {
+      const pid = restorePresetRef.current;
+      handleTogglePreset(pid);
+      restorePresetRef.current = null;
+    }
+  }, [platformPresets, customPresets, aspectRatioTargets]);
+
+  const [lastInputDir, setLastInputDir] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isInitialLoad.current) return;
+
+    const timer = setTimeout(async () => {
+      const config: AppConfig = {
+        lastInputDir: lastInputDir || null,
+        lastOutputDir: outputDir || null,
+        lastPresetId: null,
+        selectedRatioIds: selectedRatios,
+        selectedPresetIds: selectedPresetIds,
+        logoPath: effectsState.logo?.path || null,
+        logoOpacity: effectsState.logo?.opacity ?? null,
+        logoPosition: effectsState.logo?.position ?? null,
+        blur: effectsState.blur ?? null,
+        blurSigma: effectsState.blurSigma ?? null,
+        enableSubfolders: enableSubfolders,
+      };
+      try {
+        await invoke("update_config", { config });
+      } catch (e) {
+        console.error("Failed to save config", e);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [outputDir, selectedRatios, selectedPresetIds, effectsState.logo, effectsState.blur, effectsState.blurSigma, enableSubfolders, lastInputDir]);
+
+  const handleResetToDefaults = async () => {
+    try {
+      await invoke("reset_config");
+      setOutputDir("");
+      setLastInputDir(null);
+      setEffectsState(DEFAULT_EFFECTS);
+      setEncodingState(DEFAULT_ENCODING);
+      setSelectionHistory([]);
+      setSelectedRatios([]);
+      setSelectedPresetIds([]);
+      addLog("Settings reset to defaults", "info");
+    } catch (e) {
+      addLog(`Reset failed: ${errorMessage(e)}`, "error");
+    }
+  };
 
   // ── Tauri Event Listeners ─────────────────────────────────
   useEffect(() => {
@@ -642,12 +747,20 @@ export default function App() {
     try {
       const sel = await open({
         multiple: true,
+        defaultPath: lastInputDir || undefined,
         filters: [
           { name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "webm"] },
         ],
       });
       if (!sel) return;
       const files = Array.isArray(sel) ? sel : [sel];
+      const path = files[0];
+      const dir = path.substring(
+        0,
+        Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")),
+      );
+      if (dir) setLastInputDir(dir);
+
       if (files.length === 1) {
         setInputFile(files[0]);
         setBatchFiles([]);
@@ -664,8 +777,13 @@ export default function App() {
 
   const handlePickFolder = async () => {
     try {
-      const sel = await open({ multiple: false, directory: true });
+      const sel = await open({
+        multiple: false,
+        directory: true,
+        defaultPath: lastInputDir || undefined,
+      });
       if (sel && typeof sel === "string") {
+        setLastInputDir(sel);
         addLog("Input folder selected, scanning...", "info");
         setBatchFiles([sel]);
         setInputFile("");
@@ -677,7 +795,11 @@ export default function App() {
 
   const handlePickOutputDir = async () => {
     try {
-      const sel = await open({ multiple: false, directory: true });
+      const sel = await open({
+        multiple: false,
+        directory: true,
+        defaultPath: outputDir || lastInputDir || undefined,
+      });
       if (sel && typeof sel === "string") {
         setOutputDir(sel);
         addLog(`Output directory: ${sel}`, "info");
@@ -1404,6 +1526,16 @@ export default function App() {
                       </div>
                     </>
                   )}
+                </div>
+
+                <div className="settings-group">
+                  <button
+                    className="btn btn-ghost btn-sm btn-full mt-4"
+                    onClick={handleResetToDefaults}
+                    style={{ opacity: 0.6, fontSize: 11 }}
+                  >
+                    Reset all settings to defaults
+                  </button>
                 </div>
               </>
             )}

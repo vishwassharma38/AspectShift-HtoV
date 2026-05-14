@@ -1,7 +1,7 @@
 use aspectshift_htov_lib::video::{
     ffmpeg::VideoProgress,
     types::{
-        AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
+        AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
         CustomPreset, EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions,
         LogoPosition, OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
         StructuredError, VideoEffectsSettings, VideoTransform,
@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<VideoTransform>()
         .register::<LogoOptions>()
         .register::<VideoEffectsSettings>()
+        .register::<AppConfig>()
         .register::<OutputJob>()
         .register::<AspectRatioTarget>()
         .register::<PlatformPreset>()
