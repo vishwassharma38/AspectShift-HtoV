@@ -73,11 +73,14 @@ pub async fn prepare_subtitles(
     input: &str,
     output_dir: &str,
     source_duration_secs: f64,
+    burn_subtitles: bool,
+    export_subtitles: bool,
+    target_width: u32,
+    target_height: u32,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<PathBuf, VideoError> {
     let input_path = Path::new(input);
-    let output_path = Path::new(output_dir);
     let segments = transcribe_to_segments(
         app,
         input_path,
@@ -86,13 +89,44 @@ pub async fn prepare_subtitles(
         on_progress,
     )
     .await?;
-    let srt_path = write_srt_for_input(input_path, output_path, &segments)?;
-    info!(
-        "Generated subtitle file for {} at {}",
-        input_path.display(),
-        srt_path.display()
-    );
-    Ok(srt_path)
+
+    let mut result_path = PathBuf::new();
+
+    // 1. Export SRT if requested (in output directory)
+    if export_subtitles {
+        let output_path = Path::new(output_dir);
+        let srt_path = write_srt_for_input(input_path, output_path, &segments)?;
+        info!(
+            "Generated SRT export for {} at {}",
+            input_path.display(),
+            srt_path.display()
+        );
+        result_path = srt_path;
+    }
+
+    // 2. Generate ASS for burn-in (always in temp directory)
+    if burn_subtitles {
+        let temp_dir = crate::os_utils::OsUtils::get_temp_dir(app);
+        let stem = input_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("subtitle");
+        let ass_path = temp_dir.join(format!("{}_{}.ass", stem, uuid::Uuid::new_v4()));
+        
+        let style = crate::subtitles::positioning::calculate_ass_style(target_width, target_height);
+        crate::subtitles::ass_writer::write_ass(&ass_path, &segments, &style)?;
+        
+        info!(
+            "Generated ASS for burn-in for {} at {}",
+            input_path.display(),
+            ass_path.display()
+        );
+        
+        // If we're burning in, the ASS path is the one we want to return for the FFmpeg filter
+        result_path = ass_path;
+    }
+
+    Ok(result_path)
 }
 
 pub async fn render_single(

@@ -4,8 +4,14 @@ use crate::video::preset_adapter::RenderPlan;
 
 fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str, subtitle_style: &str) -> String {
     let escaped_path = OsUtils::escape_filter_path(subtitle_path);
-    let escaped_style = subtitle_style.replace('\'', "\\'");
-    let subtitle_filter = format!("subtitles='{escaped_path}':force_style='{escaped_style}'");
+    
+    // For ASS files, we don't apply force_style as the style is embedded in the file
+    let subtitle_filter = if subtitle_path.to_lowercase().ends_with(".ass") {
+        format!("subtitles='{escaped_path}'")
+    } else {
+        let escaped_style = subtitle_style.replace('\'', "\\'");
+        format!("subtitles='{escaped_path}':force_style='{escaped_style}'")
+    };
 
     if uses_complex_graph(filter_graph) {
         format!("{filter_graph};[v]{subtitle_filter}[v]")

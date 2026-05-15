@@ -398,11 +398,19 @@ pub async fn start_batch(
                             .unwrap_or(0.0)
                     };
 
+                    let target_ratio = job.output.ratio.get_ratio();
+                    let target_height = 1080;
+                    let target_width = (target_height as f32 * target_ratio) as u32;
+
                     match prepare_subtitles(
                         &app_clone,
                         &input_path,
                         &sub_output_dir,
                         source_duration_secs,
+                        job.output.effects.burn_subtitles_enabled(),
+                        is_export,
+                        target_width,
+                        target_height,
                         Some(token.clone()),
                         Some(Box::new({
                             let state = state_clone.clone();

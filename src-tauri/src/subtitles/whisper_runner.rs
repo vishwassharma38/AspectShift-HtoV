@@ -95,15 +95,66 @@ fn parse_whisper_output(stdout: &str) -> Vec<SubtitleSegment> {
             continue;
         }
 
-        let text = line[(closing_idx + 1)..].trim();
-        if text.is_empty() {
-            continue;
+        let mut text = line[(closing_idx + 1)..].trim().to_string();
+        let mut words = Vec::new();
+
+        // Basic word timestamp extraction if whisper outputs them with <timestamp>word
+        // e.g. [00:00:00.000 --> 00:00:00.000] <00:00:00.000> word1 <00:00:00.500> word2
+        if text.contains('<') && text.contains('>') {
+            let mut parts = Vec::new();
+            let mut current_pos = 0;
+            while let Some(start_bracket) = text[current_pos..].find('<') {
+                let start_bracket = current_pos + start_bracket;
+                if let Some(end_bracket) = text[start_bracket..].find('>') {
+                    let end_bracket = start_bracket + end_bracket;
+                    let timestamp = &text[start_bracket + 1..end_bracket];
+                    if let Some(word_start_ms) = parse_time_to_ms(timestamp) {
+                        parts.push((word_start_ms, start_bracket, end_bracket));
+                    }
+                    current_pos = end_bracket + 1;
+                } else {
+                    break;
+                }
+            }
+
+            for i in 0..parts.len() {
+                let (start_ms, _, end_bracket) = parts[i];
+                let next_start = if i + 1 < parts.len() {
+                    parts[i + 1].1
+                } else {
+                    text.len()
+                };
+                let word_text = text[end_bracket + 1..next_start].trim();
+                if !word_text.is_empty() {
+                    let word_end_ms = if i + 1 < parts.len() {
+                        parts[i + 1].0
+                    } else {
+                        end_ms
+                    };
+                    words.push(crate::subtitles::WordTiming {
+                        word: word_text.to_string(),
+                        start_ms,
+                        end_ms: word_end_ms,
+                    });
+                }
+            }
+            
+            // Clean up text by removing timestamps for the final text field
+            let mut cleaned_text = String::new();
+            let mut last_pos = 0;
+            for (_, start, end) in parts {
+                cleaned_text.push_str(&text[last_pos..start]);
+                last_pos = end + 1;
+            }
+            cleaned_text.push_str(&text[last_pos..]);
+            text = cleaned_text.split_whitespace().collect::<Vec<_>>().join(" ");
         }
 
         segments.push(SubtitleSegment {
             start_ms,
             end_ms,
-            text: text.to_string(),
+            text: crate::subtitles::sanitize_subtitle_text(&text),
+            words,
         });
     }
 
@@ -373,11 +424,23 @@ pub async fn transcribe_to_segments(
         input_path.display(),
         segments.len()
     );
+
+    // 5. Optimize segments for professional timing
+    let optimized = crate::subtitles::timing::optimize_segments(
+        segments,
+        &crate::subtitles::timing::TimingConfig::default(),
+    );
+
+    info!(
+        "Optimized to {} segments for professional timing",
+        optimized.len()
+    );
+
     if let Some(cb) = progress_cb {
         cb(100.0);
     }
 
-    Ok(segments)
+    Ok(optimized)
 }
 
 fn parse_whisper_line_end_ms(raw_line: &str) -> Option<u64> {
