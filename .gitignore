@@ -23,7 +23,8 @@ dist/
 src-tauri/bin/*
 !src-tauri/bin/.gitkeep
 src-tauri/resources/*
-!src-tauri/resources/builtin_presets.json
+!src-tauri/resources/presets/platform_specific_presets.json
+!src-tauri/resources/presets/aspect_ratio_presets.json
 
 # ===========================
 # Environment & Secrets

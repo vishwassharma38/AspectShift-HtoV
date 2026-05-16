@@ -102,15 +102,14 @@ pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
     if job.id.trim().is_empty() {
         return Err(VideoError::InvalidInput("job.id cannot be empty".to_string()));
     }
-    
-    // Traceability Requirement: Ensure source_preset_id is provided
-    if job.source_preset_id.trim().is_empty() {
-         return Err(VideoError::InvalidInput("job.sourcePresetId must be specified for traceability".to_string()));
+
+    // Traceability Requirement: Ensure source_id is provided
+    if job.selection.source_id.trim().is_empty() {
+         return Err(VideoError::InvalidInput("job.selection.sourceId must be specified for traceability".to_string()));
     }
-    
+
     // 1. Encoding Bounds
-    validate_encoding_profile(&job.encoding)?;
-    
+    validate_encoding_profile(&job.encoding)?;    
     // 2. Video Effects Bounds
     validate_effects(&job.effects)?;
     

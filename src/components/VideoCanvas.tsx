@@ -164,6 +164,52 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     return style;
   }, [effects.logo, canvasSize]);
 
+  const subtitleStyle = useMemo(() => {
+    if (ratio === null) return null;
+
+    // Replicate backend logic from src-tauri/src/subtitles/positioning.rs
+    let marginVPct = 0.08;
+    if (ratio < 0.6) {
+      marginVPct = 0.22;
+    } else if (ratio < 1.1) {
+      marginVPct = 0.16;
+    } else if (ratio < 1.5) {
+      marginVPct = 0.12;
+    }
+
+    const fontSize = canvasSize.height * 0.05;
+    const marginV = canvasSize.height * marginVPct;
+    const outlineWidth = canvasSize.height * (2.5 / 1080);
+
+    const style: React.CSSProperties = {
+      position: "absolute",
+      bottom: marginV,
+      left: "5%",
+      right: "5%",
+      textAlign: "center",
+      color: "white",
+      fontSize: Math.max(12, fontSize),
+      fontWeight: "bold",
+      fontFamily: "Arial, sans-serif",
+      zIndex: 20,
+      pointerEvents: "none",
+      lineHeight: 1.2,
+      // Replicate ASS outline with multiple shadows for better coverage
+      textShadow: `
+        -${outlineWidth}px -${outlineWidth}px 0 #000,
+         ${outlineWidth}px -${outlineWidth}px 0 #000,
+        -${outlineWidth}px  ${outlineWidth}px 0 #000,
+         ${outlineWidth}px  ${outlineWidth}px 0 #000,
+         0px ${outlineWidth}px 0 #000,
+         0px -${outlineWidth}px 0 #000,
+         ${outlineWidth}px 0px 0 #000,
+        -${outlineWidth}px 0px 0 #000
+      `,
+    };
+
+    return style;
+  }, [ratio, canvasSize]);
+
   return (
     <div
       ref={containerRef}
@@ -291,19 +337,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             {(effects.exportSubtitles || effects.burnSubtitles) && (
               <div
                 className="canvas-subtitles"
-                style={{
-                  position: "absolute",
-                  bottom: "10%",
-                  left: "10%",
-                  right: "10%",
-                  textAlign: "center",
-                  color: "white",
-                  textShadow: "0 2px 4px rgba(0,0,0,0.8)",
-                  fontSize: Math.max(12, canvasSize.width / 20),
-                  fontWeight: 600,
-                  zIndex: 20,
-                  pointerEvents: "none",
-                }}
+                style={subtitleStyle!}
               >
                 [ Subtitles Preview ]
               </div>

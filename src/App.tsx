@@ -17,6 +17,8 @@ import type {
   OutputFormat,
   OutputJob,
   PlatformPreset,
+  SelectionMetadata,
+  TargetType,
   VideoEffectsSettings,
   VideoProgress,
   VideoTransform,
@@ -41,7 +43,7 @@ type VideoPresetDTO =
 
 type SelectionItem =
   | { type: "aspectRatio"; id: AspectRatio }
-  | { type: "platform"; id: string };
+  | { type: "preset"; id: string };
 
 interface LogEntry {
   time: string;
@@ -111,6 +113,17 @@ const SPEED_PRESETS = [
   "slow",
   "slower",
   "veryslow",
+] as const;
+
+const AUDIO_BITRATE_CANDIDATES = [
+  "64k",
+  "96k",
+  "128k",
+  "160k",
+  "192k",
+  "256k",
+  "320k",
+  "384k",
 ] as const;
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -233,6 +246,22 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
   };
 }
 
+function parseBitrateKbps(value: string): number | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.endsWith("k")) return null;
+  const n = Number.parseInt(normalized.slice(0, -1), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function audioBitrateLabel(value: string): string {
+  const kbps = parseBitrateKbps(value);
+  if (kbps === null) return value;
+  if (kbps <= 96) return `${kbps}k (Low)`;
+  if (kbps <= 192) return `${kbps}k (Standard)`;
+  if (kbps <= 320) return `${kbps}k (High)`;
+  return `${kbps}k (Max)`;
+}
+
 /**
  * Resolves JobStatus (which can be a string or {error: string}) to a stable
  * string key safe for CSS class names and display logic.
@@ -347,6 +376,7 @@ export default function App() {
 
   // Files
   const [inputFile, setInputFile] = useState("");
+  const [previewFile, setPreviewFile] = useState("");
   const [batchFiles, setBatchFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState("");
   const [enableSubfolders, setEnableSubfolders] = useState(false);
@@ -403,8 +433,17 @@ export default function App() {
   const [showGuides, setShowGuides] = useState(true);
   const [showSafeFrames, setShowSafeFrames] = useState(false);
 
-  // Derived: last active selection drives preview ratio
-  const activeSelection = selectionHistory[selectionHistory.length - 1] ?? null;
+  // Derived: last active selection drives preview ratio.
+  // Fallback to existing checked items so restored config stays in sync.
+  const activeSelection = useMemo<SelectionItem | null>(() => {
+    const fromHistory = selectionHistory[selectionHistory.length - 1];
+    if (fromHistory) return fromHistory;
+    const lastPresetId = selectedPresetIds[selectedPresetIds.length - 1];
+    if (lastPresetId) return { type: "preset", id: lastPresetId };
+    const lastRatio = selectedRatios[selectedRatios.length - 1];
+    if (lastRatio) return { type: "aspectRatio", id: lastRatio };
+    return null;
+  }, [selectionHistory, selectedPresetIds, selectedRatios]);
   const uiFlips = useMemo(
     () => transformToUiFlips(effectsState.transform),
     [effectsState.transform],
@@ -449,12 +488,17 @@ export default function App() {
 
   // Sync encoding when a platform preset becomes the active selection
   useEffect(() => {
-    if (!activeSelection || activeSelection.type !== "platform") return;
+    if (!activeSelection || activeSelection.type !== "preset") return;
     const p = platformPresets.find((x) => x.id === activeSelection.id);
     if (p) {
       setEncodingState(deepClone(p.encoding));
+      return;
     }
-  }, [activeSelection, platformPresets]);
+    const cp = customPresets.find((x) => x.id === activeSelection.id);
+    if (cp) {
+      setEncodingState(deepClone(cp.encoding));
+    }
+  }, [activeSelection, platformPresets, customPresets]);
 
   // ── Theme ──────────────────────────────────────────────────
   useEffect(() => {
@@ -495,8 +539,9 @@ export default function App() {
     try {
       const config = await invoke<AppConfig>("get_config");
       if (config.lastOutputDir) setOutputDir(config.lastOutputDir);
-      if (config.enableSubfolders !== null) setEnableSubfolders(config.enableSubfolders ?? false);
-      
+      if (config.enableSubfolders !== null)
+        setEnableSubfolders(config.enableSubfolders ?? false);
+
       if (config.logoPath || config.logoOpacity !== null) {
         setEffectsState((prev) => ({
           ...prev,
@@ -505,7 +550,8 @@ export default function App() {
                 enabled: true,
                 path: config.logoPath,
                 opacity: config.logoOpacity ?? 1.0,
-                position: config.logoPosition ?? prev.logo?.position ?? "bottom_right",
+                position:
+                  config.logoPosition ?? prev.logo?.position ?? "bottom_right",
                 gap: prev.logo?.gap ?? 20,
                 scale: prev.logo?.scale ?? 0.15,
               }
@@ -518,14 +564,18 @@ export default function App() {
       // Migrate old single selection
       let ratiosToRestore = [...config.selectedRatioIds];
       let presetsToRestore = [...config.selectedPresetIds];
-      
-      if (config.lastPresetId && presetsToRestore.length === 0 && ratiosToRestore.length === 0) {
+
+      if (
+        config.lastPresetId &&
+        presetsToRestore.length === 0 &&
+        ratiosToRestore.length === 0
+      ) {
         restorePresetRef.current = config.lastPresetId;
       } else {
         setSelectedRatios(ratiosToRestore);
         setSelectedPresetIds(presetsToRestore);
       }
-      
+
       isInitialLoad.current = false;
     } catch (e) {
       addLog(`Failed to load config: ${errorMessage(e)}`, "error");
@@ -573,7 +623,16 @@ export default function App() {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [outputDir, selectedRatios, selectedPresetIds, effectsState.logo, effectsState.blur, effectsState.blurSigma, enableSubfolders, lastInputDir]);
+  }, [
+    outputDir,
+    selectedRatios,
+    selectedPresetIds,
+    effectsState.logo,
+    effectsState.blur,
+    effectsState.blurSigma,
+    enableSubfolders,
+    lastInputDir,
+  ]);
 
   const handleResetToDefaults = async () => {
     try {
@@ -674,7 +733,7 @@ export default function App() {
 
   // ── Orientation detect on file change ─────────────────────
   useEffect(() => {
-    if (!inputFile || !isVideoPath(inputFile)) {
+    if (!previewFile || !isVideoPath(previewFile)) {
       setOrientation(null);
       setFileReadiness(null);
       return;
@@ -684,17 +743,17 @@ export default function App() {
     // and VideoCanvas stays hidden until the real geometry arrives.
     setOrientation(null);
 
-    invoke<OrientationInfo>("detect_orientation", { filePath: inputFile })
+    invoke<OrientationInfo>("detect_orientation", { filePath: previewFile })
       .then(setOrientation)
       .catch(() => setOrientation(null));
 
-    invoke<FileReadiness>("check_file_ready", { path: inputFile })
+    invoke<FileReadiness>("check_file_ready", { path: previewFile })
       .then(setFileReadiness)
       .catch((e) => {
         setFileReadiness(null);
         addLog(`File readiness check failed: ${errorMessage(e)}`, "warn");
       });
-  }, [inputFile]);
+  }, [previewFile]);
 
   // ── Auto-scroll log ────────────────────────────────────────
   useEffect(() => {
@@ -763,10 +822,12 @@ export default function App() {
 
       if (files.length === 1) {
         setInputFile(files[0]);
+        setPreviewFile(files[0]);
         setBatchFiles([]);
         addLog(`File selected: ${basename(files[0])}`, "info");
       } else {
         setInputFile(files[0]);
+        setPreviewFile(files[0]);
         setBatchFiles(files);
         addLog(`${files.length} files selected for batch`, "info");
       }
@@ -786,7 +847,26 @@ export default function App() {
         setLastInputDir(sel);
         addLog("Input folder selected, scanning...", "info");
         setBatchFiles([sel]);
-        setInputFile("");
+
+        // Automatically select the first video for preview
+        try {
+          const firstVideo = await invoke<string | null>(
+            "get_first_video_in_folder",
+            { folderPath: sel },
+          );
+          if (firstVideo) {
+            setPreviewFile(firstVideo);
+            setInputFile(""); // Clear to ensure UI displays "Folder Selected: ..."
+          } else {
+            setPreviewFile("");
+            setInputFile("");
+            addLog("No valid video files found in selected folder", "warn");
+          }
+        } catch (scanErr) {
+          console.error("Failed to scan folder:", scanErr);
+          setPreviewFile("");
+          setInputFile("");
+        }
       }
     } catch (e) {
       addLog(`Folder picker error: ${errorMessage(e)}`, "error");
@@ -835,9 +915,11 @@ export default function App() {
       if (files.length === 0) return;
       if (files.length === 1) {
         setInputFile(files[0]);
+        setPreviewFile(files[0]);
         setBatchFiles([]);
       } else {
         setInputFile(files[0]);
+        setPreviewFile(files[0]);
         setBatchFiles(files);
       }
       addLog(`Dropped ${files.length} file(s)`, "info");
@@ -890,7 +972,7 @@ export default function App() {
     if (isSelected) {
       setSelectedPresetIds((prev) => prev.filter((x) => x !== id));
       setSelectionHistory((h) =>
-        h.filter((x) => !(x.type === "platform" && x.id === id)),
+        h.filter((x) => !(x.type === "preset" && x.id === id)),
       );
     } else {
       if (selectedPresetIds.length >= 5) {
@@ -898,7 +980,7 @@ export default function App() {
         return;
       }
       setSelectedPresetIds((prev) => [...prev, id]);
-      setSelectionHistory((h) => [...h, { type: "platform", id }]);
+      setSelectionHistory((h) => [...h, { type: "preset", id }]);
     }
   };
 
@@ -921,50 +1003,62 @@ export default function App() {
     const normalizedEffects = deepClone(normalizeEffects(effectsState));
 
     // Build targets from platform presets
-    const platformTargets: OutputJob[] = selectedPresetIds.flatMap((id) => {
-      const p = platformPresets.find((x) => x.id === id);
-      const cp = customPresets.find((x) => x.id === id);
+    const platformTargets: OutputJob[] = selectedPresetIds.flatMap(
+      (id): OutputJob[] => {
+        const p = platformPresets.find((x) => x.id === id);
+        const cp = customPresets.find((x) => x.id === id);
 
-      if (p) {
-        return [
-          {
-            id: generateId(),
-            sourcePresetId: `platform:${p.id}`,
-            ratio: p.ratio,
-            encoding: deepClone(encodingState),
-            effects: normalizedEffects,
-            platformConfig: p.platformConfig ?? null,
-            presetName: p.name,
-          } satisfies OutputJob,
-        ];
-      }
-      if (cp) {
-        return [
-          {
-            id: generateId(),
-            sourcePresetId: `custom:${cp.id}`,
-            ratio: cp.ratio,
-            encoding: deepClone(cp.encoding),
-            effects: normalizedEffects,
-            platformConfig: null,
-            presetName: cp.name,
-          } satisfies OutputJob,
-        ];
-      }
-      return [];
-    });
+        if (p) {
+          return [
+            {
+              id: generateId(),
+              ratio: p.ratio,
+              encoding: deepClone(p.encoding),
+              effects: normalizedEffects,
+              platformConfig: p.platformConfig ?? null,
+              selection: {
+                sourceType: "platform" as TargetType,
+                sourceId: p.id,
+                label: p.name,
+              } as SelectionMetadata,
+            },
+          ];
+        }
+        if (cp) {
+          return [
+            {
+              id: generateId(),
+              ratio: cp.ratio,
+              encoding: deepClone(cp.encoding),
+              effects: normalizedEffects,
+              platformConfig: null,
+              selection: {
+                sourceType: "custom" as TargetType,
+                sourceId: cp.id,
+                label: cp.name,
+              } as SelectionMetadata,
+            },
+          ];
+        }
+        return [];
+      },
+    );
 
     // Build targets from aspect ratio selections
     const ratioTargets: OutputJob[] = selectedRatios.map((ratio) => {
       const target = aspectRatioTargets.find((t) => t.ratio === ratio);
+      const label = RATIO_DISPLAY[ratio] ?? ratio;
       return {
         id: generateId(),
-        sourcePresetId: `aspectRatio:${ratio}`,
         ratio,
         encoding: deepClone(target?.encoding ?? DEFAULT_ENCODING),
         effects: normalizedEffects,
         platformConfig: null,
-        presetName: null,
+        selection: {
+          sourceType: "aspectRatio" as TargetType,
+          sourceId: ratio,
+          label: label,
+        } as SelectionMetadata,
       } satisfies OutputJob;
     });
 
@@ -1021,7 +1115,7 @@ export default function App() {
     const ratio: AspectRatio =
       activeSelection?.type === "aspectRatio"
         ? activeSelection.id
-        : activeSelection?.type === "platform"
+        : activeSelection?.type === "preset"
           ? (platformPresets.find((p) => p.id === activeSelection.id)?.ratio ??
             selectedRatios[0] ??
             "ratio9x16")
@@ -1049,7 +1143,7 @@ export default function App() {
       await loadPresets();
       setSelectedPresetIds((prev) => prev.filter((x) => x !== id));
       setSelectionHistory((h) =>
-        h.filter((x) => !(x.type === "platform" && x.id === id)),
+        h.filter((x) => !(x.type === "preset" && x.id === id)),
       );
       addLog("Preset deleted", "info");
     } catch (e) {
@@ -1086,6 +1180,33 @@ export default function App() {
   const stageMessage =
     batchProgress?.currentStageMessage ??
     (isRunning ? "Preparing pipeline..." : "Idle");
+  const importSelectionLabel =
+    batchFiles.length > 1
+      ? `${batchFiles.length} files selected`
+      : batchFiles.length === 1 && !inputFile
+        ? `Folder Selected: ${basename(batchFiles[0])}`
+        : inputFile
+          ? basename(inputFile)
+          : "Drop videos here";
+  const importSelectionTooltip =
+    batchFiles.length > 1
+      ? undefined
+      : batchFiles.length === 1 && !inputFile
+        ? batchFiles[0]
+        : inputFile || undefined;
+  const outputDirLabel = outputDir || "No output selected";
+  const audioBitrateOptions = useMemo(() => {
+    const values = new Set<string>(AUDIO_BITRATE_CANDIDATES);
+    values.add(encodingState.audioBitrate);
+    for (const p of platformPresets) values.add(p.encoding.audioBitrate);
+    for (const p of customPresets) values.add(p.encoding.audioBitrate);
+    return [...values].sort((a, b) => {
+      const ak = parseBitrateKbps(a) ?? Number.MAX_SAFE_INTEGER;
+      const bk = parseBitrateKbps(b) ?? Number.MAX_SAFE_INTEGER;
+      if (ak === bk) return a.localeCompare(b);
+      return ak - bk;
+    });
+  }, [encodingState.audioBitrate, platformPresets, customPresets]);
 
   return (
     <div className="app-shell">
@@ -1147,15 +1268,9 @@ export default function App() {
                 </svg>
               </div>
               <div className="drop-zone-text">
-                {batchFiles.length > 1 ? (
-                  <strong>{batchFiles.length} files selected</strong>
-                ) : batchFiles.length === 1 && !inputFile ? (
-                  <strong>Folder Selected: {basename(batchFiles[0])}</strong>
-                ) : inputFile ? (
-                  <strong>{basename(inputFile)}</strong>
-                ) : (
-                  <strong>Drop videos here</strong>
-                )}
+                <strong title={importSelectionTooltip}>
+                  {importSelectionLabel}
+                </strong>
               </div>
               <div
                 className="drop-zone-actions"
@@ -1174,8 +1289,11 @@ export default function App() {
           <div className="sidebar-section">
             <div className="sidebar-section-title">Output Directory</div>
             <div className="path-row">
-              <div className={`path-display${outputDir ? "" : " empty"}`}>
-                {outputDir || "No output selected"}
+              <div
+                className={`path-display${outputDir ? "" : " empty"}`}
+                title={outputDir || undefined}
+              >
+                {outputDirLabel}
               </div>
             </div>
             <div className="flex gap-6 mt-2">
@@ -1257,24 +1375,6 @@ export default function App() {
                       </span>
                     </div>
                   )}
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Output Format</div>
-                  <select
-                    className="input select"
-                    value={effectsState.outputFormat ?? "mp4"}
-                    onChange={(e) =>
-                      setEffectsState({
-                        ...effectsState,
-                        outputFormat: e.target.value as OutputFormat,
-                      })
-                    }
-                  >
-                    <option value="mp4">MP4 (H.264)</option>
-                    <option value="mov">MOV (H.264)</option>
-                    <option value="webm">WebM (VP9)</option>
-                  </select>
                 </div>
 
                 <div className="settings-group">
@@ -1607,13 +1707,30 @@ export default function App() {
                     })
                   }
                 >
-                  <option value="64k">64k (Low)</option>
-                  <option value="96k">96k</option>
-                  <option value="128k">128k (Standard)</option>
-                  <option value="192k">192k</option>
-                  <option value="256k">256k (High)</option>
-                  <option value="320k">320k (Max)</option>
+                  {audioBitrateOptions.map((bitrate) => (
+                    <option key={bitrate} value={bitrate}>
+                      {audioBitrateLabel(bitrate)}
+                    </option>
+                  ))}
                 </select>
+
+                <div className="settings-group">
+                  <div className="settings-group-title">Output Format</div>
+                  <select
+                    className="input select"
+                    value={effectsState.outputFormat ?? "mp4"}
+                    onChange={(e) =>
+                      setEffectsState({
+                        ...effectsState,
+                        outputFormat: e.target.value as OutputFormat,
+                      })
+                    }
+                  >
+                    <option value="mp4">MP4 (H.264)</option>
+                    <option value="mov">MOV (H.264)</option>
+                    <option value="webm">WebM (VP9)</option>
+                  </select>
+                </div>
               </div>
             )}
 
@@ -1713,7 +1830,7 @@ export default function App() {
               </button>
             </div>
             <VideoCanvas
-              videoSrc={inputFile}
+              videoSrc={previewFile}
               ratio={effectivePreviewRatio}
               effects={effectsState}
               orientation={orientation}
@@ -1851,7 +1968,7 @@ export default function App() {
               {batchProgress && (
                 <div
                   className="text-xs text-muted font-mono"
-                  style={{ marginTop: 2, fontSize: 9 }}
+                  style={{ marginTop: 2.5, fontSize: 10 }}
                 >
                   {stageMessage}
                 </div>
@@ -1942,7 +2059,7 @@ export default function App() {
                       </div>
                       <div className="queue-item-meta">
                         <span className="queue-item-ratio">
-                          {RATIO_DISPLAY[job.ratio] ?? job.ratio}
+                          {job.selection.label}
                         </span>
                         <span
                           className={`queue-item-status-text${isFail ? " text-error" : ""}`}

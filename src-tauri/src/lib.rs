@@ -22,6 +22,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            video::get_first_video_in_folder,
             video::detect_orientation,
             video::convert_to_ratio,
             video::check_file_ready,

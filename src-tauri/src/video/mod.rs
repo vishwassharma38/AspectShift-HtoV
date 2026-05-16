@@ -25,6 +25,28 @@ use types::{
 };
 
 #[tauri::command]
+pub async fn get_first_video_in_folder(
+    folder_path: String,
+) -> Result<Option<String>, StructuredError> {
+    let entry_path = std::path::PathBuf::from(&folder_path);
+    let mut read_dir = tokio::fs::read_dir(&entry_path)
+        .await
+        .map_err(|e| StructuredError {
+            code: "io_error".to_string(),
+            message: e.to_string(),
+        })?;
+
+    while let Ok(Some(child)) = read_dir.next_entry().await {
+        let child_path = child.path();
+        if child_path.is_file() && crate::os_utils::OsUtils::has_supported_video_extension(&child_path)
+        {
+            return Ok(Some(child_path.to_string_lossy().to_string()));
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
 pub async fn get_all_presets(app: AppHandle) -> Result<Vec<types::VideoPresetDTO>, String> {
     let mut presets = Vec::new();
     for p in presets::get_builtin_presets() {

@@ -223,16 +223,31 @@ pub enum VideoPresetDTO {
     Custom(CustomPreset),
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetType {
+    AspectRatio,
+    Platform,
+    Custom,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionMetadata {
+    pub source_type: TargetType,
+    pub source_id: String,
+    pub label: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputJob {
     pub id: String,
-    pub source_preset_id: String,
     pub ratio: AspectRatio,
     pub encoding: EncodingProfile,
     pub effects: VideoEffectsSettings,
     pub platform_config: Option<PlatformConfig>,
-    pub preset_name: Option<String>,
+    pub selection: SelectionMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -247,14 +262,6 @@ pub struct ResolvedJob {
     pub effects: VideoEffectsSettings,
     pub platform_config: Option<PlatformConfig>,
     pub subtitle_path: Option<std::path::PathBuf>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Type)]
-#[serde(rename_all = "camelCase")]
-pub enum TargetType {
-    AspectRatio,
-    Platform,
-    Custom,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -390,6 +397,7 @@ pub struct FileProgress {
     pub status: JobStatus,
     pub thumbnail_path: Option<String>,
     pub duration_secs: f64,
+    pub selection: SelectionMetadata,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Type)]

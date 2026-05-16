@@ -376,6 +376,9 @@ html.theme-transitioning *::after {
   transition: all 0.2s ease;
   background: var(--bg-input);
   position: relative;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .drop-zone:hover,
@@ -399,10 +402,20 @@ html.theme-transitioning *::after {
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.4;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .drop-zone-text strong {
   color: var(--accent);
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .drop-zone-actions {
@@ -793,7 +806,7 @@ html.theme-transitioning *::after {
   font-weight: 700;
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  line-height: 1;
+  line-height: 1.5;
 }
 
 .queue-item-status-text {
@@ -1406,10 +1419,16 @@ html.theme-transitioning *::after {
   display: flex;
   gap: 6px;
   align-items: center;
+  width: 100%;
+  min-width: 0;
 }
 
 .path-display {
   flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  display: block;
   padding: 6px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);

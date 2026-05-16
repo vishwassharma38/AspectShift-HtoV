@@ -95,7 +95,9 @@ pub fn cleanup_orphan_temp_outputs(root: &Path) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::video::types::{AspectRatio, EncodingProfile, OutputJob, VideoEffectsSettings};
+    use crate::video::types::{
+        AspectRatio, EncodingProfile, OutputJob, SelectionMetadata, TargetType, VideoEffectsSettings,
+    };
 
     fn make_target(label: &str, target_type: TargetType) -> OutputTarget {
         OutputTarget {
@@ -108,8 +110,11 @@ mod tests {
                 encoding: EncodingProfile::standard(),
                 effects: VideoEffectsSettings::default(),
                 platform_config: None,
-                preset_name: if let TargetType::Platform = target_type { Some(label.to_string()) } else { None },
-                source_preset_id: String::new(),
+                selection: SelectionMetadata {
+                    source_type: target_type,
+                    source_id: label.to_string(),
+                    label: label.to_string(),
+                },
             },
         }
     }

@@ -1,44 +1,44 @@
-use crate::video::types::{
-    AspectRatio, AspectRatioTarget, CustomPreset, EncodingProfile, PlatformPreset, VideoError,
-};
+use crate::video::types::{AspectRatioTarget, CustomPreset, PlatformPreset, VideoError};
+use crate::video::validation::{validate_encoding_profile, validate_preset};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
 
-pub fn get_aspect_ratio_targets() -> Vec<AspectRatioTarget> {
-    vec![
-        AspectRatioTarget {
-            id: "ratio9x16".to_string(),
-            ratio: AspectRatio::Ratio9x16,
-            encoding: EncodingProfile::standard(),
-        },
-        AspectRatioTarget {
-            id: "ratio1x1".to_string(),
-            ratio: AspectRatio::Ratio1x1,
-            encoding: EncodingProfile::standard(),
-        },
-        AspectRatioTarget {
-            id: "ratio4x5".to_string(),
-            ratio: AspectRatio::Ratio4x5,
-            encoding: EncodingProfile::standard(),
-        },
-        AspectRatioTarget {
-            id: "ratio2x3".to_string(),
-            ratio: AspectRatio::Ratio2x3,
-            encoding: EncodingProfile::standard(),
-        },
-        AspectRatioTarget {
-            id: "ratio16x9".to_string(),
-            ratio: AspectRatio::Ratio16x9,
-            encoding: EncodingProfile::standard(),
-        },
-    ]
+pub fn get_builtin_presets() -> Vec<PlatformPreset> {
+    const RAW: &str = include_str!("../../resources/presets/platform_specific_presets.json");
+    let presets: Vec<PlatformPreset> =
+        serde_json::from_str(RAW).expect("platform_specific_presets.json is malformed - fix the file");
+
+    for preset in &presets {
+        validate_preset(preset).expect("platform_specific_presets.json contains an invalid preset");
+    }
+
+    presets
 }
 
-pub fn get_builtin_presets() -> Vec<PlatformPreset> {
-    const RAW: &str = include_str!("../../resources/builtin_presets.json");
-    serde_json::from_str(RAW).expect("builtin_presets.json is malformed — fix the file")
+pub fn get_aspect_ratio_targets() -> Vec<AspectRatioTarget> {
+    const RAW: &str = include_str!("../../resources/presets/aspect_ratio_presets.json");
+    let targets: Vec<AspectRatioTarget> = serde_json::from_str(RAW)
+        .expect("aspect_ratio_presets.json is malformed - fix the file");
+
+    let mut ids = HashSet::new();
+    for target in &targets {
+        assert!(
+            !target.id.trim().is_empty(),
+            "aspect_ratio_presets.json contains a target with an empty id"
+        );
+        assert!(
+            ids.insert(target.id.clone()),
+            "aspect_ratio_presets.json contains a duplicate target id: {}",
+            target.id
+        );
+        validate_encoding_profile(&target.encoding)
+            .expect("aspect_ratio_presets.json contains invalid encoding settings");
+    }
+
+    targets
 }
 
 fn get_presets_path(app: &AppHandle) -> Result<PathBuf, VideoError> {

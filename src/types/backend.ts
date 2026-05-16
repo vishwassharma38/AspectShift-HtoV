@@ -75,6 +75,7 @@ export type FileProgress = {
 	status: JobStatus,
 	thumbnailPath: string | null,
 	durationSecs: number,
+	selection: SelectionMetadata,
 };
 
 export type FileReadiness = {
@@ -111,12 +112,11 @@ export type OutputFormat = "mp4" | "mov" | "webm";
 
 export type OutputJob = {
 	id: string,
-	sourcePresetId: string,
 	ratio: AspectRatio,
 	encoding: EncodingProfile,
 	effects: VideoEffectsSettings,
 	platformConfig: PlatformConfig | null,
-	presetName: string | null,
+	selection: SelectionMetadata,
 };
 
 export type PlatformConfig = {
@@ -135,10 +135,18 @@ export type PlatformPreset = {
 	isBuiltin: boolean,
 };
 
+export type SelectionMetadata = {
+	sourceType: TargetType,
+	sourceId: string,
+	label: string,
+};
+
 export type StructuredError = {
 	code: string,
 	message: string,
 };
+
+export type TargetType = "aspectRatio" | "platform" | "custom";
 
 export type VideoEffectsSettings = {
 	blur: boolean | null,

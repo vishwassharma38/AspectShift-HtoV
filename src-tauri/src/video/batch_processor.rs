@@ -213,6 +213,7 @@ pub async fn start_batch(
                     },
                     thumbnail_path: thumb_path.clone(),
                     duration_secs: duration,
+                    selection: target.job.selection.clone(),
                 });
 
                 if probe_error.is_none() {
