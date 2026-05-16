@@ -3,7 +3,30 @@
    Day / Night Theme System
    ============================================================ */
 
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+/* ── Typography ────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src:
+    url("./assets/fonts/SpaceGrotesk-VariableFont_wght.woff2")
+      format("woff2-variations"),
+    url("./assets/fonts/SpaceGrotesk-VariableFont_wght.woff2") format("woff2");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: block;
+  font-synthesis: none;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src:
+    url("./assets/fonts/JetBrainsMono[wght].woff2") format("woff2-variations"),
+    url("./assets/fonts/JetBrainsMono[wght].woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: block;
+  font-synthesis: none;
+}
 
 /* ── Theme Variables ─────────────────────────────────────── */
 html[data-theme="day"] {
@@ -147,15 +170,16 @@ html {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
-  font-family: "Space Grotesk", system-ui, sans-serif;
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
-  line-height: 1.5;
-  overflow: hidden;
-  height: 100vh;
+  font-family:
+    "Space Grotesk",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
 }
 
 /* ── Theme Transition ─────────────────────────────────────────
