@@ -125,6 +125,7 @@ const AUDIO_BITRATE_CANDIDATES = [
   "320k",
   "384k",
 ] as const;
+const DEFAULT_PREVIEW_VOLUME = 20;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -378,6 +379,7 @@ export default function App() {
   const [inputFile, setInputFile] = useState("");
   const [previewFile, setPreviewFile] = useState("");
   const [batchFiles, setBatchFiles] = useState<string[]>([]);
+  const [folderPreviewFiles, setFolderPreviewFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState("");
   const [enableSubfolders, setEnableSubfolders] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -432,6 +434,82 @@ export default function App() {
   // Guides overlay
   const [showGuides, setShowGuides] = useState(true);
   const [showSafeFrames, setShowSafeFrames] = useState(false);
+  const [previewVolume, setPreviewVolume] = useState<number>(
+    DEFAULT_PREVIEW_VOLUME,
+  );
+  const [volumeSliderActive, setVolumeSliderActive] = useState(false);
+  const [volumeSliderInteracting, setVolumeSliderInteracting] = useState(false);
+  const [volumeSliderHovering, setVolumeSliderHovering] = useState(false);
+  const [volumeSliderFocusWithin, setVolumeSliderFocusWithin] = useState(false);
+  const volumeCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const previewVolumeRef = useRef<HTMLDivElement | null>(null);
+
+  const cancelVolumeCollapse = useCallback(() => {
+    if (volumeCollapseTimer.current) {
+      clearTimeout(volumeCollapseTimer.current);
+      volumeCollapseTimer.current = null;
+    }
+  }, []);
+
+  const scheduleVolumeCollapse = useCallback(() => {
+    cancelVolumeCollapse();
+    volumeCollapseTimer.current = setTimeout(() => {
+      setVolumeSliderActive(false);
+    }, 1200);
+  }, [cancelVolumeCollapse]);
+
+  const handleVolumeChange = useCallback((val: number) => {
+    setPreviewVolume(val);
+    setVolumeSliderActive(true);
+  }, []);
+
+  useEffect(() => {
+    if (!volumeSliderActive) return;
+    if (
+      volumeSliderInteracting ||
+      volumeSliderHovering ||
+      volumeSliderFocusWithin
+    ) {
+      cancelVolumeCollapse();
+      return;
+    }
+    scheduleVolumeCollapse();
+  }, [
+    volumeSliderActive,
+    volumeSliderInteracting,
+    volumeSliderHovering,
+    volumeSliderFocusWithin,
+    cancelVolumeCollapse,
+    scheduleVolumeCollapse,
+  ]);
+
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (!previewVolumeRef.current) return;
+      if (previewVolumeRef.current.contains(e.target as Node)) return;
+      cancelVolumeCollapse();
+      setVolumeSliderInteracting(false);
+      setVolumeSliderActive(false);
+    };
+    const onPointerUp = () => {
+      setVolumeSliderInteracting(false);
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [cancelVolumeCollapse]);
+
+  useEffect(() => {
+    return () => {
+      cancelVolumeCollapse();
+    };
+  }, [cancelVolumeCollapse]);
 
   // Derived: last active selection drives preview ratio.
   // Fallback to existing checked items so restored config stays in sync.
@@ -541,6 +619,12 @@ export default function App() {
       if (config.lastOutputDir) setOutputDir(config.lastOutputDir);
       if (config.enableSubfolders !== null)
         setEnableSubfolders(config.enableSubfolders ?? false);
+      setPreviewVolume(
+        Math.max(
+          0,
+          Math.min(100, config.previewVolume ?? DEFAULT_PREVIEW_VOLUME),
+        ),
+      );
 
       if (config.logoPath || config.logoOpacity !== null) {
         setEffectsState((prev) => ({
@@ -614,6 +698,7 @@ export default function App() {
         blur: effectsState.blur ?? null,
         blurSigma: effectsState.blurSigma ?? null,
         enableSubfolders: enableSubfolders,
+        previewVolume: previewVolume,
       };
       try {
         await invoke("update_config", { config });
@@ -632,6 +717,7 @@ export default function App() {
     effectsState.blurSigma,
     enableSubfolders,
     lastInputDir,
+    previewVolume,
   ]);
 
   const handleResetToDefaults = async () => {
@@ -644,6 +730,7 @@ export default function App() {
       setSelectionHistory([]);
       setSelectedRatios([]);
       setSelectedPresetIds([]);
+      setPreviewVolume(DEFAULT_PREVIEW_VOLUME);
       addLog("Settings reset to defaults", "info");
     } catch (e) {
       addLog(`Reset failed: ${errorMessage(e)}`, "error");
@@ -824,11 +911,13 @@ export default function App() {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles([]);
+        setFolderPreviewFiles([]);
         addLog(`File selected: ${basename(files[0])}`, "info");
       } else {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles(files);
+        setFolderPreviewFiles([]);
         addLog(`${files.length} files selected for batch`, "info");
       }
     } catch (e) {
@@ -848,15 +937,25 @@ export default function App() {
         addLog("Input folder selected, scanning...", "info");
         setBatchFiles([sel]);
 
-        // Automatically select the first video for preview
         try {
-          const firstVideo = await invoke<string | null>(
-            "get_first_video_in_folder",
-            { folderPath: sel },
-          );
+          let videos: string[] = [];
+          try {
+            videos = await invoke<string[]>("get_videos_in_folder", {
+              folderPath: sel,
+            });
+          } catch {
+            const firstVideo = await invoke<string | null>(
+              "get_first_video_in_folder",
+              { folderPath: sel },
+            );
+            videos = firstVideo ? [firstVideo] : [];
+          }
+
+          setFolderPreviewFiles(videos);
+          const firstVideo = videos[0] ?? null;
           if (firstVideo) {
             setPreviewFile(firstVideo);
-            setInputFile(""); // Clear to ensure UI displays "Folder Selected: ..."
+            setInputFile("");
           } else {
             setPreviewFile("");
             setInputFile("");
@@ -866,6 +965,7 @@ export default function App() {
           console.error("Failed to scan folder:", scanErr);
           setPreviewFile("");
           setInputFile("");
+          setFolderPreviewFiles([]);
         }
       }
     } catch (e) {
@@ -917,10 +1017,12 @@ export default function App() {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles([]);
+        setFolderPreviewFiles([]);
       } else {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles(files);
+        setFolderPreviewFiles([]);
       }
       addLog(`Dropped ${files.length} file(s)`, "info");
     },
@@ -1207,6 +1309,39 @@ export default function App() {
       return ak - bk;
     });
   }, [encodingState.audioBitrate, platformPresets, customPresets]);
+
+  const previewCandidates = useMemo(() => {
+    if (folderPreviewFiles.length > 0) return folderPreviewFiles;
+    if (batchFiles.length > 1) return batchFiles;
+    if (previewFile) return [previewFile];
+    return [];
+  }, [folderPreviewFiles, batchFiles, previewFile]);
+
+  const activePreviewIndex = useMemo(() => {
+    if (!previewFile || previewCandidates.length === 0) return -1;
+    return previewCandidates.indexOf(previewFile);
+  }, [previewCandidates, previewFile]);
+
+  const canNavigatePreview = previewCandidates.length > 1;
+
+  useEffect(() => {
+    if (previewCandidates.length === 0) return;
+    if (!previewFile || !previewCandidates.includes(previewFile)) {
+      setPreviewFile(previewCandidates[0]);
+    }
+  }, [previewCandidates, previewFile]);
+
+  const navigatePreview = useCallback(
+    (direction: -1 | 1) => {
+      if (!canNavigatePreview) return;
+      const currentIndex = activePreviewIndex >= 0 ? activePreviewIndex : 0;
+      const nextIndex =
+        (currentIndex + direction + previewCandidates.length) %
+        previewCandidates.length;
+      setPreviewFile(previewCandidates[nextIndex]);
+    },
+    [canNavigatePreview, activePreviewIndex, previewCandidates],
+  );
 
   return (
     <div className="app-shell">
@@ -1815,6 +1950,50 @@ export default function App() {
           </div>
 
           <div className="preview-wrapper">
+            <button
+              className="preview-nav-btn preview-nav-btn-left"
+              onClick={() => navigatePreview(-1)}
+              disabled={!canNavigatePreview}
+              aria-label="Previous preview video"
+              title="Previous video"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="lucide lucide-chevron-left"
+              >
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+            <button
+              className="preview-nav-btn preview-nav-btn-right"
+              onClick={() => navigatePreview(1)}
+              disabled={!canNavigatePreview}
+              aria-label="Next preview video"
+              title="Next video"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="lucide lucide-chevron-right"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
             <div className="preview-controls-overlay">
               <button
                 className={`btn btn-xs ${showGuides ? "active" : ""}`}
@@ -1834,9 +2013,114 @@ export default function App() {
               ratio={effectivePreviewRatio}
               effects={effectsState}
               orientation={orientation}
+              previewVolume={previewVolume}
               showGuides={showGuides}
               showSafeFrames={showSafeFrames}
             />
+            <div
+              className="preview-volume"
+              ref={previewVolumeRef}
+              aria-label="Preview volume"
+              data-slider-active={volumeSliderActive ? "true" : undefined}
+              onMouseEnter={() => {
+                setVolumeSliderHovering(true);
+                setVolumeSliderActive(true);
+              }}
+              onMouseLeave={() => setVolumeSliderHovering(false)}
+              onFocusCapture={() => {
+                setVolumeSliderFocusWithin(true);
+                setVolumeSliderActive(true);
+              }}
+              onBlurCapture={(e) => {
+                const nextTarget = e.relatedTarget as Node | null;
+                if (
+                  nextTarget &&
+                  previewVolumeRef.current?.contains(nextTarget)
+                ) {
+                  return;
+                }
+                setVolumeSliderFocusWithin(false);
+              }}
+            >
+              <div className="preview-volume-slider-wrap">
+                <input
+                  className="preview-volume-slider"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={previewVolume}
+                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                  onPointerDown={() => {
+                    cancelVolumeCollapse();
+                    setVolumeSliderInteracting(true);
+                    setVolumeSliderActive(true);
+                  }}
+                  onPointerUp={() => {
+                    setVolumeSliderInteracting(false);
+                  }}
+                  onKeyDown={() => {
+                    cancelVolumeCollapse();
+                    setVolumeSliderActive(true);
+                  }}
+                  onKeyUp={() => {
+                    setVolumeSliderInteracting(false);
+                  }}
+                  aria-label="Preview volume slider"
+                  style={
+                    { "--vol": `${previewVolume}%` } as React.CSSProperties
+                  }
+                />
+              </div>
+              <button
+                className="preview-volume-btn"
+                onClick={() => {
+                  cancelVolumeCollapse();
+                  setVolumeSliderActive(true);
+                  setPreviewVolume((v) => (v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME));
+                }}
+                aria-label={
+                  previewVolume === 0 ? "Unmute preview" : "Mute preview"
+                }
+                title={`Preview volume: ${previewVolume}%`}
+              >
+                {previewVolume === 0 ? (
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="lucide lucide-volume-x"
+                  >
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="22" x2="16" y1="9" y2="15" />
+                    <line x1="16" x2="22" y1="9" y2="15" />
+                  </svg>
+                ) : (
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="lucide lucide-volume-2"
+                  >
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </svg>
+                )}
+              </button>
+            </div>
             {orientation && (
               <div className="preview-meta">
                 <span className="preview-meta-item">

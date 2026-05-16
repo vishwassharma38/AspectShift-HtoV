@@ -11,6 +11,7 @@ export type AppConfig = {
 	blur: boolean | null,
 	blurSigma: number | null,
 	enableSubfolders: boolean | null,
+	previewVolume: number | null,
 };
 
 export type AspectRatio = "ratio9x16" | "ratio1x1" | "ratio4x5" | "ratio2x3" | "ratio16x9";

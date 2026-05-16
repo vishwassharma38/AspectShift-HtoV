@@ -214,6 +214,7 @@ pub struct AppConfig {
     pub blur: Option<bool>,
     pub blur_sigma: Option<f32>,
     pub enable_subfolders: Option<bool>,
+    pub preview_volume: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]

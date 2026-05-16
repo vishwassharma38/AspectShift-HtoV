@@ -9,6 +9,7 @@ interface VideoCanvasProps {
   ratio: number | null;
   effects: VideoEffectsSettings;
   orientation: OrientationInfo | null;
+  previewVolume: number;
   showGuides?: boolean;
   showSafeFrames?: boolean;
 }
@@ -26,6 +27,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   ratio,
   effects,
   orientation,
+  previewVolume,
   showGuides = true,
   showSafeFrames = true,
 }) => {
@@ -37,11 +39,25 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // wrong size.
   const [videoReady, setVideoReady] = useState(false);
   const showBlur = !!effects.blur;
+  const mainVideoRef = useRef<HTMLVideoElement | null>(null);
+  const foregroundVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Reset readiness every time the source changes.
   useEffect(() => {
     setVideoReady(false);
   }, [videoSrc]);
+
+  useEffect(() => {
+    const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
+    const isMuted = normalized <= 0;
+    const syncElement = (el: HTMLVideoElement | null) => {
+      if (!el) return;
+      el.volume = normalized;
+      el.muted = isMuted;
+    };
+    syncElement(mainVideoRef.current);
+    syncElement(foregroundVideoRef.current);
+  }, [previewVolume, videoSrc, showBlur]);
 
   // Update container dims on resize
   useEffect(() => {
@@ -276,6 +292,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                 <video
                   src={convertFileSrc(videoSrc)}
                   className="canvas-video-fg"
+                  ref={foregroundVideoRef}
                   style={{
                     position: "absolute",
                     left: "50%",
@@ -293,16 +310,22 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     ...transformStyle,
                   }}
                   autoPlay
-                  muted
                   loop
                   playsInline
-                  onCanPlay={() => setVideoReady(true)}
+                  onCanPlay={(e) => {
+                    const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
+                    const isMuted = normalized <= 0;
+                    e.currentTarget.volume = normalized;
+                    e.currentTarget.muted = isMuted;
+                    setVideoReady(true);
+                  }}
                 />
               </>
             ) : (
               <video
                 src={convertFileSrc(videoSrc)}
                 className="canvas-video-main"
+                ref={mainVideoRef}
                 style={{
                   position: "absolute",
                   left: "50%",
@@ -317,10 +340,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   ...transformStyle,
                 }}
                 autoPlay
-                muted
                 loop
                 playsInline
-                onCanPlay={() => setVideoReady(true)}
+                onCanPlay={(e) => {
+                  const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
+                  const isMuted = normalized <= 0;
+                  e.currentTarget.volume = normalized;
+                  e.currentTarget.muted = isMuted;
+                  setVideoReady(true);
+                }}
               />
             )}
 

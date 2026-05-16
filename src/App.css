@@ -981,6 +981,153 @@ html.theme-transitioning *::after {
   pointer-events: auto;
 }
 
+.preview-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 95;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-sm);
+}
+
+.preview-nav-btn-left {
+  left: clamp(16px, 4vw, 50px);
+}
+
+.preview-nav-btn-right {
+  right: clamp(16px, 4vw, 50px);
+}
+
+.preview-nav-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-50%) scale(1.03);
+}
+
+.preview-nav-btn:active {
+  transform: translateY(-50%) scale(0.98);
+}
+
+.preview-nav-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.preview-volume {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  z-index: 96;
+}
+
+.preview-volume-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-sm);
+}
+
+.preview-volume-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.preview-volume-slider-wrap {
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    height 0.22s ease,
+    opacity 0.18s ease;
+}
+
+.preview-volume:hover .preview-volume-slider-wrap,
+.preview-volume:focus-within .preview-volume-slider-wrap {
+  height: 88px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.preview-volume-slider {
+  appearance: none;
+  width: 88px;
+  height: 28px;
+  transform: rotate(-90deg) translateX(-30px);
+  transform-origin: center;
+  background: transparent;
+}
+
+.preview-volume-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  /* accent fill from 0% up to current volume, then unfilled for the rest.
+     --vol is set inline by React and updates live as the user drags. */
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--vol, 18%),
+    var(--progress-bg) var(--vol, 18%),
+    var(--progress-bg) 100%
+  );
+}
+
+.preview-volume-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.preview-volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Force-open the slider while the user is actively adjusting volume,
+   even if the mouse has already left the container. */
+.preview-volume[data-slider-active="true"] .preview-volume-slider-wrap {
+  clip-path: inset(0% 0 0 0 round 999px);
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .btn-xs {
   padding: 4px 10px;
   font-size: 10px;
