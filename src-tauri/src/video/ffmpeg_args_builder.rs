@@ -1,17 +1,10 @@
 use crate::os_utils::OsUtils;
-use crate::subtitles::positioning::get_subtitle_style;
 use crate::video::preset_adapter::RenderPlan;
 
-fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str, subtitle_style: &str) -> String {
+fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str) -> String {
     let escaped_path = OsUtils::escape_filter_path(subtitle_path);
     
-    // For ASS files, we don't apply force_style as the style is embedded in the file
-    let subtitle_filter = if subtitle_path.to_lowercase().ends_with(".ass") {
-        format!("subtitles='{escaped_path}'")
-    } else {
-        let escaped_style = subtitle_style.replace('\'', "\\'");
-        format!("subtitles='{escaped_path}':force_style='{escaped_style}'")
-    };
+    let subtitle_filter = format!("subtitles='{escaped_path}'");
 
     if uses_complex_graph(filter_graph) {
         format!("{filter_graph};[v]{subtitle_filter}[v]")
@@ -61,8 +54,7 @@ pub fn build_ffmpeg_args(
 ) -> Vec<String> {
     let final_filter_graph = if plan.effects.burn_subtitles_enabled() {
         if let Some(path) = subtitle_path {
-            let style = get_subtitle_style(plan.ratio.get_ratio());
-            with_subtitle_filter(filter_graph, path, &style)
+            with_subtitle_filter(filter_graph, path)
         } else {
             filter_graph.to_string()
         }

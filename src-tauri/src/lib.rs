@@ -25,6 +25,7 @@ pub fn run() {
             video::get_first_video_in_folder,
             video::get_videos_in_folder,
             video::detect_orientation,
+            video::compute_preview_layout,
             video::convert_to_ratio,
             video::check_file_ready,
             video::start_batch,

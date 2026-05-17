@@ -1,12 +1,18 @@
 import React, { useMemo, useRef, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { OrientationInfo, VideoEffectsSettings } from "../types/backend";
-import { resolveVideoGeometry } from "../utils/resolvedVideoGeometry";
+import type {
+  OrientationInfo,
+  PreviewRenderLayout,
+  VideoEffectsSettings,
+} from "../types/backend";
+import {
+  type FitMode,
+  resolveVideoGeometry,
+} from "../utils/resolvedVideoGeometry";
 
 interface VideoCanvasProps {
   videoSrc: string;
-  /** Numerical ratio (w/h). null means geometry is not yet known — render nothing. */
-  ratio: number | null;
+  previewLayout: PreviewRenderLayout | null;
   effects: VideoEffectsSettings;
   orientation: OrientationInfo | null;
   previewVolume: number;
@@ -24,7 +30,7 @@ const RATIO_LABELS: Record<string, string> = {
 
 export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   videoSrc,
-  ratio,
+  previewLayout,
   effects,
   orientation,
   previewVolume,
@@ -77,11 +83,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // Calculate the actual size of the canvas box within the container
   const canvasSize = useMemo(() => {
     const { width, height } = containerDims;
-    // ratio=null means geometry is not yet known — return zero so the box
+    // layout=null means geometry is not yet known — return zero so the box
     // collapses to nothing while we wait for orientation data.
-    if (width === 0 || height === 0 || ratio === null)
+    if (width === 0 || height === 0 || !previewLayout)
       return { width: 0, height: 0 };
 
+    const ratio = previewLayout.targetWidth / previewLayout.targetHeight;
     const containerRatio = width / height;
     if (containerRatio > ratio) {
       // Container is wider than the target ratio -> height is the limiting factor
@@ -90,31 +97,49 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       // Container is taller than the target ratio -> width is the limiting factor
       return { width, height: width / ratio };
     }
-  }, [containerDims, ratio]);
+  }, [containerDims, previewLayout]);
+
+  const targetScale = useMemo(() => {
+    if (!previewLayout || previewLayout.targetWidth <= 0) return 1;
+    return canvasSize.width / previewLayout.targetWidth;
+  }, [canvasSize.width, previewLayout]);
+
+  const fgFrameSize = useMemo(() => {
+    if (!previewLayout) return { width: 0, height: 0 };
+    return {
+      width: previewLayout.foregroundFrameWidth * targetScale,
+      height: previewLayout.foregroundFrameHeight * targetScale,
+    };
+  }, [previewLayout, targetScale]);
 
   const resolvedCoverGeometry = useMemo(() => {
-    if (ratio === null) return null;
+    if (!previewLayout) return null;
+    const fitMode: FitMode =
+      previewLayout.backgroundFit === "contain" ? "contain" : "cover";
     return resolveVideoGeometry({
       orientation,
       transform: effects.transform,
-      targetAspectRatio: ratio,
+      targetAspectRatio: previewLayout.targetWidth / previewLayout.targetHeight,
       frameWidth: canvasSize.width,
       frameHeight: canvasSize.height,
-      fitMode: "cover",
+      fitMode,
     });
-  }, [ratio, orientation, effects.transform, canvasSize]);
+  }, [previewLayout, orientation, effects.transform, canvasSize]);
 
-  const resolvedContainGeometry = useMemo(() => {
-    if (ratio === null || !showBlur) return null;
+  const resolvedForegroundGeometry = useMemo(() => {
+    if (!previewLayout) return null;
+    const fitMode: FitMode =
+      previewLayout.foregroundFit === "contain" ? "contain" : "cover";
     return resolveVideoGeometry({
       orientation,
       transform: effects.transform,
-      targetAspectRatio: ratio,
-      frameWidth: canvasSize.width,
-      frameHeight: canvasSize.height,
-      fitMode: "contain",
+      targetAspectRatio:
+        previewLayout.foregroundFrameWidth / previewLayout.foregroundFrameHeight,
+      frameWidth: fgFrameSize.width,
+      frameHeight: fgFrameSize.height,
+      fitMode,
     });
-  }, [ratio, orientation, effects.transform, canvasSize, showBlur]);
+  }, [previewLayout, orientation, effects.transform, fgFrameSize]);
 
   const transformStyle = useMemo(() => {
     const rotate = resolvedCoverGeometry?.rotation ?? 0;
@@ -136,19 +161,14 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   const logoStyle = useMemo(() => {
     if (!effects.logo || !effects.logo.enabled || !effects.logo.path)
       return null;
-    const { position, opacity, gap, scale } = effects.logo;
+    const { position, opacity, gap } = effects.logo;
 
-    // Logo scale is relative to the canvas width (mirroring backend)
-    const logoWidth = canvasSize.width * scale;
-
-    // Gap should also be scaled relative to the export size.
-    // Assuming a standard 1080p height as reference if not specified,
-    // but better yet, use the current th from backend logic.
-    // For preview, let's just make it look proportional.
-    // If the gap is 20px in a 1920x1080 (16:9), it's about 1% of width.
-    // Let's just use the gap as-is but scale it by the ratio of canvasSize.width / 1080 (arbitrary base)
-    // Actually, backend uses literal pixels.
-    const scaledGap = (gap * canvasSize.width) / 1080;
+    if (!previewLayout) return null;
+    if (previewLayout.logoWidth === null || previewLayout.logoGap === null) {
+      return null;
+    }
+    const logoWidth = (previewLayout.logoWidth ?? 0) * targetScale;
+    const scaledGap = (previewLayout.logoGap ?? gap) * targetScale;
 
     const style: React.CSSProperties = {
       position: "absolute",
@@ -178,30 +198,21 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     }
 
     return style;
-  }, [effects.logo, canvasSize]);
+  }, [effects.logo, previewLayout, targetScale]);
 
   const subtitleStyle = useMemo(() => {
-    if (ratio === null) return null;
-
-    // Replicate backend logic from src-tauri/src/subtitles/positioning.rs
-    let marginVPct = 0.08;
-    if (ratio < 0.6) {
-      marginVPct = 0.22;
-    } else if (ratio < 1.1) {
-      marginVPct = 0.16;
-    } else if (ratio < 1.5) {
-      marginVPct = 0.12;
-    }
-
-    const fontSize = canvasSize.height * 0.05;
-    const marginV = canvasSize.height * marginVPct;
-    const outlineWidth = canvasSize.height * (2.5 / 1080);
+    if (!previewLayout) return null;
+    const subtitleScale = Math.max(0.001, canvasSize.height / previewLayout.subtitle.playResY);
+    const fontSize = previewLayout.subtitle.fontSize * subtitleScale;
+    const marginV = previewLayout.subtitle.marginV * subtitleScale;
+    const marginH = previewLayout.subtitle.marginH * subtitleScale;
+    const outlineWidth = previewLayout.subtitle.outline * subtitleScale;
 
     const style: React.CSSProperties = {
       position: "absolute",
       bottom: marginV,
-      left: "5%",
-      right: "5%",
+      left: marginH,
+      right: marginH,
       textAlign: "center",
       color: "white",
       fontSize: Math.max(12, fontSize),
@@ -224,7 +235,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     };
 
     return style;
-  }, [ratio, canvasSize]);
+  }, [previewLayout, canvasSize]);
 
   return (
     <div
@@ -240,9 +251,9 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }}
     >
       {videoSrc ? (
-        // ratio===null means orientation invoke hasn't resolved yet.
+        // layout===null means orientation invoke hasn't resolved yet.
         // Render nothing so the layout never snaps through a wrong aspect ratio.
-        ratio !== null && resolvedCoverGeometry && (
+        previewLayout !== null && resolvedCoverGeometry && (
           <div
             className="video-canvas-box"
             style={{
@@ -280,8 +291,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                       resolvedCoverGeometry.sourceHeight *
                       resolvedCoverGeometry.scale,
                     objectFit: "fill",
-                    filter: `blur(${effects.blurSigma ?? 20}px)`,
-                    opacity: 0.6,
+                    filter: `blur(${previewLayout.blurSigma}px)`,
                     ...transformStyle,
                   }}
                   autoPlay
@@ -298,13 +308,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     left: "50%",
                     top: "50%",
                     width:
-                      (resolvedContainGeometry ?? resolvedCoverGeometry)
+                      (resolvedForegroundGeometry ?? resolvedCoverGeometry)
                         .sourceWidth *
-                      (resolvedContainGeometry ?? resolvedCoverGeometry).scale,
+                      (resolvedForegroundGeometry ?? resolvedCoverGeometry).scale,
                     height:
-                      (resolvedContainGeometry ?? resolvedCoverGeometry)
+                      (resolvedForegroundGeometry ?? resolvedCoverGeometry)
                         .sourceHeight *
-                      (resolvedContainGeometry ?? resolvedCoverGeometry).scale,
+                      (resolvedForegroundGeometry ?? resolvedCoverGeometry).scale,
                     objectFit: "fill",
                     zIndex: 2,
                     ...transformStyle,
@@ -353,10 +363,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             )}
 
             {/* Logo Layer */}
-            {effects.logo?.enabled && effects.logo.path && (
+            {effects.logo?.enabled && effects.logo.path && logoStyle && (
               <img
                 src={convertFileSrc(effects.logo.path)}
-                style={logoStyle!}
+                style={logoStyle}
                 alt="Logo"
               />
             )}
@@ -474,12 +484,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                 zIndex: 40,
               }}
             >
-              {ratio !== null
-                ? RATIO_LABELS[ratio.toString()] || ratio.toFixed(2)
-                : ""}
+              {RATIO_LABELS[
+                (previewLayout.targetWidth / previewLayout.targetHeight).toString()
+              ] ||
+                (previewLayout.targetWidth / previewLayout.targetHeight).toFixed(2)}
             </div>
           </div>
-        ) // closes ratio !== null &&
+        )
       ) : (
         <div className="preview-empty">
           <svg

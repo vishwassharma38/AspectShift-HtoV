@@ -17,6 +17,8 @@ import type {
   OutputFormat,
   OutputJob,
   PlatformPreset,
+  PreviewLayoutRequest,
+  PreviewRenderLayout,
   SelectionMetadata,
   TargetType,
   VideoEffectsSettings,
@@ -26,10 +28,6 @@ import type {
 import "./App.css";
 import { VideoCanvas } from "./components/VideoCanvas";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
-import {
-  getSourceDisplaySize,
-  resolveVideoGeometry,
-} from "./utils/resolvedVideoGeometry";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -93,14 +91,6 @@ export const RATIO_DISPLAY: Record<AspectRatio, string> = {
   ratio4x5: "4:5",
   ratio2x3: "2:3",
   ratio16x9: "16:9",
-};
-
-const RATIO_VALUE: Record<AspectRatio, number> = {
-  ratio9x16: 9 / 16,
-  ratio1x1: 1,
-  ratio4x5: 4 / 5,
-  ratio2x3: 2 / 3,
-  ratio16x9: 16 / 9,
 };
 
 const SPEED_PRESETS = [
@@ -408,6 +398,8 @@ export default function App() {
 
   // Video / batch state
   const [orientation, setOrientation] = useState<OrientationInfo | null>(null);
+  const [previewLayout, setPreviewLayout] =
+    useState<PreviewRenderLayout | null>(null);
   const [fileReadiness, setFileReadiness] = useState<FileReadiness | null>(
     null,
   );
@@ -527,42 +519,59 @@ export default function App() {
     [effectsState.transform],
   );
 
-  // Whether orientation data has been fetched for the current inputFile.
-  // null = not yet resolved (async invoke in flight or no file).
-  // Used to suppress the preview box until we know the real geometry.
-  const effectivePreviewRatio = useMemo((): number | null => {
+  const previewLayoutRequest = useMemo<PreviewLayoutRequest | null>(() => {
+    if (!orientation) return null;
+    const sourceAspectRatio = orientation.displayWidth / orientation.displayHeight;
+
     if (!activeSelection) {
-      // No ratio selected: use source geometry resolved through the same
-      // transform-aware pipeline used by preview rendering.
-      const src = getSourceDisplaySize(orientation);
-      if (!src) return null;
-      const resolved = resolveVideoGeometry({
-        orientation,
-        transform: effectsState.transform,
-        targetAspectRatio: src.width / src.height,
-        frameWidth: src.width,
-        frameHeight: src.height,
-        fitMode: "cover",
-      });
-      if (resolved) return resolved.displayAspectRatio;
-      return null; // pending — VideoCanvas will render nothing
+      return {
+        ratio: "ratio16x9",
+        targetAspectRatio: sourceAspectRatio,
+        effects: effectsState,
+        platformConfig: null,
+      };
     }
     if (activeSelection.type === "aspectRatio") {
-      return RATIO_VALUE[activeSelection.id];
+      return {
+        ratio: activeSelection.id,
+        targetAspectRatio: null,
+        effects: effectsState,
+        platformConfig: null,
+      };
     }
     const p = platformPresets.find((x) => x.id === activeSelection.id);
-    if (p) return RATIO_VALUE[p.ratio];
+    if (p) {
+      return {
+        ratio: p.ratio,
+        targetAspectRatio: null,
+        effects: effectsState,
+        platformConfig: p.platformConfig ?? null,
+      };
+    }
     const cp = customPresets.find((x) => x.id === activeSelection.id);
-    if (cp) return RATIO_VALUE[cp.ratio];
-    // Preset selected but not resolved yet — same guard
+    if (cp) {
+      return {
+        ratio: cp.ratio,
+        targetAspectRatio: null,
+        effects: effectsState,
+        platformConfig: null,
+      };
+    }
     return null;
-  }, [
-    activeSelection,
-    orientation,
-    platformPresets,
-    customPresets,
-    effectsState.transform,
-  ]);
+  }, [activeSelection, platformPresets, customPresets, effectsState, orientation]);
+
+  useEffect(() => {
+    if (!previewLayoutRequest || !orientation) {
+      setPreviewLayout(null);
+      return;
+    }
+    invoke<PreviewRenderLayout>("compute_preview_layout", {
+      request: previewLayoutRequest,
+      orientation,
+    })
+      .then(setPreviewLayout)
+      .catch(() => setPreviewLayout(null));
+  }, [orientation, previewLayoutRequest]);
 
   // Sync encoding when a platform preset becomes the active selection
   useEffect(() => {
@@ -703,7 +712,7 @@ export default function App() {
       try {
         await invoke("update_config", { config });
       } catch (e) {
-        console.error("Failed to save config", e);
+        addLog(`Failed to save config: ${errorMessage(e)}`, "error");
       }
     }, 500);
 
@@ -826,8 +835,8 @@ export default function App() {
       return;
     }
 
-    // Reset orientation immediately so effectivePreviewRatio returns null
-    // and VideoCanvas stays hidden until the real geometry arrives.
+    // Reset orientation immediately so preview layout is recomputed only
+    // after the real source geometry arrives.
     setOrientation(null);
 
     invoke<OrientationInfo>("detect_orientation", { filePath: previewFile })
@@ -962,7 +971,7 @@ export default function App() {
             addLog("No valid video files found in selected folder", "warn");
           }
         } catch (scanErr) {
-          console.error("Failed to scan folder:", scanErr);
+          addLog(`Folder scan failed: ${errorMessage(scanErr)}`, "error");
           setPreviewFile("");
           setInputFile("");
           setFolderPreviewFiles([]);
@@ -2010,7 +2019,7 @@ export default function App() {
             </div>
             <VideoCanvas
               videoSrc={previewFile}
-              ratio={effectivePreviewRatio}
+              previewLayout={previewLayout}
               effects={effectsState}
               orientation={orientation}
               previewVolume={previewVolume}

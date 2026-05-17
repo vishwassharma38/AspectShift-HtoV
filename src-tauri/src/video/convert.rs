@@ -77,6 +77,8 @@ pub async fn prepare_subtitles(
     export_subtitles: bool,
     target_width: u32,
     target_height: u32,
+    foreground_frame_height: u32,
+    blur_enabled: bool,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<PathBuf, VideoError> {
@@ -113,7 +115,12 @@ pub async fn prepare_subtitles(
             .unwrap_or("subtitle");
         let ass_path = temp_dir.join(format!("{}_{}.ass", stem, uuid::Uuid::new_v4()));
         
-        let style = crate::subtitles::positioning::calculate_ass_style(target_width, target_height);
+        let style = crate::subtitles::positioning::calculate_ass_style(
+            target_width,
+            target_height,
+            foreground_frame_height,
+            blur_enabled,
+        );
         crate::subtitles::ass_writer::write_ass(&ass_path, &segments, &style)?;
         
         info!(

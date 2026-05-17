@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "aspectshift-htov",
-        "width": 800,
-        "height": 600,
-        "minWidth": 800,
-        "minHeight": 600,
+        "width": 1230,
+        "height": 690,
+        "minWidth": 1230,
+        "minHeight": 690,
         "resizable": true,
         "center": true
       }

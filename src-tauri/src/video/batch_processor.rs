@@ -367,7 +367,62 @@ pub async fn start_batch(
                 }
                 emit_batch_progress(&app_clone, &state_clone).await;
 
-                if let Some(path) = subtitle_cache.get(&input_path) {
+                let orientation_for_subtitles = match crate::video::probe::detect_orientation(&app_clone, &input_path).await {
+                    Ok(o) => o,
+                    Err(e) => {
+                        let failure = format!("Failed to detect orientation for subtitles: {}", e);
+                        let mut s = state_clone.lock().await;
+                        if let Some(p) = s.job_progress.get_mut(&job_id) {
+                            p.status = JobStatus::Failed(failure);
+                        }
+                        s.failed_jobs += 1;
+                        emit_batch_progress(&app_clone, &state_clone).await;
+                        continue;
+                    }
+                };
+
+                let subtitle_job = crate::video::types::ResolvedJob {
+                    id: "subtitle-layout-job".to_string(),
+                    session_id: session_id.clone(),
+                    input_path: input_path.clone(),
+                    output_path: String::new(),
+                    alt_output_path: None,
+                    ratio: job.output.ratio.clone(),
+                    encoding: job.output.encoding.clone(),
+                    effects: job.output.effects.clone(),
+                    platform_config: job.output.platform_config.clone(),
+                    subtitle_path: None,
+                };
+
+                let subtitle_plan = match crate::video::preset_adapter::create_render_plan_resolved(&subtitle_job) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let failure = e.to_string();
+                        let mut s = state_clone.lock().await;
+                        if let Some(p) = s.job_progress.get_mut(&job_id) {
+                            p.status = JobStatus::Failed(failure);
+                        }
+                        s.failed_jobs += 1;
+                        emit_batch_progress(&app_clone, &state_clone).await;
+                        continue;
+                    }
+                };
+
+                let subtitle_layout =
+                    crate::video::render_layout::calculate_render_layout(&subtitle_plan, &orientation_for_subtitles, None);
+
+                let subtitle_cache_key = format!(
+                    "{}|{}x{}|fg{}|blur{}|burn{}|export{}",
+                    input_path,
+                    subtitle_layout.target_width,
+                    subtitle_layout.target_height,
+                    subtitle_layout.foreground_frame_height,
+                    job.output.effects.blur_enabled(),
+                    job.output.effects.burn_subtitles_enabled(),
+                    job.output.effects.export_subtitles_enabled()
+                );
+
+                if let Some(path) = subtitle_cache.get(&subtitle_cache_key) {
                     prepared_subtitle = Some(path.clone());
                     {
                         let mut s = state_clone.lock().await;
@@ -399,10 +454,6 @@ pub async fn start_batch(
                             .unwrap_or(0.0)
                     };
 
-                    let target_ratio = job.output.ratio.get_ratio();
-                    let target_height = 1080;
-                    let target_width = (target_height as f32 * target_ratio) as u32;
-
                     match prepare_subtitles(
                         &app_clone,
                         &input_path,
@@ -410,8 +461,10 @@ pub async fn start_batch(
                         source_duration_secs,
                         job.output.effects.burn_subtitles_enabled(),
                         is_export,
-                        target_width,
-                        target_height,
+                        subtitle_layout.target_width,
+                        subtitle_layout.target_height,
+                        subtitle_layout.foreground_frame_height,
+                        job.output.effects.blur_enabled(),
                         Some(token.clone()),
                         Some(Box::new({
                             let state = state_clone.clone();
@@ -449,7 +502,7 @@ pub async fn start_batch(
                             if !is_export {
                                 temp_srt_paths.push(path.clone());
                             }
-                            subtitle_cache.insert(input_path.clone(), path.clone());
+                            subtitle_cache.insert(subtitle_cache_key, path.clone());
                             prepared_subtitle = Some(path);
                             {
                                 let mut s = state_clone.lock().await;

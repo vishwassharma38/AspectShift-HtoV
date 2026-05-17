@@ -6,6 +6,7 @@ pub struct TimingConfig {
     pub min_segment_duration_ms: u64,
     pub silence_threshold_ms: u64,
     pub max_gap_ms: u64,
+    pub merge_gap_ms: u64,
 }
 
 impl Default for TimingConfig {
@@ -16,6 +17,7 @@ impl Default for TimingConfig {
             min_segment_duration_ms: 400,
             silence_threshold_ms: 300,
             max_gap_ms: 1000,
+            merge_gap_ms: 120,
         }
     }
 }
@@ -62,7 +64,7 @@ pub fn optimize_segments(
             gap > config.silence_threshold_ms 
                 || current_words.len() >= config.max_words_per_segment
                 || duration > config.max_segment_duration_ms
-                || has_sentence_end(&last.word)
+                || hard_sentence_end(&last.word)
         } else {
             false
         };
@@ -79,11 +81,11 @@ pub fn optimize_segments(
         result.push(create_segment(current_words));
     }
 
-    result
+    normalize_segments(result, config)
 }
 
-fn has_sentence_end(text: &str) -> bool {
-    text.ends_with('.') || text.ends_with('!') || text.ends_with('?') || text.ends_with(',')
+fn hard_sentence_end(text: &str) -> bool {
+    text.ends_with('.') || text.ends_with('!') || text.ends_with('?')
 }
 
 fn create_segment(words: Vec<WordTiming>) -> SubtitleSegment {
@@ -103,4 +105,50 @@ fn create_segment(words: Vec<WordTiming>) -> SubtitleSegment {
         text: sanitized_text,
         words,
     }
+}
+
+fn normalize_segments(segments: Vec<SubtitleSegment>, config: &TimingConfig) -> Vec<SubtitleSegment> {
+    let mut normalized: Vec<SubtitleSegment> = Vec::new();
+
+    for mut seg in segments {
+        if seg.words.is_empty() {
+            continue;
+        }
+
+        // Anchor segment boundaries to spoken words so subtitles don't appear early.
+        if let Some(first) = seg.words.first() {
+            seg.start_ms = first.start_ms;
+        }
+        if let Some(last) = seg.words.last() {
+            seg.end_ms = last.end_ms;
+        }
+
+        if seg.end_ms <= seg.start_ms {
+            continue;
+        }
+
+        if let Some(prev) = normalized.last_mut() {
+            let gap = seg.start_ms.saturating_sub(prev.end_ms);
+            let prev_duration = prev.end_ms.saturating_sub(prev.start_ms);
+
+            // Merge ultra-short fragments created by tokenization noise.
+            if gap <= config.merge_gap_ms && prev_duration < config.min_segment_duration_ms {
+                prev.end_ms = seg.end_ms;
+                prev.words.extend(seg.words.into_iter());
+                prev.text = crate::subtitles::sanitize_subtitle_text(
+                    &prev
+                        .words
+                        .iter()
+                        .map(|w| w.word.clone())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                continue;
+            }
+        }
+
+        normalized.push(seg);
+    }
+
+    normalized
 }

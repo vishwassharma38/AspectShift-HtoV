@@ -10,6 +10,7 @@ pub mod preset_adapter;
 pub mod presets;
 pub mod probe;
 pub mod queue;
+pub mod render_layout;
 pub mod targets;
 pub mod types;
 pub mod validation;
@@ -21,7 +22,7 @@ pub use presets::{
 use tauri::{AppHandle, State};
 use types::{
     BatchJobSettings, BatchProgress, ConversionRequest, ConversionRequestDTO, ConversionResult,
-    FileReadiness, OrientationInfo, StructuredError, VideoError,
+    FileReadiness, OrientationInfo, PreviewLayoutRequest, StructuredError, VideoError,
 };
 
 #[tauri::command]
@@ -89,6 +90,42 @@ pub async fn detect_orientation(
     probe::detect_orientation(&app, &file_path)
         .await
         .map_err(StructuredError::from)
+}
+
+#[tauri::command]
+pub async fn compute_preview_layout(
+    request: PreviewLayoutRequest,
+    orientation: OrientationInfo,
+) -> Result<render_layout::PreviewRenderLayout, StructuredError> {
+    if let Some(target_ar) = request.target_aspect_ratio {
+        if !target_ar.is_finite() || target_ar <= 0.0 {
+            return Err(StructuredError {
+                code: "invalid_config".to_string(),
+                message: "targetAspectRatio must be a positive finite number".to_string(),
+            });
+        }
+    }
+
+    let fake_job = crate::video::types::ResolvedJob {
+        id: "preview-job".to_string(),
+        session_id: "preview-session".to_string(),
+        input_path: String::new(),
+        output_path: String::new(),
+        alt_output_path: None,
+        ratio: request.ratio,
+        encoding: crate::video::types::EncodingProfile::standard(),
+        effects: request.effects,
+        platform_config: request.platform_config,
+        subtitle_path: None,
+    };
+
+    let plan = preset_adapter::create_render_plan_resolved(&fake_job)
+        .map_err(StructuredError::from)?;
+    Ok(render_layout::calculate_render_layout(
+        &plan,
+        &orientation,
+        request.target_aspect_ratio,
+    ))
 }
 
 #[tauri::command]

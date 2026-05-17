@@ -251,6 +251,15 @@ pub struct OutputJob {
     pub selection: SelectionMetadata,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewLayoutRequest {
+    pub ratio: AspectRatio,
+    pub target_aspect_ratio: Option<f32>,
+    pub effects: VideoEffectsSettings,
+    pub platform_config: Option<PlatformConfig>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedJob {
     pub id: String,

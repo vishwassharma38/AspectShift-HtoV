@@ -1,4 +1,5 @@
 use crate::video::preset_adapter::RenderPlan;
+use crate::video::render_layout::{calculate_render_layout, PreviewFitMode};
 use crate::video::types::{LogoPosition, OrientationInfo, VideoTransform};
 
 fn get_transform_filters(transform: &VideoTransform) -> (String, bool) {
@@ -32,52 +33,35 @@ fn get_transform_filters(transform: &VideoTransform) -> (String, bool) {
 }
 
 pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> String {
-    let max_height = 1920;
-
     // 0. Handle transformations first
-    let (mut effective_display_width, mut effective_display_height) =
-        (orientation.display_width, orientation.display_height);
+    let layout = calculate_render_layout(plan, orientation, None);
     let mut transform_filter = String::new();
 
     if let Some(transform) = &plan.effects.transform {
-        let (filters, swaps) = get_transform_filters(transform);
+        let (filters, _) = get_transform_filters(transform);
         transform_filter = filters;
-        if swaps {
-            std::mem::swap(&mut effective_display_width, &mut effective_display_height);
-        }
     }
-
-    // 1. Determine base dimensions from PRESET and ENFORCEMENT
-    let (mut tw, mut th) = if let Some(config) = &plan.platform_config {
-        if config.enforce_dimensions {
-            // Preset enforces specific platform dimensions
-            (config.target_width, config.target_height)
-        } else {
-            // Preset has platform config but DOES NOT enforce dimensions
-            // Fall back to dynamic scaling based on ratio
-            let target_ratio = plan.ratio.get_ratio();
-            let h = effective_display_height.min(max_height);
-            let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
-            let w = (rounded_h as f32 * target_ratio) as u32;
-            (w, rounded_h)
-        }
-    } else {
-        // No platform config, use dynamic scaling based on target ratio
-        let target_ratio = plan.ratio.get_ratio();
-        let h = effective_display_height.min(max_height);
-        let rounded_h = (h as f32 / 2.0).round() as u32 * 2;
-        let w = (rounded_h as f32 * target_ratio) as u32;
-        (w, rounded_h)
-    };
-
-    // 2. Ensure ALL dimensions are even (FFmpeg requirement)
-    tw = (tw as f32 / 2.0).round() as u32 * 2;
-    th = (th as f32 / 2.0).round() as u32 * 2;
+    let tw = layout.target_width;
+    let th = layout.target_height;
 
     let mut filter_stages = Vec::new();
     let has_transform = !transform_filter.is_empty();
     let uses_complex_graph =
         plan.effects.blur_enabled() || plan.logo.is_some() || has_transform;
+
+    // Determine foreground scaling strategy
+    let fg_filter = match layout.foreground_fit {
+        PreviewFitMode::Cover => format!(
+            "scale=w={fw}:h={fh}:force_original_aspect_ratio=increase,crop={fw}:{fh}",
+            fw = layout.foreground_frame_width,
+            fh = layout.foreground_frame_height
+        ),
+        PreviewFitMode::Contain => format!(
+            "scale=w={fw}:h={fh}:force_original_aspect_ratio=decrease",
+            fw = layout.foreground_frame_width,
+            fh = layout.foreground_frame_height
+        ),
+    };
 
     // Stage 1: Base Video Processing (Transform/Crop/Blur)
     if has_transform {
@@ -86,9 +70,13 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
                 "[0:v]{transform}[v_transformed];\
                  [v_transformed]split[bg][fg];\
                  [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
-                 [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
+                 [fg]{fg_filter}[fg_scaled];\
                  [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
-                transform = transform_filter, tw = tw, th = th, sigma = plan.effects.blur_sigma_value()
+                transform = transform_filter,
+                tw = tw,
+                th = th,
+                sigma = plan.effects.blur_sigma_value(),
+                fg_filter = fg_filter
             ));
         } else if uses_complex_graph {
             filter_stages.push(format!(
@@ -106,9 +94,12 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
         filter_stages.push(format!(
             "[0:v]split[bg][fg];\
              [bg]scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma={sigma}[bg_blurred];\
-             [fg]scale=w={tw}:h={th}:force_original_aspect_ratio=decrease[fg_scaled];\
+             [fg]{fg_filter}[fg_scaled];\
              [bg_blurred][fg_scaled]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
-            tw = tw, th = th, sigma = plan.effects.blur_sigma_value()
+            tw = tw,
+            th = th,
+            sigma = plan.effects.blur_sigma_value(),
+            fg_filter = fg_filter
         ));
     } else if uses_complex_graph {
         filter_stages.push(format!(

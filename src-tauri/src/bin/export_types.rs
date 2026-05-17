@@ -4,9 +4,11 @@ use aspectshift_htov_lib::video::{
         AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
         CustomPreset, EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions,
         LogoPosition, OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
-        StructuredError, VideoEffectsSettings, VideoTransform,
+        PreviewLayoutRequest, StructuredError, VideoEffectsSettings, VideoTransform,
     },
+    render_layout::{PreviewFitMode, PreviewRenderLayout},
 };
+use aspectshift_htov_lib::subtitles::positioning::SubtitleLayoutMetrics;
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use std::path::PathBuf;
@@ -32,6 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<FileProgress>()
         .register::<BatchProgress>()
         .register::<OrientationInfo>()
+        .register::<PreviewFitMode>()
+        .register::<SubtitleLayoutMetrics>()
+        .register::<PreviewRenderLayout>()
+        .register::<PreviewLayoutRequest>()
         .register::<FileReadiness>()
         .register::<StructuredError>()
         .register::<VideoProgress>();

@@ -136,6 +136,28 @@ export type PlatformPreset = {
 	isBuiltin: boolean,
 };
 
+export type PreviewFitMode = "cover" | "contain";
+
+export type PreviewLayoutRequest = {
+	ratio: AspectRatio,
+	targetAspectRatio: number | null,
+	effects: VideoEffectsSettings,
+	platformConfig: PlatformConfig | null,
+};
+
+export type PreviewRenderLayout = {
+	targetWidth: number,
+	targetHeight: number,
+	backgroundFit: PreviewFitMode,
+	foregroundFit: PreviewFitMode,
+	foregroundFrameWidth: number,
+	foregroundFrameHeight: number,
+	blurSigma: number,
+	logoWidth: number | null,
+	logoGap: number | null,
+	subtitle: SubtitleLayoutMetrics,
+};
+
 export type SelectionMetadata = {
 	sourceType: TargetType,
 	sourceId: string,
@@ -145,6 +167,15 @@ export type SelectionMetadata = {
 export type StructuredError = {
 	code: string,
 	message: string,
+};
+
+export type SubtitleLayoutMetrics = {
+	fontSize: number,
+	outline: number,
+	marginV: number,
+	marginH: number,
+	playResX: number,
+	playResY: number,
 };
 
 export type TargetType = "aspectRatio" | "platform" | "custom";
