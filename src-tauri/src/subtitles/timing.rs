@@ -57,14 +57,27 @@ pub fn optimize_segments(
     let mut current_words: Vec<WordTiming> = Vec::new();
 
     for word in words {
+        let is_current_sentence_end = hard_sentence_end(&word.word);
+        
         let should_split = if let Some(last) = current_words.last() {
             let gap = word.start_ms.saturating_sub(last.end_ms);
             let duration = word.end_ms.saturating_sub(current_words[0].start_ms);
             
-            gap > config.silence_threshold_ms 
-                || current_words.len() >= config.max_words_per_segment
-                || duration > config.max_segment_duration_ms
-                || hard_sentence_end(&last.word)
+            let is_max_words = current_words.len() >= config.max_words_per_segment;
+            let is_max_duration = duration > config.max_segment_duration_ms;
+            let is_silence = gap > config.silence_threshold_ms;
+            let is_last_sentence_end = hard_sentence_end(&last.word);
+
+            // Split if:
+            // 1. There is a significant silence gap.
+            // 2. The previous word already ended a sentence.
+            // 3. We reached the word limit, UNLESS this current word ends the sentence anyway
+            //    (in which case we let it join the current segment and split after it).
+            // 4. We significantly exceeded the duration limit.
+            is_silence 
+                || is_last_sentence_end
+                || (is_max_words && !is_current_sentence_end)
+                || is_max_duration
         } else {
             false
         };
@@ -85,7 +98,8 @@ pub fn optimize_segments(
 }
 
 fn hard_sentence_end(text: &str) -> bool {
-    text.ends_with('.') || text.ends_with('!') || text.ends_with('?')
+    let t = text.trim_end_matches(['"', '»', '”', ' ', '\'', ')', ']', '}', '>']);
+    t.ends_with('.') || t.ends_with('!') || t.ends_with('?')
 }
 
 fn create_segment(words: Vec<WordTiming>) -> SubtitleSegment {
@@ -130,9 +144,18 @@ fn normalize_segments(segments: Vec<SubtitleSegment>, config: &TimingConfig) -> 
         if let Some(prev) = normalized.last_mut() {
             let gap = seg.start_ms.saturating_sub(prev.end_ms);
             let prev_duration = prev.end_ms.saturating_sub(prev.start_ms);
+            let seg_duration = seg.end_ms.saturating_sub(seg.start_ms);
+            
+            let prev_ends_sentence = hard_sentence_end(&prev.text);
 
-            // Merge ultra-short fragments created by tokenization noise.
-            if gap <= config.merge_gap_ms && prev_duration < config.min_segment_duration_ms {
+            // Merge if:
+            // 1. The gap is very small (tokenization noise or very fast speech).
+            // 2. AND either the previous or current segment is ultra-short.
+            // 3. AND we are not merging across a hard sentence boundary.
+            if gap <= config.merge_gap_ms 
+                && (prev_duration < config.min_segment_duration_ms || seg_duration < config.min_segment_duration_ms)
+                && !prev_ends_sentence 
+            {
                 prev.end_ms = seg.end_ms;
                 prev.words.extend(seg.words.into_iter());
                 prev.text = crate::subtitles::sanitize_subtitle_text(
@@ -144,6 +167,11 @@ fn normalize_segments(segments: Vec<SubtitleSegment>, config: &TimingConfig) -> 
                         .join(" "),
                 );
                 continue;
+            }
+
+            // Ensure no overlapping timestamps after merging logic
+            if seg.start_ms < prev.end_ms {
+                prev.end_ms = seg.start_ms;
             }
         }
 

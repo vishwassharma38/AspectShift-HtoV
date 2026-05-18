@@ -54,13 +54,15 @@ pub fn calculate_layout_metrics(
 
     let frame_h = foreground_frame_height.min(target_height) as f32;
     let bottom_gutter = ((h - frame_h) / 2.0).max(0.0);
-    let gutter_anchor = if blur_enabled && bottom_gutter > 0.0 {
-        bottom_gutter * 0.55
-    } else {
-        0.0
-    };
 
-    let margin_v = base_margin_v.max(gutter_anchor).round() as u32;
+    let margin_v = if blur_enabled && bottom_gutter > 0.0 {
+        // Ensure subtitles are on the foreground video by adjusting the margin to be at least
+        // above the blurred gutter area. We use a small fraction of the base margin as a buffer.
+        base_margin_v.max(bottom_gutter + (base_margin_v * 0.2))
+    } else {
+        base_margin_v
+    }
+    .round() as u32;
     let margin_h = (w * MIN_MARGIN_H_PCT).round() as u32;
     let outline = (font_size * OUTLINE_RATIO).clamp(MIN_OUTLINE, MAX_OUTLINE);
 
