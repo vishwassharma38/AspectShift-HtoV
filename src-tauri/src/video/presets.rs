@@ -42,19 +42,31 @@ pub fn get_aspect_ratio_targets() -> Vec<AspectRatioTarget> {
 }
 
 fn get_presets_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
+    let runtime = crate::runtime_paths::RuntimePaths::from_app(app)?;
+    Ok(runtime.root().join("presets.json"))
+}
+
+fn get_legacy_presets_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
     let app_data = app.path().app_data_dir().map_err(VideoError::TauriError)?;
     Ok(app_data.join("presets.json"))
 }
 
 pub fn load_custom_presets(app: &AppHandle) -> Result<Vec<CustomPreset>, VideoError> {
     let path = get_presets_path(app)?;
-    if !path.exists() {
-        return Ok(vec![]);
+    if path.exists() {
+        let content = fs::read_to_string(&path)?;
+        let presets: Vec<CustomPreset> = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        return Ok(presets);
     }
 
-    let content = fs::read_to_string(&path)?;
-    let presets: Vec<CustomPreset> = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
-    Ok(presets)
+    let legacy = get_legacy_presets_path(app)?;
+    if legacy.exists() {
+        let content = fs::read_to_string(&legacy)?;
+        let presets: Vec<CustomPreset> = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        return Ok(presets);
+    }
+
+    Ok(vec![])
 }
 
 pub fn save_custom_preset(app: &AppHandle, preset: CustomPreset) -> Result<(), VideoError> {

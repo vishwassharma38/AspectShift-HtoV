@@ -134,8 +134,12 @@ pub async fn start_batch(
     }
 
     let targets = normalize_targets(&settings.targets)?;
-    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    let thumb_dir = cache_dir.join("thumbnails");
+    let thumb_dir = if let Ok(runtime) = crate::runtime_paths::RuntimePaths::from_app(&app) {
+        runtime.thumbnail_cache_dir()
+    } else {
+        let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        cache_dir.join("thumbnails")
+    };
     let _ = tokio::fs::create_dir_all(&thumb_dir).await;
 
     let mut jobs = Vec::new();

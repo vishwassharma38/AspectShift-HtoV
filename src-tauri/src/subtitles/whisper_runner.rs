@@ -7,20 +7,49 @@ use uuid::Uuid;
 
 use crate::subtitles::SubtitleSegment;
 use crate::video::types::VideoError;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command as TokioCommand;
 
 fn get_whisper_binary_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
-    let _sidecar = app.shell().sidecar("whisper").map_err(|e| {
-        error!("Failed to create whisper sidecar: {}", e);
-        VideoError::WhisperNotFound
-    })?;
-    Ok(PathBuf::from("whisper"))
+    let runtime = crate::runtime_paths::RuntimePaths::from_app(app)?;
+    let primary = runtime.whisper_binary_path();
+    if primary.exists() {
+        return Ok(primary);
+    }
+
+    let exe_path = std::env::current_exe().unwrap_or_default();
+    if let Some(exe_dir) = exe_path.parent() {
+        let candidate_names = [
+            crate::runtime_paths::RuntimePaths::whisper_binary_default_filename(),
+            if cfg!(target_os = "windows") {
+                "whisper.exe"
+            } else {
+                "whisper"
+            },
+        ];
+        for name in candidate_names {
+            let c = exe_dir.join(name);
+            if c.exists() {
+                return Ok(c);
+            }
+        }
+    }
+
+    error!("Whisper binary not found in runtime path: {}", primary.display());
+    Err(VideoError::WhisperNotFound)
 }
 
 fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
+    let runtime = crate::runtime_paths::RuntimePaths::from_app(app)?;
+    let runtime_model = runtime.whisper_model_path();
+    if runtime_model.exists() {
+        return Ok(runtime_model);
+    }
+
     // Try resolving as a resource in the "resources" subdirectory
     let path = app
         .path()
-        .resolve("resources/ggml-medium.en.bin", BaseDirectory::Resource)
+        .resolve("resources/models/ggml-medium.en.bin", BaseDirectory::Resource)
         .or_else(|_| {
             app.path()
                 .resolve("ggml-medium.en.bin", BaseDirectory::Resource)
@@ -37,7 +66,7 @@ fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
         // Fallback: try relative to executable directory in dev mode
         let exe_path = std::env::current_exe().unwrap_or_default();
         if let Some(exe_dir) = exe_path.parent() {
-            let fallback = exe_dir.join("resources/ggml-medium.en.bin");
+            let fallback = exe_dir.join("resources/models/ggml-medium.en.bin");
             info!("Trying fallback whisper model at: {}", fallback.display());
             if fallback.exists() {
                 return Ok(fallback);
@@ -286,7 +315,7 @@ pub async fn transcribe_to_segments(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
 ) -> Result<Vec<SubtitleSegment>, VideoError> {
-    let _ = get_whisper_binary_path(app)?;
+    let whisper_binary_path = get_whisper_binary_path(app)?;
     let model_path = get_whisper_model_path(app)?;
 
     // 1. Extract 16kHz mono WAV audio required by Whisper.cpp
@@ -312,84 +341,117 @@ pub async fn transcribe_to_segments(
     );
 
     // 2. Execute Whisper with the extracted WAV file
-    let sidecar = app
-        .shell()
-        .sidecar("whisper")
-        .map_err(|_| VideoError::WhisperNotFound)?
+    let mut child = TokioCommand::new(&whisper_binary_path)
         .arg("-m")
-        .arg(model_path)
+        .arg(&model_path)
         .arg("-f")
         .arg(&wav_path)
         .arg("-l")
         .arg("auto")
-        .arg("-otxt");
-    let (mut rx, child) = sidecar.spawn().map_err(|e| VideoError::WhisperFailed {
-        stderr: format!("Failed to execute whisper sidecar: {e}"),
-    })?;
-    let mut child = Some(child);
+        .arg("-otxt")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| VideoError::WhisperFailed {
+            stderr: format!("Failed to execute whisper binary: {e}"),
+        })?;
+
+    let mut stdout_lines = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| VideoError::WhisperFailed {
+                stderr: "Failed to capture Whisper stdout".to_string(),
+            })?,
+    )
+    .lines();
+    let mut stderr_lines = BufReader::new(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| VideoError::WhisperFailed {
+                stderr: "Failed to capture Whisper stderr".to_string(),
+            })?,
+    )
+    .lines();
+
     let mut stdout = String::new();
     let mut stderr = String::new();
-    let mut exit_code = -1;
+    let mut stdout_closed = false;
+    let mut stderr_closed = false;
+    let mut process_done = false;
+    let mut exit_code = -1i32;
 
     loop {
-        let event = if let Some(token) = &cancel_token {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    if let Some(child) = child.take() {
-                        let _ = child.kill();
-                    }
-                    let _ = std::fs::remove_file(&wav_path);
-                    return Err(VideoError::ProcessingFailed {
-                        stderr: "Cancelled by user".to_string(),
-                    });
+        if stdout_closed && stderr_closed && process_done {
+            break;
+        }
+
+        tokio::select! {
+            _ = async {
+                if let Some(token) = &cancel_token {
+                    token.cancelled().await;
+                } else {
+                    std::future::pending::<()>().await;
                 }
-                evt = rx.recv() => evt,
+            } => {
+                let _ = child.kill().await;
+                let _ = std::fs::remove_file(&wav_path);
+                return Err(VideoError::ProcessingFailed {
+                    stderr: "Cancelled by user".to_string(),
+                });
             }
-        } else {
-            rx.recv().await
-        };
-        let Some(event) = event else { break; };
-        match event {
-            CommandEvent::Stdout(line_bytes) => {
-                let line = String::from_utf8_lossy(&line_bytes).to_string();
-                stdout.push_str(&line);
-                stdout.push('\n');
-                if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
-                    if source_duration_secs > 0.0 {
-                        let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
-                        let mapped = 35.0 + ((ratio as f32) * 60.0);
-                        if let Some(cb) = progress_cb {
-                            cb(mapped);
+            status = child.wait(), if !process_done => {
+                let status = status.map_err(|e| VideoError::WhisperFailed {
+                    stderr: format!("Whisper process wait failed: {e}"),
+                })?;
+                process_done = true;
+                exit_code = status.code().unwrap_or(-1);
+            }
+            line = stdout_lines.next_line(), if !stdout_closed => {
+                match line {
+                    Ok(Some(line)) => {
+                        stdout.push_str(&line);
+                        stdout.push('\n');
+                        if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
+                            if source_duration_secs > 0.0 {
+                                let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
+                                let mapped = 35.0 + ((ratio as f32) * 60.0);
+                                if let Some(cb) = progress_cb {
+                                    cb(mapped);
+                                }
+                            }
                         }
                     }
-                }
-            }
-            CommandEvent::Stderr(line_bytes) => {
-                let line = String::from_utf8_lossy(&line_bytes).to_string();
-                stderr.push_str(&line);
-                stderr.push('\n');
-                if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
-                    if source_duration_secs > 0.0 {
-                        let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
-                        let mapped = 35.0 + ((ratio as f32) * 60.0);
-                        if let Some(cb) = progress_cb {
-                            cb(mapped);
-                        }
+                    Ok(None) => stdout_closed = true,
+                    Err(e) => {
+                        stderr.push_str(&format!("Failed reading Whisper stdout: {e}\n"));
+                        stdout_closed = true;
                     }
                 }
             }
-            CommandEvent::Error(err) => {
-                if !stderr.is_empty() && !stderr.ends_with('\n') {
-                    stderr.push('\n');
+            line = stderr_lines.next_line(), if !stderr_closed => {
+                match line {
+                    Ok(Some(line)) => {
+                        stderr.push_str(&line);
+                        stderr.push('\n');
+                        if let Some(end_ms) = parse_whisper_line_end_ms(&line) {
+                            if source_duration_secs > 0.0 {
+                                let ratio = ((end_ms as f64 / 1000.0) / source_duration_secs).clamp(0.0, 1.0);
+                                let mapped = 35.0 + ((ratio as f32) * 60.0);
+                                if let Some(cb) = progress_cb {
+                                    cb(mapped);
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => stderr_closed = true,
+                    Err(e) => {
+                        stderr.push_str(&format!("Failed reading Whisper stderr: {e}\n"));
+                        stderr_closed = true;
+                    }
                 }
-                stderr.push_str(&err);
             }
-            CommandEvent::Terminated(payload) => {
-                exit_code = payload.code.unwrap_or(-1);
-                child = None;
-                break;
-            }
-            _ => {}
         }
     }
 
@@ -397,9 +459,6 @@ pub async fn transcribe_to_segments(
     let _ = std::fs::remove_file(&wav_path);
 
     // 4. Handle Whisper execution result
-    if let Some(child) = child.take() {
-        let _ = child.kill();
-    }
     if exit_code != 0 {
         error!("Whisper failed for {}: {}", input_path.display(), stderr);
         return Err(VideoError::WhisperFailed { stderr });

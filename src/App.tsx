@@ -521,7 +521,8 @@ export default function App() {
 
   const previewLayoutRequest = useMemo<PreviewLayoutRequest | null>(() => {
     if (!orientation) return null;
-    const sourceAspectRatio = orientation.displayWidth / orientation.displayHeight;
+    const sourceAspectRatio =
+      orientation.displayWidth / orientation.displayHeight;
 
     if (!activeSelection) {
       return {
@@ -558,7 +559,13 @@ export default function App() {
       };
     }
     return null;
-  }, [activeSelection, platformPresets, customPresets, effectsState, orientation]);
+  }, [
+    activeSelection,
+    platformPresets,
+    customPresets,
+    effectsState,
+    orientation,
+  ]);
 
   useEffect(() => {
     if (!previewLayoutRequest || !orientation) {
@@ -667,6 +674,17 @@ export default function App() {
       } else {
         setSelectedRatios(ratiosToRestore);
         setSelectedPresetIds(presetsToRestore);
+      }
+
+      // Register asset protocol scope for all previously saved paths
+      const savedPaths = [
+        config.lastInputDir,
+        config.lastOutputDir,
+        config.logoPath,
+      ].filter((p): p is string => typeof p === "string" && p.length > 0);
+
+      for (const p of savedPaths) {
+        await invoke("allow_path_scope", { path: p }).catch(() => {});
       }
 
       isInitialLoad.current = false;
@@ -921,12 +939,16 @@ export default function App() {
         setPreviewFile(files[0]);
         setBatchFiles([]);
         setFolderPreviewFiles([]);
+        await invoke("allow_path_scope", { path: files[0] }).catch(() => {});
         addLog(`File selected: ${basename(files[0])}`, "info");
       } else {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles(files);
         setFolderPreviewFiles([]);
+        for (const f of files) {
+          await invoke("allow_path_scope", { path: f }).catch(() => {});
+        }
         addLog(`${files.length} files selected for batch`, "info");
       }
     } catch (e) {
@@ -943,6 +965,7 @@ export default function App() {
       });
       if (sel && typeof sel === "string") {
         setLastInputDir(sel);
+        await invoke("allow_path_scope", { path: sel }).catch(() => {});
         addLog("Input folder selected, scanning...", "info");
         setBatchFiles([sel]);
 
@@ -991,6 +1014,7 @@ export default function App() {
       });
       if (sel && typeof sel === "string") {
         setOutputDir(sel);
+        await invoke("allow_path_scope", { path: sel }).catch(() => {});
         addLog(`Output directory: ${sel}`, "info");
       }
     } catch (e) {
@@ -1015,7 +1039,7 @@ export default function App() {
   const handleDragLeave = useCallback(() => setIsDragOver(false), []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragOver(false);
       const files = Array.from(e.dataTransfer.files)
@@ -1027,11 +1051,15 @@ export default function App() {
         setPreviewFile(files[0]);
         setBatchFiles([]);
         setFolderPreviewFiles([]);
+        await invoke("allow_path_scope", { path: files[0] }).catch(() => {});
       } else {
         setInputFile(files[0]);
         setPreviewFile(files[0]);
         setBatchFiles(files);
         setFolderPreviewFiles([]);
+        for (const f of files) {
+          await invoke("allow_path_scope", { path: f }).catch(() => {});
+        }
       }
       addLog(`Dropped ${files.length} file(s)`, "info");
     },
@@ -1058,6 +1086,7 @@ export default function App() {
             path: sel,
           },
         }));
+        await invoke("allow_path_scope", { path: sel }).catch(() => {});
         addLog(`Logo loaded: ${basename(sel)}`, "info");
       }
     } catch (e) {

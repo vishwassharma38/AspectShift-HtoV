@@ -1,4 +1,5 @@
 pub mod os_utils;
+pub mod runtime_paths;
 pub mod subtitles;
 pub mod video;
 
@@ -10,11 +11,15 @@ pub fn run() {
         .plugin(tauri_plugin_log::Builder::new()
             .level(log::LevelFilter::Info)
             .build())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Ok(paths) = runtime_paths::RuntimePaths::from_app(app.handle()) {
+                let _ = paths.ensure_runtime_tree();
+            }
             // Automatic cleanup of stale lock files at startup
             let _ = video::lock::cleanup_stale_locks(app.handle());
 
@@ -22,6 +27,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            video::allow_path_scope,
             video::get_first_video_in_folder,
             video::get_videos_in_folder,
             video::detect_orientation,

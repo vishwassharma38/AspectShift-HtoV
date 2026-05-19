@@ -19,7 +19,7 @@ pub use presets::{
     delete_preset, get_all_aspect_ratio_targets, get_builtin_platform_presets, save_preset,
 };
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use types::{
     BatchJobSettings, BatchProgress, ConversionRequest, ConversionRequestDTO, ConversionResult,
     FileReadiness, OrientationInfo, PreviewLayoutRequest, StructuredError, VideoError,
@@ -244,4 +244,41 @@ pub async fn open_output_folder(app: AppHandle, path: String) -> Result<(), Stru
             code: "operation_failed".to_string(),
             message: e.to_string(),
         })
+}
+
+#[tauri::command]
+pub async fn allow_path_scope(
+    app: AppHandle,
+    path: String,
+) -> Result<(), StructuredError> {
+    use std::path::Path;
+    use tauri_plugin_fs::FsExt;
+
+    let p = Path::new(&path);
+
+    // Resolve to a directory: if the path is a file, use its parent.
+    // If it is already a directory, use it directly.
+    let dir = if p.is_file() {
+        p.parent().unwrap_or(p)
+    } else {
+        p
+    };
+
+    // Register with the fs plugin scope (enables Rust-side fs access).
+    app.fs_scope()
+        .allow_directory(dir, true)
+        .map_err(|e| StructuredError {
+            code: "scope_error".to_string(),
+            message: format!("Failed to register fs scope for {}: {}", dir.display(), e),
+        })?;
+
+    // Register with the asset protocol scope (enables convertFileSrc() in frontend).
+    app.asset_protocol_scope()
+        .allow_directory(dir, true)
+        .map_err(|e| StructuredError {
+            code: "scope_error".to_string(),
+            message: format!("Failed to register asset scope for {}: {}", dir.display(), e),
+        })?;
+
+    Ok(())
 }

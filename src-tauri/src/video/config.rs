@@ -5,19 +5,31 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 fn get_config_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
+    let runtime = crate::runtime_paths::RuntimePaths::from_app(app)?;
+    Ok(runtime.root().join("settings.json"))
+}
+
+fn get_legacy_config_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
     let app_data = app.path().app_data_dir().map_err(VideoError::TauriError)?;
     Ok(app_data.join("settings.json"))
 }
 
 pub fn load_app_config(app: &AppHandle) -> Result<AppConfig, VideoError> {
     let path = get_config_path(app)?;
-    if !path.exists() {
-        return Ok(AppConfig::default());
+    if path.exists() {
+        let content = fs::read_to_string(&path)?;
+        let config: AppConfig = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        return Ok(config);
     }
 
-    let content = fs::read_to_string(&path)?;
-    let config: AppConfig = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
-    Ok(config)
+    let legacy = get_legacy_config_path(app)?;
+    if legacy.exists() {
+        let content = fs::read_to_string(&legacy)?;
+        let config: AppConfig = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        return Ok(config);
+    }
+
+    Ok(AppConfig::default())
 }
 
 pub fn save_app_config(app: &AppHandle, config: AppConfig) -> Result<(), VideoError> {

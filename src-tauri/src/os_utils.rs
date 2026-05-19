@@ -25,6 +25,11 @@ impl OsUtils {
 
     /// Returns a platform-agnostic temporary directory using Tauri APIs.
     pub fn get_temp_dir(app: &AppHandle) -> PathBuf {
+        if let Ok(runtime) = crate::runtime_paths::RuntimePaths::from_app(app) {
+            let dir = runtime.temp_dir();
+            let _ = crate::runtime_paths::ensure_dir_exists(&dir);
+            return dir;
+        }
         app.path()
             .temp_dir()
             .unwrap_or_else(|_| std::env::temp_dir())

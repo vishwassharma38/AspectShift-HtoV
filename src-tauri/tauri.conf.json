@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aspectshift-htov",
-  "version": "0.1.0",
-  "identifier": "aspectshift-htov",
+  "productName": "AspectShift-HtoV",
+  "version": "1.0.0",
+  "identifier": "com.softwarefromvish.aspectshift-htov",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,28 +12,27 @@
   "app": {
     "windows": [
       {
-        "title": "aspectshift-htov",
-        "width": 1230,
-        "height": 690,
-        "minWidth": 1230,
-        "minHeight": 690,
+        "title": "AspectShift-HtoV",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 1280,
+        "minHeight": 720,
         "resizable": true,
         "center": true
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$RESOURCE/**", "$APPDATA/**", "$APPCACHE/**", "$TEMP/**"]
       }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["bin/ffmpeg", "bin/ffprobe", "bin/whisper"],
-    "resources": ["resources/ggml-*.bin"],
+    "externalBin": ["bin/ffmpeg", "bin/ffprobe"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,7 +1,7 @@
 use crate::video::types::VideoError;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct ProcessingLock {
     lock_file: PathBuf,
@@ -47,8 +47,8 @@ impl Drop for ProcessingLock {
 }
 
 fn get_lock_dir(app: &AppHandle) -> Result<PathBuf, VideoError> {
-    let app_data = app.path().app_data_dir().map_err(VideoError::TauriError)?;
-    Ok(app_data.join("locks"))
+    let runtime = crate::runtime_paths::RuntimePaths::from_app(app)?;
+    Ok(runtime.temp_dir().join("locks"))
 }
 
 /// Automatically cleans up all stale .processing lock files.
