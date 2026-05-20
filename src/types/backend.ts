@@ -14,6 +14,13 @@ export type AppConfig = {
 	previewVolume: number | null,
 };
 
+export type AppDepsState = {
+	scanStatus: DependencyScanStatus,
+	dependencies: Partial<{ [key in DependencyId]: DependencyReport }>,
+	allReady: boolean,
+	lastUpdated: string,
+};
+
 export type AspectRatio = "ratio9x16" | "ratio1x1" | "ratio4x5" | "ratio2x3" | "ratio16x9";
 
 export type AspectRatioTarget = {
@@ -59,6 +66,26 @@ export type CustomPreset = {
 	ratio: AspectRatio,
 	encoding: EncodingProfile,
 };
+
+export type DependencyId = "whisper_binary" | "whisper_model" | "ffmpeg" | "ffprobe";
+
+export type DependencyReport = {
+	id: DependencyId,
+	name: string,
+	status: DependencyStatus,
+	version: string | null,
+	path: string | null,
+	description: string,
+	lastChecked: string,
+	expectedVersion: string | null,
+	expectedSha256: string | null,
+	expectedFilename: string | null,
+	sourceUrl: string | null,
+};
+
+export type DependencyScanStatus = "not_scanned" | "scanning" | "scan_completed" | "error";
+
+export type DependencyStatus = { status: "missing" } | { status: "installed" } | { status: "invalid"; message: string } | { status: "corrupted"; message: string } | { status: "ready" };
 
 export type EncodingProfile = {
 	crf: number,

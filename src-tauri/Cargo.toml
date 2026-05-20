@@ -37,3 +37,4 @@ uuid = { version = "1.23.0", features = ["v4"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
 specta = { version = "2.0.0-rc.23", features = ["derive"] }
 specta-typescript = "0.0.10"
+chrono = { version = "0.4.44", features = ["serde"] }

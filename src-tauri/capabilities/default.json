@@ -18,10 +18,6 @@
         {
           "name": "bin/ffprobe",
           "sidecar": true
-        },
-        {
-          "name": "bin/whisper",
-          "sidecar": true
         }
       ]
     }

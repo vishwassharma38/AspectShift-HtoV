@@ -1,3 +1,6 @@
+use aspectshift_htov_lib::dependency_manager::{
+    AppDepsState, DependencyId, DependencyReport, DependencyStatus, DependencyScanStatus,
+};
 use aspectshift_htov_lib::video::{
     ffmpeg::VideoProgress,
     types::{
@@ -40,7 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<PreviewLayoutRequest>()
         .register::<FileReadiness>()
         .register::<StructuredError>()
-        .register::<VideoProgress>();
+        .register::<VideoProgress>()
+        .register::<DependencyId>()
+        .register::<DependencyScanStatus>()
+        .register::<DependencyStatus>()
+        .register::<DependencyReport>()
+        .register::<AppDepsState>();
 
     let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

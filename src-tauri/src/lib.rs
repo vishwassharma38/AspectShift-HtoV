@@ -2,8 +2,26 @@ pub mod os_utils;
 pub mod runtime_paths;
 pub mod subtitles;
 pub mod video;
+pub mod dependency_manager;
 
-use tauri::Manager;
+use tauri::{AppHandle, Manager, State};
+use video::types::StructuredError;
+use dependency_manager::{AppDepsState, DepsManager};
+
+#[tauri::command]
+async fn get_dependency_state(
+    manager: State<'_, DepsManager>,
+) -> Result<AppDepsState, StructuredError> {
+    Ok(manager.get_state().await)
+}
+
+#[tauri::command]
+async fn rescan_dependencies(
+    app: AppHandle,
+    manager: State<'_, DepsManager>,
+) -> Result<AppDepsState, StructuredError> {
+    manager.refresh(&app).await.map_err(StructuredError::from)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,10 +41,25 @@ pub fn run() {
             // Automatic cleanup of stale lock files at startup
             let _ = video::lock::cleanup_stale_locks(app.handle());
 
+            let deps_manager = DepsManager::new();
+            let app_handle = app.handle().clone();
+            let deps_for_init = deps_manager.clone();
+            app.manage(deps_manager);
+            
+            // Initial scan in background to not block startup too much, 
+            // though refresh is mostly IO existence checks which are fast.
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = deps_for_init.refresh(&app_handle).await {
+                    log::error!("Initial dependency refresh failed: {}", e);
+                }
+            });
+
             app.manage(video::queue::BatchManager::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_dependency_state,
+            rescan_dependencies,
             video::allow_path_scope,
             video::get_first_video_in_folder,
             video::get_videos_in_folder,
