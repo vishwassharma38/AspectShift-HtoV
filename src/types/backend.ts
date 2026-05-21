@@ -69,6 +69,8 @@ export type CustomPreset = {
 
 export type DependencyId = "whisper_binary" | "whisper_model" | "ffmpeg" | "ffprobe";
 
+export type DependencyLifecycleStatus = "idle" | "checking" | "missing" | "downloading" | "verifying" | "extracting" | "installed" | "failed";
+
 export type DependencyReport = {
 	id: DependencyId,
 	name: string,
@@ -81,6 +83,10 @@ export type DependencyReport = {
 	expectedSha256: string | null,
 	expectedFilename: string | null,
 	sourceUrl: string | null,
+	updateAvailable: boolean | null,
+	installedVersion: string | null,
+	lifecycle: DependencyLifecycleStatus,
+	lifecycleMessage: string | null,
 };
 
 export type DependencyScanStatus = "not_scanned" | "scanning" | "scan_completed" | "error";

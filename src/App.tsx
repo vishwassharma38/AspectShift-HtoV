@@ -4,10 +4,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AppConfig,
+  AppDepsState,
   AspectRatio,
   AspectRatioTarget,
   BatchProgress,
   CustomPreset,
+  DependencyId,
   EncodingProfile,
   FileProgress,
   FileReadiness,
@@ -52,6 +54,21 @@ interface LogEntry {
 interface BackendError {
   code?: string;
   message?: string;
+}
+
+interface DependencyInstallEvent {
+  id: DependencyId;
+  lifecycle:
+    | "idle"
+    | "checking"
+    | "missing"
+    | "downloading"
+    | "verifying"
+    | "extracting"
+    | "installed"
+    | "failed";
+  progressPercent: number | null;
+  message: string | null;
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -429,6 +446,14 @@ export default function App() {
   const [previewVolume, setPreviewVolume] = useState<number>(
     DEFAULT_PREVIEW_VOLUME,
   );
+  const [depsState, setDepsState] = useState<AppDepsState | null>(null);
+  const [depsInstalling, setDepsInstalling] = useState(false);
+  const [depsInstallMessage, setDepsInstallMessage] = useState<string | null>(
+    null,
+  );
+  const [depsProgressById, setDepsProgressById] = useState<
+    Partial<Record<DependencyId, number>>
+  >({});
   const [volumeSliderActive, setVolumeSliderActive] = useState(false);
   const [volumeSliderInteracting, setVolumeSliderInteracting] = useState(false);
   const [volumeSliderHovering, setVolumeSliderHovering] = useState(false);
@@ -615,6 +640,12 @@ export default function App() {
     loadConfig();
     loadPresets();
     loadAspectRatioTargets();
+    invoke<AppDepsState>("get_dependency_state")
+      .then(setDepsState)
+      .catch(() => {});
+    invoke<AppDepsState>("rescan_dependencies")
+      .then(setDepsState)
+      .catch(() => {});
     invoke<BatchProgress>("get_batch_status")
       .then((status) => {
         if (!status.sessionId) return;
@@ -836,6 +867,41 @@ export default function App() {
       });
       if (disposed) u3();
       else unsubscribers.push(u3);
+
+      const u4 = await listen<AppDepsState>("deps://state", (e) => {
+        setDepsState(e.payload);
+      });
+      if (disposed) u4();
+      else unsubscribers.push(u4);
+
+      const u5 = await listen<DependencyInstallEvent>(
+        "deps://install-progress",
+        (e) => {
+          const lifecycle = e.payload.lifecycle;
+          if (lifecycle === "downloading") {
+            setDepsInstalling(true);
+            const progress = e.payload.progressPercent ?? 0;
+            setDepsProgressById((prev) => ({ ...prev, [e.payload.id]: progress }));
+            setDepsInstallMessage(
+              `Downloading ${e.payload.id}... ${Math.round(progress)}%`,
+            );
+          } else if (lifecycle === "verifying") {
+            setDepsInstallMessage(`Verifying ${e.payload.id}...`);
+          } else if (lifecycle === "extracting") {
+            setDepsInstallMessage(`Extracting ${e.payload.id}...`);
+          } else if (lifecycle === "installed") {
+            setDepsInstallMessage("Ready");
+            setDepsInstalling(false);
+          } else if (lifecycle === "failed") {
+            setDepsInstallMessage(
+              e.payload.message ?? "Dependency install failed",
+            );
+            setDepsInstalling(false);
+          }
+        },
+      );
+      if (disposed) u5();
+      else unsubscribers.push(u5);
     };
 
     setupListeners();
@@ -1381,6 +1447,22 @@ export default function App() {
     [canNavigatePreview, activePreviewIndex, previewCandidates],
   );
 
+  const handleInstallDependencies = async () => {
+    try {
+      setDepsInstalling(true);
+      setDepsInstallMessage("Starting install...");
+      await invoke<AppDepsState>("install_dependency", { id: "whisper_binary" });
+      await invoke<AppDepsState>("install_dependency", { id: "whisper_model" });
+      const refreshed = await invoke<AppDepsState>("rescan_dependencies");
+      setDepsState(refreshed);
+      setDepsInstallMessage("Ready");
+      setDepsInstalling(false);
+    } catch (e) {
+      setDepsInstallMessage(`Install failed: ${errorMessage(e)}`);
+      setDepsInstalling(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1408,6 +1490,48 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <section
+        className="sidebar-section"
+        style={{ margin: "12px", marginBottom: 0 }}
+      >
+        <div className="sidebar-section-title">Subtitle Dependencies</div>
+        <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
+          Whisper binary:{" "}
+          {depsState?.dependencies?.whisper_binary?.status.status ?? "checking"}{" "}
+          | Model:{" "}
+          {depsState?.dependencies?.whisper_model?.status.status ?? "checking"}
+        </div>
+        <div className="flex gap-6">
+          <button
+            className="btn btn-sm"
+            disabled={depsInstalling}
+            onClick={handleInstallDependencies}
+          >
+            {depsInstalling ? "Installing..." : "Download Required Components"}
+          </button>
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={() =>
+              invoke<AppDepsState>("rescan_dependencies")
+                .then(setDepsState)
+                .catch(() => {})
+            }
+          >
+            Rescan
+          </button>
+        </div>
+        {depsInstallMessage && (
+          <div className="text-xs text-muted" style={{ marginTop: 8 }}>
+            {depsInstallMessage}
+          </div>
+        )}
+        {Object.keys(depsProgressById).length > 0 && (
+          <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+            Download progress tracked
+          </div>
+        )}
+      </section>
 
       <div className="main-content">
         {/* ── Left Sidebar ───────────────────────────────────── */}

@@ -15,6 +15,8 @@ const USER_ASSETS_DIR: &str = "user-assets";
 const GENERATED_DIR: &str = "generated-assets";
 const SUBTITLES_DIR: &str = "subtitles";
 const THUMBNAILS_DIR: &str = "thumbnails";
+const CURRENT_DIR: &str = "current";
+const VERSIONS_DIR: &str = "versions";
 
 #[derive(Debug, Clone)]
 pub struct RuntimePaths {
@@ -95,13 +97,29 @@ impl RuntimePaths {
     }
 
     pub fn whisper_binary_path(&self) -> PathBuf {
-        self.dependency_dir("whisper")
+        self.dependency_current_dir("whisper")
             .join(Self::whisper_binary_default_filename())
     }
 
     pub fn whisper_model_path(&self) -> PathBuf {
-        self.model_dir("whisper")
+        self.model_current_dir("whisper")
             .join(Self::whisper_model_default_filename())
+    }
+
+    pub fn dependency_current_dir(&self, name: &str) -> PathBuf {
+        self.dependency_dir(name).join(CURRENT_DIR)
+    }
+
+    pub fn dependency_versions_dir(&self, name: &str) -> PathBuf {
+        self.dependency_dir(name).join(VERSIONS_DIR)
+    }
+
+    pub fn model_current_dir(&self, name: &str) -> PathBuf {
+        self.model_dir(name).join(CURRENT_DIR)
+    }
+
+    pub fn model_versions_dir(&self, name: &str) -> PathBuf {
+        self.model_dir(name).join(VERSIONS_DIR)
     }
 
     pub fn ensure_runtime_tree(&self) -> Result<(), VideoError> {
@@ -118,7 +136,11 @@ impl RuntimePaths {
             self.subtitle_temp_dir(),
             self.thumbnail_cache_dir(),
             self.dependency_dir("whisper"),
+            self.dependency_current_dir("whisper"),
+            self.dependency_versions_dir("whisper"),
             self.model_dir("whisper"),
+            self.model_current_dir("whisper"),
+            self.model_versions_dir("whisper"),
         ];
 
         for dir in dirs {

@@ -3,10 +3,13 @@ pub mod runtime_paths;
 pub mod subtitles;
 pub mod video;
 pub mod dependency_manager;
+pub mod manifest_service;
+pub mod download_manager;
 
 use tauri::{AppHandle, Manager, State};
 use video::types::StructuredError;
-use dependency_manager::{AppDepsState, DepsManager};
+use dependency_manager::{AppDepsState, DependencyId, DepsManager};
+use download_manager::DownloadManager;
 
 #[tauri::command]
 async fn get_dependency_state(
@@ -21,6 +24,20 @@ async fn rescan_dependencies(
     manager: State<'_, DepsManager>,
 ) -> Result<AppDepsState, StructuredError> {
     manager.refresh(&app).await.map_err(StructuredError::from)
+}
+
+#[tauri::command]
+async fn install_dependency(
+    app: AppHandle,
+    id: DependencyId,
+    deps_manager: State<'_, DepsManager>,
+    download_manager: State<'_, DownloadManager>,
+) -> Result<AppDepsState, StructuredError> {
+    download_manager
+        .install_dependency(&app, id)
+        .await
+        .map_err(StructuredError::from)?;
+    deps_manager.refresh(&app).await.map_err(StructuredError::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,9 +59,11 @@ pub fn run() {
             let _ = video::lock::cleanup_stale_locks(app.handle());
 
             let deps_manager = DepsManager::new();
+            let download_manager = DownloadManager::new();
             let app_handle = app.handle().clone();
             let deps_for_init = deps_manager.clone();
             app.manage(deps_manager);
+            app.manage(download_manager);
             
             // Initial scan in background to not block startup too much, 
             // though refresh is mostly IO existence checks which are fast.
@@ -60,6 +79,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_dependency_state,
             rescan_dependencies,
+            install_dependency,
             video::allow_path_scope,
             video::get_first_video_in_folder,
             video::get_videos_in_folder,

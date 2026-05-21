@@ -36,7 +36,10 @@
       "get_builtin_platform_presets",
       "get_all_aspect_ratio_targets",
       "save_preset",
-      "delete_preset"
+      "delete_preset",
+      "get_dependency_state",
+      "rescan_dependencies",
+      "install_dependency"
     ]
   }
 }

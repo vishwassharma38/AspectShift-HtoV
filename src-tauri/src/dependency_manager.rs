@@ -2,13 +2,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use chrono::Utc;
 use tauri_plugin_shell::ShellExt;
 use tokio::time::{timeout, Duration};
 use log::{info, warn, error};
+use sha2::{Digest, Sha256};
 
+use crate::manifest_service::{ManifestDependencyInfo, ManifestService};
 use crate::runtime_paths::RuntimePaths;
 use crate::video::types::VideoError;
 
@@ -40,6 +42,19 @@ pub enum DependencyStatus {
     Ready,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyLifecycleStatus {
+    Idle,
+    Checking,
+    Missing,
+    Downloading,
+    Verifying,
+    Extracting,
+    Installed,
+    Failed,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyReport {
@@ -56,6 +71,10 @@ pub struct DependencyReport {
     pub expected_sha256: Option<String>,
     pub expected_filename: Option<String>,
     pub source_url: Option<String>,
+    pub update_available: Option<bool>,
+    pub installed_version: Option<String>,
+    pub lifecycle: DependencyLifecycleStatus,
+    pub lifecycle_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -70,6 +89,7 @@ pub struct AppDepsState {
 #[derive(Clone)]
 pub struct DepsManager {
     state: Arc<RwLock<AppDepsState>>,
+    manifest_service: ManifestService,
 }
 
 impl DepsManager {
@@ -81,6 +101,7 @@ impl DepsManager {
                 all_ready: false,
                 last_updated: Utc::now().to_rfc3339(),
             })),
+            manifest_service: ManifestService::new(),
         }
     }
 
@@ -96,6 +117,7 @@ impl DepsManager {
             state_guard.scan_status = DependencyScanStatus::Scanning;
             state_guard.last_updated = Utc::now().to_rfc3339();
         }
+        self.emit_state(app).await;
 
         let paths = match RuntimePaths::from_app(app) {
             Ok(p) => p,
@@ -108,29 +130,36 @@ impl DepsManager {
         };
 
         let mut deps = HashMap::new();
+        let manifest = self.manifest_service.get_manifest(app).await;
 
         // 1. Whisper Binary
+        let whisper_binary_meta = manifest
+            .as_ref()
+            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_binary"));
         deps.insert(
             DependencyId::WhisperBinary,
-            self.check_whisper_binary(&paths).await,
+            self.check_whisper_binary(&paths, whisper_binary_meta).await,
         );
 
         // 2. Whisper Model
+        let whisper_model_meta = manifest
+            .as_ref()
+            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_model"));
         deps.insert(
             DependencyId::WhisperModel,
-            self.check_whisper_model(&paths).await,
+            self.check_whisper_model(&paths, whisper_model_meta).await,
         );
 
         // 3. FFmpeg (Sidecar)
         deps.insert(
             DependencyId::Ffmpeg,
-            self.check_sidecar_executable(app, "ffmpeg", DependencyId::Ffmpeg).await,
+            self.check_sidecar_executable(app, "ffmpeg", DependencyId::Ffmpeg, None).await,
         );
 
         // 4. FFprobe (Sidecar)
         deps.insert(
             DependencyId::Ffprobe,
-            self.check_sidecar_executable(app, "ffprobe", DependencyId::Ffprobe).await,
+            self.check_sidecar_executable(app, "ffprobe", DependencyId::Ffprobe, None).await,
         );
 
         let all_ready = deps.values().all(|d| d.status == DependencyStatus::Ready);
@@ -144,12 +173,18 @@ impl DepsManager {
 
         let mut state_guard = self.state.write().await;
         *state_guard = new_state.clone();
+        drop(state_guard);
+        self.emit_state(app).await;
 
         info!("Dependency refresh completed. All ready: {}", all_ready);
         Ok(new_state)
     }
 
-    async fn check_whisper_binary(&self, paths: &RuntimePaths) -> DependencyReport {
+    async fn check_whisper_binary(
+        &self,
+        paths: &RuntimePaths,
+        expected: Option<ManifestDependencyInfo>,
+    ) -> DependencyReport {
         let path = paths.whisper_binary_path();
         
         let status = if !path.exists() {
@@ -188,22 +223,59 @@ impl DepsManager {
             }
         };
 
+        let mut status = status;
+        if let (DependencyStatus::Ready, Some(meta)) = (&status, expected.as_ref()) {
+            if let Ok(actual_sha) = calculate_sha256_hex(&path) {
+                if actual_sha != meta.sha256.to_lowercase() {
+                    status = DependencyStatus::Corrupted {
+                        message: "Binary checksum mismatch".to_string(),
+                    };
+                }
+            }
+        }
+        let installed = status == DependencyStatus::Ready;
+        let expected_version = expected.as_ref().map(|m| m.version.clone());
+        let expected_sha256 = expected.as_ref().map(|m| m.sha256.clone());
+        let expected_filename = expected.as_ref().map(|m| m.filename.clone());
+        let source_url = expected.as_ref().map(|m| m.url.clone());
+        let installed_version = if installed {
+            expected_version.clone()
+        } else {
+            None
+        };
+        let update_available = match (&installed_version, &expected_version) {
+            (Some(installed_v), Some(expected_v)) => Some(installed_v != expected_v),
+            _ => None,
+        };
+
         DependencyReport {
             id: DependencyId::WhisperBinary,
             name: "Whisper CLI".to_string(),
-            status,
+            status: status.clone(),
             version: None,
             path: Some(path.to_string_lossy().to_string()),
             description: "High-performance GGUF-based Whisper transcription engine.".to_string(),
             last_checked: Utc::now().to_rfc3339(),
-            expected_version: None,
-            expected_sha256: None,
-            expected_filename: Some("whisper-cli".to_string()),
-            source_url: None,
+            expected_version,
+            expected_sha256,
+            expected_filename,
+            source_url,
+            update_available,
+            installed_version,
+            lifecycle: if status == DependencyStatus::Missing {
+                DependencyLifecycleStatus::Missing
+            } else {
+                DependencyLifecycleStatus::Installed
+            },
+            lifecycle_message: None,
         }
     }
 
-    async fn check_whisper_model(&self, paths: &RuntimePaths) -> DependencyReport {
+    async fn check_whisper_model(
+        &self,
+        paths: &RuntimePaths,
+        expected: Option<ManifestDependencyInfo>,
+    ) -> DependencyReport {
         let path = paths.whisper_model_path();
         
         let status = if !path.exists() {
@@ -231,22 +303,61 @@ impl DepsManager {
             }
         };
 
+        let mut status = status;
+        if let (DependencyStatus::Ready, Some(meta)) = (&status, expected.as_ref()) {
+            if let Ok(actual_sha) = calculate_sha256_hex(&path) {
+                if actual_sha != meta.sha256.to_lowercase() {
+                    status = DependencyStatus::Corrupted {
+                        message: "Model checksum mismatch".to_string(),
+                    };
+                }
+            }
+        }
+        let installed = status == DependencyStatus::Ready;
+        let expected_version = expected.as_ref().map(|m| m.version.clone());
+        let expected_sha256 = expected.as_ref().map(|m| m.sha256.clone());
+        let expected_filename = expected.as_ref().map(|m| m.filename.clone());
+        let source_url = expected.as_ref().map(|m| m.url.clone());
+        let installed_version = if installed {
+            expected_version.clone()
+        } else {
+            None
+        };
+        let update_available = match (&installed_version, &expected_version) {
+            (Some(installed_v), Some(expected_v)) => Some(installed_v != expected_v),
+            _ => None,
+        };
+
         DependencyReport {
             id: DependencyId::WhisperModel,
             name: "Whisper Model".to_string(),
-            status,
+            status: status.clone(),
             version: None,
             path: Some(path.to_string_lossy().to_string()),
             description: "AI model for transcription.".to_string(),
             last_checked: Utc::now().to_rfc3339(),
-            expected_version: None,
-            expected_sha256: None,
-            expected_filename: Some("ggml-model.bin".to_string()),
-            source_url: None,
+            expected_version,
+            expected_sha256,
+            expected_filename,
+            source_url,
+            update_available,
+            installed_version,
+            lifecycle: if status == DependencyStatus::Missing {
+                DependencyLifecycleStatus::Missing
+            } else {
+                DependencyLifecycleStatus::Installed
+            },
+            lifecycle_message: None,
         }
     }
 
-    async fn check_sidecar_executable(&self, app: &AppHandle, name: &str, id: DependencyId) -> DependencyReport {
+    async fn check_sidecar_executable(
+        &self,
+        app: &AppHandle,
+        name: &str,
+        id: DependencyId,
+        expected: Option<ManifestDependencyInfo>,
+    ) -> DependencyReport {
         let mut path_str = None;
         let mut version = None;
 
@@ -295,6 +406,12 @@ impl DepsManager {
             }
         };
 
+        let lifecycle = if matches!(status, DependencyStatus::Missing) {
+            DependencyLifecycleStatus::Missing
+        } else {
+            DependencyLifecycleStatus::Installed
+        };
+
         DependencyReport {
             id,
             name: display_name,
@@ -303,10 +420,26 @@ impl DepsManager {
             path: path_str,
             description,
             last_checked: Utc::now().to_rfc3339(),
-            expected_version: None,
-            expected_sha256: None,
+            expected_version: expected.as_ref().map(|m| m.version.clone()),
+            expected_sha256: expected.as_ref().map(|m| m.sha256.clone()),
             expected_filename: Some(name.to_string()),
-            source_url: None,
+            source_url: expected.as_ref().map(|m| m.url.clone()),
+            update_available: None,
+            installed_version: None,
+            lifecycle,
+            lifecycle_message: None,
         }
     }
+
+    async fn emit_state(&self, app: &AppHandle) {
+        let state = self.get_state().await;
+        let _ = app.emit("deps://state", state);
+    }
+}
+
+fn calculate_sha256_hex(path: &std::path::Path) -> Result<String, std::io::Error> {
+    let bytes = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
