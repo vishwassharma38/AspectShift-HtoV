@@ -1,15 +1,25 @@
-pub mod os_utils;
+﻿pub mod os_utils;
 pub mod runtime_paths;
 pub mod subtitles;
 pub mod video;
 pub mod dependency_manager;
 pub mod manifest_service;
 pub mod download_manager;
+pub mod auth;
 
+#[cfg(all(feature = "dev-auth", not(debug_assertions)))]
+compile_error!("dev-auth simulation paths must not be compiled in production builds.");
+
+use std::sync::Arc;
+
+use dotenvy::dotenv;
 use tauri::{AppHandle, Manager, State};
 use video::types::StructuredError;
 use dependency_manager::{AppDepsState, DependencyId, DepsManager};
 use download_manager::DownloadManager;
+use auth::manager::auth_manager::AuthManager;
+use auth::providers::ActiveLicenseProvider;
+use auth::auth_commands::{activate_license, clear_license, get_auth_state, refresh_license};
 
 #[tauri::command]
 async fn get_dependency_state(
@@ -42,6 +52,8 @@ async fn install_dependency(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenv().ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new()
             .level(log::LevelFilter::Info)
@@ -55,7 +67,6 @@ pub fn run() {
             if let Ok(paths) = runtime_paths::RuntimePaths::from_app(app.handle()) {
                 let _ = paths.ensure_runtime_tree();
             }
-            // Automatic cleanup of stale lock files at startup
             let _ = video::lock::cleanup_stale_locks(app.handle());
 
             let deps_manager = DepsManager::new();
@@ -64,13 +75,26 @@ pub fn run() {
             let deps_for_init = deps_manager.clone();
             app.manage(deps_manager);
             app.manage(download_manager);
-            
-            // Initial scan in background to not block startup too much, 
-            // though refresh is mostly IO existence checks which are fast.
+
+            #[cfg(feature = "dev-auth")]
+            let provider: Arc<dyn auth::providers::r#trait::LicenseProvider> =
+                Arc::new(ActiveLicenseProvider::new());
+            #[cfg(not(feature = "dev-auth"))]
+            let provider: Arc<dyn auth::providers::r#trait::LicenseProvider> =
+                Arc::new(ActiveLicenseProvider);
+
+            let auth_manager = AuthManager::new(provider);
+            let auth_manager_for_init = auth_manager.clone();
+            app.manage(auth_manager);
+
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = deps_for_init.refresh(&app_handle).await {
                     log::error!("Initial dependency refresh failed: {}", e);
                 }
+            });
+            let app_handle_for_auth = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                auth_manager_for_init.run_launch_validation(&app_handle_for_auth).await;
             });
 
             app.manage(video::queue::BatchManager::new());
@@ -80,6 +104,10 @@ pub fn run() {
             get_dependency_state,
             rescan_dependencies,
             install_dependency,
+            get_auth_state,
+            activate_license,
+            refresh_license,
+            clear_license,
             video::allow_path_scope,
             video::get_first_video_in_folder,
             video::get_videos_in_folder,

@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AuthState,
   AppConfig,
   AppDepsState,
   AspectRatio,
@@ -28,6 +29,7 @@ import type {
   VideoTransform,
 } from "./types/backend";
 import "./App.css";
+import { AuthPanel } from "./components/AuthPanel";
 import { VideoCanvas } from "./components/VideoCanvas";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
 
@@ -454,6 +456,7 @@ export default function App() {
   const [depsProgressById, setDepsProgressById] = useState<
     Partial<Record<DependencyId, number>>
   >({});
+  const [authState, setAuthState] = useState<AuthState | null>(null);
   const [volumeSliderActive, setVolumeSliderActive] = useState(false);
   const [volumeSliderInteracting, setVolumeSliderInteracting] = useState(false);
   const [volumeSliderHovering, setVolumeSliderHovering] = useState(false);
@@ -1464,7 +1467,7 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-auth-status={authState?.status ?? "not_activated"}>
       <header className="topbar">
         <div className="topbar-logo">
           <img src="logo.png" alt="AspectShift" className="topbar-logo-img" />
@@ -1536,6 +1539,9 @@ export default function App() {
       <div className="main-content">
         {/* ── Left Sidebar ───────────────────────────────────── */}
         <aside className="sidebar">
+          <div className="sidebar-section">
+            <AuthPanel onAuthStateChange={setAuthState} />
+          </div>
           <div className="sidebar-section">
             <div className="sidebar-section-title">Import Files</div>
             <div

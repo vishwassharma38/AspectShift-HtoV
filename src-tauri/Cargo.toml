@@ -41,3 +41,12 @@ chrono = { version = "0.4.44", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 sha2 = "0.10"
 futures-util = "0.3"
+keyring = { version = "3", features = ["windows-native"] }
+jsonwebtoken = "9"
+hmac = "0.12"
+hex = "0.4"
+rand = "0.8"
+dotenvy = "0.15"
+
+[features]
+dev-auth = []

@@ -1,6 +1,11 @@
 use aspectshift_htov_lib::dependency_manager::{
     AppDepsState, DependencyId, DependencyReport, DependencyStatus, DependencyScanStatus,
 };
+use aspectshift_htov_lib::auth::{
+    auth_models::ActivationResult,
+    state::auth_state::{AuthState, AuthStatus},
+    state::license_tier::LicenseTier,
+};
 use aspectshift_htov_lib::video::{
     ffmpeg::VideoProgress,
     types::{
@@ -48,7 +53,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<DependencyScanStatus>()
         .register::<DependencyStatus>()
         .register::<DependencyReport>()
-        .register::<AppDepsState>();
+        .register::<AppDepsState>()
+        .register::<AuthStatus>()
+        .register::<LicenseTier>()
+        .register::<AuthState>()
+        .register::<ActivationResult>();
 
     let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

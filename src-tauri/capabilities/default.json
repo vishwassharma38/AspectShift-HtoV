@@ -39,7 +39,11 @@
       "delete_preset",
       "get_dependency_state",
       "rescan_dependencies",
-      "install_dependency"
+      "install_dependency",
+      "get_auth_state",
+      "activate_license",
+      "refresh_license",
+      "clear_license"
     ]
   }
 }
