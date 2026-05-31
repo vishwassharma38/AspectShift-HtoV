@@ -1,11 +1,12 @@
-﻿use chrono::Utc;
+use chrono::Utc;
 use log::{info, warn};
 
 use crate::auth::machine::machine_id::get_machine_id;
+use crate::auth::outcome_mapping::map_auth_error;
 use crate::auth::state::auth_metadata::JwtMetadata;
 use crate::auth::state::auth_state::AuthStatus;
 use crate::auth::storage::secure_storage::load_jwt;
-use crate::auth::validators::jwt_validator::{grace_period_secs, validate_jwt};
+use crate::auth::validators::jwt_validator::{classify_launch_status, validate_jwt};
 
 pub struct LaunchValidationResult {
     pub status: AuthStatus,
@@ -40,9 +41,13 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
     let metadata = match validate_jwt(&jwt) {
         Ok(m) => m,
         Err(e) => {
-            warn!("LaunchValidation: JWT validation failed: {} - Corrupted", e);
+            let status = map_auth_error(&e).status;
+            warn!(
+                "LaunchValidation: JWT validation failed: {} - {:?}",
+                e, status
+            );
             return LaunchValidationResult {
-                status: AuthStatus::Corrupted,
+                status,
                 jwt_metadata: None,
             };
         }
@@ -71,35 +76,29 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
     }
 
     let now = Utc::now().timestamp();
-    if metadata.expires_at < now {
-        let grace_deadline = metadata.expires_at + grace_period_secs();
-        if now < grace_deadline {
+    let launch_status = classify_launch_status(&metadata, now);
+
+    match launch_status {
+        AuthStatus::GracePeriod => {
             warn!("LaunchValidation: JWT expired but within grace period");
-            return LaunchValidationResult {
-                status: AuthStatus::GracePeriod,
-                jwt_metadata: Some(metadata),
-            };
         }
-        warn!("LaunchValidation: JWT expired and grace period passed");
-        return LaunchValidationResult {
-            status: AuthStatus::Expired,
-            jwt_metadata: Some(metadata),
-        };
+        AuthStatus::Expired => {
+            warn!("LaunchValidation: JWT expired and grace period passed");
+        }
+        AuthStatus::RefreshRequired => {
+            info!("LaunchValidation: JWT valid but refresh recommended soon");
+        }
+        AuthStatus::Valid => {
+            info!(
+                "LaunchValidation: JWT valid, tier={}",
+                metadata.tier.as_str()
+            );
+        }
+        _ => {}
     }
 
-    let refresh_threshold_secs = 7 * 24 * 3600_i64;
-    if (metadata.expires_at - now) < refresh_threshold_secs {
-        info!("LaunchValidation: JWT valid but refresh recommended soon");
-        return LaunchValidationResult {
-            status: AuthStatus::RefreshRequired,
-            jwt_metadata: Some(metadata),
-        };
-    }
-
-    info!("LaunchValidation: JWT valid, tier={}", metadata.tier.as_str());
     LaunchValidationResult {
-        status: AuthStatus::Valid,
+        status: launch_status,
         jwt_metadata: Some(metadata),
     }
 }
-

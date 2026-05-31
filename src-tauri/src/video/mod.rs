@@ -39,7 +39,8 @@ pub async fn get_first_video_in_folder(
 
     while let Ok(Some(child)) = read_dir.next_entry().await {
         let child_path = child.path();
-        if child_path.is_file() && crate::os_utils::OsUtils::has_supported_video_extension(&child_path)
+        if child_path.is_file()
+            && crate::os_utils::OsUtils::has_supported_video_extension(&child_path)
         {
             return Ok(Some(child_path.to_string_lossy().to_string()));
         }
@@ -60,7 +61,8 @@ pub async fn get_videos_in_folder(folder_path: String) -> Result<Vec<String>, St
     let mut videos: Vec<String> = Vec::new();
     while let Ok(Some(child)) = read_dir.next_entry().await {
         let child_path = child.path();
-        if child_path.is_file() && crate::os_utils::OsUtils::has_supported_video_extension(&child_path)
+        if child_path.is_file()
+            && crate::os_utils::OsUtils::has_supported_video_extension(&child_path)
         {
             videos.push(child_path.to_string_lossy().to_string());
         }
@@ -119,8 +121,8 @@ pub async fn compute_preview_layout(
         subtitle_path: None,
     };
 
-    let plan = preset_adapter::create_render_plan_resolved(&fake_job)
-        .map_err(StructuredError::from)?;
+    let plan =
+        preset_adapter::create_render_plan_resolved(&fake_job).map_err(StructuredError::from)?;
     Ok(render_layout::calculate_render_layout(
         &plan,
         &orientation,
@@ -247,10 +249,7 @@ pub async fn open_output_folder(app: AppHandle, path: String) -> Result<(), Stru
 }
 
 #[tauri::command]
-pub async fn allow_path_scope(
-    app: AppHandle,
-    path: String,
-) -> Result<(), StructuredError> {
+pub async fn allow_path_scope(app: AppHandle, path: String) -> Result<(), StructuredError> {
     use std::path::Path;
     use tauri_plugin_fs::FsExt;
 
@@ -277,7 +276,11 @@ pub async fn allow_path_scope(
         .allow_directory(dir, true)
         .map_err(|e| StructuredError {
             code: "scope_error".to_string(),
-            message: format!("Failed to register asset scope for {}: {}", dir.display(), e),
+            message: format!(
+                "Failed to register asset scope for {}: {}",
+                dir.display(),
+                e
+            ),
         })?;
 
     Ok(())

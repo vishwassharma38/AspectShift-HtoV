@@ -114,7 +114,7 @@ pub async fn prepare_subtitles(
             .and_then(|s| s.to_str())
             .unwrap_or("subtitle");
         let ass_path = temp_dir.join(format!("{}_{}.ass", stem, uuid::Uuid::new_v4()));
-        
+
         let style = crate::subtitles::positioning::calculate_ass_style(
             target_width,
             target_height,
@@ -122,13 +122,13 @@ pub async fn prepare_subtitles(
             blur_enabled,
         );
         crate::subtitles::ass_writer::write_ass(&ass_path, &segments, &style)?;
-        
+
         info!(
             "Generated ASS for burn-in for {} at {}",
             input_path.display(),
             ass_path.display()
         );
-        
+
         // If we're burning in, the ASS path is the one we want to return for the FFmpeg filter
         result_path = ass_path;
     }
@@ -157,12 +157,8 @@ pub async fn render_single(
     // 2. Skip logic should be handled by caller, but we check existence for safety
     if job.effects.skip_existing_enabled() {
         let alt_path_buf = job.alt_output_path.as_ref().map(PathBuf::from);
-        if let Some(existing_path) = resolve_existing_output_for_skip(
-            app,
-            &output_path_buf,
-            alt_path_buf.as_deref(),
-        )
-        .await
+        if let Some(existing_path) =
+            resolve_existing_output_for_skip(app, &output_path_buf, alt_path_buf.as_deref()).await
         {
             return Ok(ConversionResult {
                 output_path: existing_path.to_string_lossy().to_string(),
@@ -270,11 +266,17 @@ pub async fn render_single(
     .await;
 
     // 11. Cleanup on Failure/Cancellation
-    let is_cancelled = cancel_token.as_ref().map(|t| t.is_cancelled()).unwrap_or(false);
+    let is_cancelled = cancel_token
+        .as_ref()
+        .map(|t| t.is_cancelled())
+        .unwrap_or(false);
     if ffmpeg_res.is_err() || is_cancelled {
         if temp_output_path.exists() {
             let _ = std::fs::remove_file(&temp_output_path);
-            info!("Cleaned up temporary output file: {}", temp_output_path.display());
+            info!(
+                "Cleaned up temporary output file: {}",
+                temp_output_path.display()
+            );
         }
     }
 

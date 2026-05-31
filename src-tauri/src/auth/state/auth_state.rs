@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::auth::state::license_tier::LicenseTier;
@@ -44,4 +44,3 @@ pub struct AuthState {
     pub token_hint: Option<String>,
     pub machine_id: Option<String>,
 }
-

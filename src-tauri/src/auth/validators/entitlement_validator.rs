@@ -1,4 +1,4 @@
-﻿use crate::auth::auth_errors::AuthError;
+use crate::auth::auth_errors::AuthError;
 
 const MIN_KEY_LENGTH: usize = 10;
 const DEV_KEY_ENV_VAR: &str = "ASPECTSHIFT_DEV_KEY";
@@ -40,4 +40,3 @@ pub fn extract_token_hint(key: &str) -> String {
     let upper = key.trim().to_uppercase();
     upper[..8.min(upper.len())].to_string()
 }
-

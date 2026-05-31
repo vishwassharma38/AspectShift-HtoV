@@ -6,19 +6,38 @@ use crate::auth::providers::r#trait::{
 pub struct EdgeLicenseProvider;
 
 impl LicenseProvider for EdgeLicenseProvider {
-    fn activate<'a>(&'a self, _key: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ActivationResponse, AuthError>> + Send + 'a>> {
+    fn activate<'a>(
+        &'a self,
+        _key: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ActivationResponse, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
     }
 
-    fn refresh<'a>(&'a self, _token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>> {
+    fn refresh<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
     }
 
-    fn validate<'a>(&'a self, _token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<EntitlementClaims, AuthError>> + Send + 'a>> {
+    fn validate<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<EntitlementClaims, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
     }
 
-    fn deactivate<'a>(&'a self, _token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'a>> {
+    fn deactivate<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'a>>
+    {
         Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
     }
 }

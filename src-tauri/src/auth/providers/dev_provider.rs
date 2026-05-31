@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "dev-auth")]
+#[cfg(feature = "dev-auth")]
 use log::info;
 
 #[cfg(feature = "dev-auth")]
@@ -19,8 +19,6 @@ use crate::auth::validators::entitlement_validator::is_dev_key;
 #[cfg(feature = "dev-auth")]
 use crate::auth::machine::machine_id::get_machine_id;
 #[cfg(feature = "dev-auth")]
-use crate::auth::storage::secure_storage::{store_jwt, store_license_key};
-#[cfg(feature = "dev-auth")]
 use crate::auth::validators::jwt_validator::{generate_jwt, validate_jwt};
 
 #[cfg(feature = "dev-auth")]
@@ -35,18 +33,33 @@ impl DevLicenseProvider {
 
 #[cfg(feature = "dev-auth")]
 impl LicenseProvider for DevLicenseProvider {
-    fn activate<'a>(&'a self, key: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ActivationResponse, AuthError>> + Send + 'a>> {
+    fn activate<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ActivationResponse, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async move { simulate_activation(key) })
     }
 
-    fn refresh<'a>(&'a self, token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>> {
+    fn refresh<'a>(
+        &'a self,
+        token: &'a LicenseToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let existing_metadata = validate_jwt(token)?;
             simulate_refresh(&existing_metadata)
         })
     }
 
-    fn validate<'a>(&'a self, token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<EntitlementClaims, AuthError>> + Send + 'a>> {
+    fn validate<'a>(
+        &'a self,
+        token: &'a LicenseToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<EntitlementClaims, AuthError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let metadata = validate_jwt(token)?;
             if metadata.is_expired() {
@@ -56,7 +69,11 @@ impl LicenseProvider for DevLicenseProvider {
         })
     }
 
-    fn deactivate<'a>(&'a self, _token: &'a LicenseToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'a>> {
+    fn deactivate<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
 }
@@ -79,15 +96,11 @@ pub fn simulate_activation(license_key: &str) -> Result<String, AuthError> {
         machine_id
     );
 
-    let jwt =
-        generate_jwt(&sub, &tier, &machine_id).map_err(|e| AuthError::ActivationFailed {
-            reason: e.to_string(),
-        })?;
+    let jwt = generate_jwt(&sub, &tier, &machine_id).map_err(|e| AuthError::ActivationFailed {
+        reason: e.to_string(),
+    })?;
 
-    store_license_key(license_key)?;
-    store_jwt(&jwt)?;
-
-    info!("LocalSimulator: activation complete, JWT stored in OS keychain");
+    info!("LocalSimulator: activation complete");
     Ok(jwt)
 }
 
@@ -102,8 +115,7 @@ pub fn simulate_refresh(existing_metadata: &JwtMetadata) -> Result<String, AuthE
         reason: e.to_string(),
     })?;
 
-    store_jwt(&jwt)?;
-    info!("LocalSimulator: refresh complete, new JWT stored");
+    info!("LocalSimulator: refresh complete");
     Ok(jwt)
 }
 
@@ -116,7 +128,7 @@ pub fn validate_local_jwt(jwt: &str) -> Result<JwtMetadata, AuthError> {
 fn determine_tier_from_key(key: &str) -> LicenseTier {
     let upper = key.to_uppercase();
     if upper.contains("DEV") || is_dev_key(key) {
-        LicenseTier::Licensed
+        LicenseTier::Pro
     } else {
         LicenseTier::Community
     }

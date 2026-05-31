@@ -1,4 +1,4 @@
-﻿use keyring::Entry;
+use keyring::Entry;
 use log::{info, warn};
 
 use crate::auth::auth_errors::AuthError;
@@ -60,7 +60,10 @@ pub fn load_jwt() -> Result<Option<String>, AuthError> {
             );
             Ok(None)
         }
-        Err(e) => Err(AuthError::StorageError(format!("Failed to load JWT: {}", e))),
+        Err(e) => Err(AuthError::StorageError(format!(
+            "Failed to load JWT: {}",
+            e
+        ))),
     }
 }
 
@@ -69,7 +72,10 @@ pub fn delete_jwt() -> Result<(), AuthError> {
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(AuthError::StorageError(format!("Failed to delete JWT: {}", e))),
+        Err(e) => Err(AuthError::StorageError(format!(
+            "Failed to delete JWT: {}",
+            e
+        ))),
     }
 }
 
@@ -105,7 +111,10 @@ pub fn load_license_key() -> Result<Option<String>, AuthError> {
             );
             Ok(None)
         }
-        Err(e) => Err(AuthError::StorageError(format!("Failed to load license key: {}", e))),
+        Err(e) => Err(AuthError::StorageError(format!(
+            "Failed to load license key: {}",
+            e
+        ))),
     }
 }
 
@@ -114,7 +123,10 @@ pub fn delete_license_key() -> Result<(), AuthError> {
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(AuthError::StorageError(format!("Failed to delete license key: {}", e))),
+        Err(e) => Err(AuthError::StorageError(format!(
+            "Failed to delete license key: {}",
+            e
+        ))),
     }
 }
 
@@ -123,4 +135,3 @@ pub fn clear_all_credentials() -> Result<(), AuthError> {
     delete_license_key()?;
     Ok(())
 }
-

@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::auth::state::auth_state::AuthState;
@@ -10,4 +10,3 @@ pub struct ActivationResult {
     pub auth_state: AuthState,
     pub message: Option<String>,
 }
-

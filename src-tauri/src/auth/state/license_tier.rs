@@ -1,11 +1,12 @@
-﻿use serde::{Deserialize, Serialize};
+use crate::auth::auth_errors::AuthError;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum LicenseTier {
     Community,
-    Licensed,
+    Pro,
 }
 
 impl Default for LicenseTier {
@@ -15,23 +16,22 @@ impl Default for LicenseTier {
 }
 
 impl LicenseTier {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Result<Self, AuthError> {
         match s.to_lowercase().as_str() {
-            "licensed" => Self::Licensed,
-            _ => Self::Community,
+            "community" => Ok(Self::Community),
+            "pro" | "licensed" => Ok(Self::Pro),
+            _ => Err(AuthError::InvalidLicenseTier),
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Community => "community",
-            Self::Licensed => "licensed",
+            Self::Pro => "pro",
         }
     }
 
     pub fn is_licensed(&self) -> bool {
-        matches!(self, Self::Licensed)
+        matches!(self, Self::Pro)
     }
 }
-
-

@@ -52,7 +52,8 @@ fn set_stage(
 ) {
     state.current_stage_id = Some(stage_id.to_string());
     state.current_stage_message = Some(stage_message);
-    state.current_job_lifecycle_progress = state.current_job_lifecycle_progress.max(lifecycle_progress);
+    state.current_job_lifecycle_progress =
+        state.current_job_lifecycle_progress.max(lifecycle_progress);
 }
 
 async fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
@@ -64,16 +65,24 @@ async fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
         let metadata = match tokio::fs::metadata(&entry_path).await {
             Ok(metadata) => metadata,
             Err(e) => {
-                warn!("Skipping input entry (metadata failed): {} ({})", entry_path.display(), e);
+                warn!(
+                    "Skipping input entry (metadata failed): {} ({})",
+                    entry_path.display(),
+                    e
+                );
                 continue;
-              }
+            }
         };
 
         if metadata.is_dir() {
             let mut read_dir = match tokio::fs::read_dir(&entry_path).await {
                 Ok(read_dir) => read_dir,
                 Err(e) => {
-                    warn!("Skipping input folder (read_dir failed): {} ({})", entry_path.display(), e);
+                    warn!(
+                        "Skipping input folder (read_dir failed): {} ({})",
+                        entry_path.display(),
+                        e
+                    );
                     continue;
                 }
             };
@@ -164,14 +173,16 @@ pub async fn start_batch(
             let thumb_name = format!("{}.jpg", Uuid::new_v4());
             let thumb_dest = thumb_dir_c.join(thumb_name);
             let thumb_dest_str = thumb_dest.to_string_lossy().to_string();
-            
-            let thumb_path = match crate::video::probe::generate_thumbnail(&app_c, &file, &thumb_dest_str).await {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    warn!("Failed to generate thumbnail for {}: {}", file, e);
-                    None
-                }
-            };
+
+            let thumb_path =
+                match crate::video::probe::generate_thumbnail(&app_c, &file, &thumb_dest_str).await
+                {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        warn!("Failed to generate thumbnail for {}: {}", file, e);
+                        None
+                    }
+                };
 
             (file, duration, thumb_path, probe_error)
         });
@@ -259,19 +270,23 @@ pub async fn start_batch(
         loop {
             let (job, token) = {
                 let mut s = state_clone.lock().await;
-                
+
                 if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
                     s.status = BatchStatus::Cancelled;
                     break;
                 }
-                
+
                 let job = s.queue.pop_front();
                 if job.is_none() {
-                    s.status = if s.failed_jobs > 0 { BatchStatus::Failed } else { BatchStatus::Completed };
+                    s.status = if s.failed_jobs > 0 {
+                        BatchStatus::Failed
+                    } else {
+                        BatchStatus::Completed
+                    };
                     s.current_job_id = None;
                     break;
                 }
-                
+
                 let job = job.unwrap();
                 s.current_job_id = Some(job.id.clone());
                 s.current_job_lifecycle_progress = 0.0;
@@ -297,12 +312,13 @@ pub async fn start_batch(
                 }
                 emit_batch_progress(&app_clone, &state_clone).await;
 
-                if let Some(existing_path) = crate::video::convert::resolve_existing_output_for_skip(
-                    &app_clone,
-                    &output_path,
-                    alt_output_path,
-                )
-                .await
+                if let Some(existing_path) =
+                    crate::video::convert::resolve_existing_output_for_skip(
+                        &app_clone,
+                        &output_path,
+                        alt_output_path,
+                    )
+                    .await
                 {
                     {
                         let mut s = state_clone.lock().await;
@@ -352,7 +368,13 @@ pub async fn start_batch(
                 set_stage(
                     &mut s,
                     "preparing_video",
-                    format!("Preparing {}", Path::new(&input_path).file_name().and_then(|n| n.to_str()).unwrap_or("video")),
+                    format!(
+                        "Preparing {}",
+                        Path::new(&input_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("video")
+                    ),
                     weights.prepare,
                 );
             }
@@ -371,19 +393,21 @@ pub async fn start_batch(
                 }
                 emit_batch_progress(&app_clone, &state_clone).await;
 
-                let orientation_for_subtitles = match crate::video::probe::detect_orientation(&app_clone, &input_path).await {
-                    Ok(o) => o,
-                    Err(e) => {
-                        let failure = format!("Failed to detect orientation for subtitles: {}", e);
-                        let mut s = state_clone.lock().await;
-                        if let Some(p) = s.job_progress.get_mut(&job_id) {
-                            p.status = JobStatus::Failed(failure);
+                let orientation_for_subtitles =
+                    match crate::video::probe::detect_orientation(&app_clone, &input_path).await {
+                        Ok(o) => o,
+                        Err(e) => {
+                            let failure =
+                                format!("Failed to detect orientation for subtitles: {}", e);
+                            let mut s = state_clone.lock().await;
+                            if let Some(p) = s.job_progress.get_mut(&job_id) {
+                                p.status = JobStatus::Failed(failure);
+                            }
+                            s.failed_jobs += 1;
+                            emit_batch_progress(&app_clone, &state_clone).await;
+                            continue;
                         }
-                        s.failed_jobs += 1;
-                        emit_batch_progress(&app_clone, &state_clone).await;
-                        continue;
-                    }
-                };
+                    };
 
                 let subtitle_job = crate::video::types::ResolvedJob {
                     id: "subtitle-layout-job".to_string(),
@@ -398,7 +422,9 @@ pub async fn start_batch(
                     subtitle_path: None,
                 };
 
-                let subtitle_plan = match crate::video::preset_adapter::create_render_plan_resolved(&subtitle_job) {
+                let subtitle_plan = match crate::video::preset_adapter::create_render_plan_resolved(
+                    &subtitle_job,
+                ) {
                     Ok(p) => p,
                     Err(e) => {
                         let failure = e.to_string();
@@ -412,8 +438,11 @@ pub async fn start_batch(
                     }
                 };
 
-                let subtitle_layout =
-                    crate::video::render_layout::calculate_render_layout(&subtitle_plan, &orientation_for_subtitles, None);
+                let subtitle_layout = crate::video::render_layout::calculate_render_layout(
+                    &subtitle_plan,
+                    &orientation_for_subtitles,
+                    None,
+                );
 
                 let subtitle_cache_key = format!(
                     "{}|{}x{}|fg{}|blur{}|burn{}|export{}",
@@ -489,7 +518,8 @@ pub async fn start_batch(
                                         return;
                                     }
                                     let lifecycle = weights.prepare
-                                        + (weights.subtitle * (subtitle_percent.clamp(0.0, 100.0) / 100.0));
+                                        + (weights.subtitle
+                                            * (subtitle_percent.clamp(0.0, 100.0) / 100.0));
                                     set_stage(
                                         &mut s,
                                         "generating_subtitles",
@@ -501,7 +531,9 @@ pub async fn start_batch(
                                 });
                             }
                         })),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(path) => {
                             if !is_export {
                                 temp_srt_paths.push(path.clone());
@@ -575,7 +607,7 @@ pub async fn start_batch(
                 );
             }
             emit_batch_progress(&app_clone, &state_clone).await;
-            
+
             let on_progress = Box::new(move |percent: f32| {
                 let state = state_c.clone();
                 let jid = jid_c.clone();
@@ -596,8 +628,10 @@ pub async fn start_batch(
                         } else {
                             return;
                         }
-                        let render_base = weights.prepare + weights.subtitle + weights.render_prepare;
-                        let lifecycle = render_base + (weights.rendering * (percent.clamp(0.0, 100.0) / 100.0));
+                        let render_base =
+                            weights.prepare + weights.subtitle + weights.render_prepare;
+                        let lifecycle =
+                            render_base + (weights.rendering * (percent.clamp(0.0, 100.0) / 100.0));
                         set_stage(
                             &mut s,
                             "rendering_video",
@@ -618,9 +652,9 @@ pub async fn start_batch(
             .await;
 
             if token.is_cancelled() {
-                 let mut s = state_clone.lock().await;
-                 s.status = BatchStatus::Cancelled;
-                 break;
+                let mut s = state_clone.lock().await;
+                s.status = BatchStatus::Cancelled;
+                break;
             }
 
             match result {
@@ -663,12 +697,12 @@ pub async fn start_batch(
         {
             let mut s = state_clone.lock().await;
             if s.status == BatchStatus::Processing {
-                 s.status = BatchStatus::Completed;
+                s.status = BatchStatus::Completed;
             }
             s.current_stage_id = Some("batch_finalizing".to_string());
             s.current_stage_message = Some("Finalizing batch...".to_string());
         }
-        
+
         // Cleanup temporary SRT files
         for path in temp_srt_paths {
             let _ = std::fs::remove_file(path);
@@ -688,7 +722,8 @@ fn calculate_stats(state: &BatchState) -> (f32, f32, Option<f64>, f64) {
     let mut processed_secs = state.processed_duration_secs;
     if let Some(current_id) = &state.current_job_id {
         if let Some(p) = state.job_progress.get(current_id) {
-            processed_secs += (state.current_job_lifecycle_progress as f64 / 100.0) * p.duration_secs;
+            processed_secs +=
+                (state.current_job_lifecycle_progress as f64 / 100.0) * p.duration_secs;
         }
     }
 

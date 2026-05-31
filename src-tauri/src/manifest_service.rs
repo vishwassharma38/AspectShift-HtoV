@@ -10,7 +10,8 @@ use tokio::sync::RwLock;
 use crate::runtime_paths::RuntimePaths;
 use crate::video::types::VideoError;
 
-const DEFAULT_MANIFEST_URL: &str = "https://raw.githubusercontent.com/vishwassharma38/AspectShift-HtoV-Assets/main/manifest.json";
+const DEFAULT_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/vishwassharma38/AspectShift-HtoV-Assets/main/manifest.json";
 const MANIFEST_CACHE_FILENAME: &str = "manifest.json";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -100,7 +101,10 @@ impl ManifestService {
                 Some(manifest)
             }
             Err(e) => {
-                warn!("Remote manifest fetch failed: {}. Trying cache fallback.", e);
+                warn!(
+                    "Remote manifest fetch failed: {}. Trying cache fallback.",
+                    e
+                );
                 match self.load_cached_manifest(app).await {
                     Ok(manifest) => {
                         *self.cached_manifest.write().await = Some(manifest.clone());
@@ -291,7 +295,11 @@ impl ManifestService {
         Ok(())
     }
 
-    fn validate_artifact(&self, artifact: &ManifestArtifact, context: &str) -> Result<(), VideoError> {
+    fn validate_artifact(
+        &self,
+        artifact: &ManifestArtifact,
+        context: &str,
+    ) -> Result<(), VideoError> {
         if artifact.filename.trim().is_empty() {
             return Err(VideoError::InvalidInput(format!(
                 "filename missing for {}",
@@ -299,7 +307,10 @@ impl ManifestService {
             )));
         }
         if artifact.url.trim().is_empty() {
-            return Err(VideoError::InvalidInput(format!("url missing for {}", context)));
+            return Err(VideoError::InvalidInput(format!(
+                "url missing for {}",
+                context
+            )));
         }
         if reqwest::Url::parse(&artifact.url).is_err() {
             return Err(VideoError::InvalidInput(format!(

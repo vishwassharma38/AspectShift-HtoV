@@ -35,7 +35,10 @@ fn get_whisper_binary_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
         }
     }
 
-    error!("Whisper binary not found in runtime path: {}", primary.display());
+    error!(
+        "Whisper binary not found in runtime path: {}",
+        primary.display()
+    );
     Err(VideoError::WhisperNotFound)
 }
 
@@ -49,7 +52,10 @@ fn get_whisper_model_path(app: &AppHandle) -> Result<PathBuf, VideoError> {
     // Try resolving as a resource in the "resources" subdirectory
     let path = app
         .path()
-        .resolve("resources/models/ggml-medium.en.bin", BaseDirectory::Resource)
+        .resolve(
+            "resources/models/ggml-medium.en.bin",
+            BaseDirectory::Resource,
+        )
         .or_else(|_| {
             app.path()
                 .resolve("ggml-medium.en.bin", BaseDirectory::Resource)
@@ -167,7 +173,7 @@ fn parse_whisper_output(stdout: &str) -> Vec<SubtitleSegment> {
                     });
                 }
             }
-            
+
             // Clean up text by removing timestamps for the final text field
             let mut cleaned_text = String::new();
             let mut last_pos = 0;
@@ -176,7 +182,10 @@ fn parse_whisper_output(stdout: &str) -> Vec<SubtitleSegment> {
                 last_pos = end + 1;
             }
             cleaned_text.push_str(&text[last_pos..]);
-            text = cleaned_text.split_whitespace().collect::<Vec<_>>().join(" ");
+            text = cleaned_text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
         }
 
         segments.push(SubtitleSegment {
@@ -227,11 +236,9 @@ async fn extract_audio_for_whisper(
             "pipe:1",
             &wav_path.to_string_lossy(),
         ]);
-    let (mut rx, child) = sidecar
-        .spawn()
-        .map_err(|e| VideoError::ProcessingFailed {
-            stderr: format!("Failed to execute ffmpeg for audio extraction: {e}"),
-        })?;
+    let (mut rx, child) = sidecar.spawn().map_err(|e| VideoError::ProcessingFailed {
+        stderr: format!("Failed to execute ffmpeg for audio extraction: {e}"),
+    })?;
     let mut child = Some(child);
     let mut stderr = String::new();
     let mut exit_code = -1;
@@ -253,7 +260,9 @@ async fn extract_audio_for_whisper(
         } else {
             rx.recv().await
         };
-        let Some(event) = event else { break; };
+        let Some(event) = event else {
+            break;
+        };
         match event {
             CommandEvent::Stdout(line_bytes) => {
                 let line = String::from_utf8_lossy(&line_bytes).to_string();
@@ -262,8 +271,8 @@ async fn extract_audio_for_whisper(
                     let time_ms = raw.parse::<f64>().unwrap_or(0.0);
                     let current_secs = time_ms / 1_000_000.0;
                     if source_duration_secs > 0.0 {
-                        let pct = ((current_secs / source_duration_secs) * 100.0)
-                            .clamp(0.0, 100.0) as f32;
+                        let pct = ((current_secs / source_duration_secs) * 100.0).clamp(0.0, 100.0)
+                            as f32;
                         if let Some(cb) = on_progress {
                             cb(pct);
                         }
@@ -356,24 +365,26 @@ pub async fn transcribe_to_segments(
             stderr: format!("Failed to execute whisper binary: {e}"),
         })?;
 
-    let mut stdout_lines = BufReader::new(
-        child
-            .stdout
-            .take()
-            .ok_or_else(|| VideoError::WhisperFailed {
-                stderr: "Failed to capture Whisper stdout".to_string(),
-            })?,
-    )
-    .lines();
-    let mut stderr_lines = BufReader::new(
-        child
-            .stderr
-            .take()
-            .ok_or_else(|| VideoError::WhisperFailed {
-                stderr: "Failed to capture Whisper stderr".to_string(),
-            })?,
-    )
-    .lines();
+    let mut stdout_lines =
+        BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| VideoError::WhisperFailed {
+                    stderr: "Failed to capture Whisper stdout".to_string(),
+                })?,
+        )
+        .lines();
+    let mut stderr_lines =
+        BufReader::new(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| VideoError::WhisperFailed {
+                    stderr: "Failed to capture Whisper stderr".to_string(),
+                })?,
+        )
+        .lines();
 
     let mut stdout = String::new();
     let mut stderr = String::new();

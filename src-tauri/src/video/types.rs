@@ -291,7 +291,10 @@ impl OutputTarget {
             // Step 1: replace ratio colons first
             .replace(':', "x")
             // Step 2: convert word boundaries into underscores
-            .replace(|c: char| c == ' ' || c == '/' || c == '-' || c == '(' || c == ')', "_")
+            .replace(
+                |c: char| c == ' ' || c == '/' || c == '-' || c == '(' || c == ')',
+                "_",
+            )
             // Step 3: remove invalid characters
             .replace(|c: char| !c.is_alphanumeric() && c != '_', "")
             // Step 4: collapse repeated underscores

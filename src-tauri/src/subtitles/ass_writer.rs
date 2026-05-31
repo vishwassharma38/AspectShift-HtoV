@@ -1,7 +1,7 @@
-use std::fs;
-use std::path::Path;
 use crate::subtitles::SubtitleSegment;
 use crate::video::types::VideoError;
+use std::fs;
+use std::path::Path;
 
 pub struct AssStyle {
     pub name: String,
@@ -81,7 +81,9 @@ pub fn write_ass(
 
     // Events
     body.push_str("[Events]\n");
-    body.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    body.push_str(
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+    );
 
     for segment in segments {
         let start = format_ass_timestamp(segment.start_ms);

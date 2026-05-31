@@ -1,8 +1,10 @@
-﻿pub mod auth_commands;
+pub mod activation;
+pub mod auth_commands;
 pub mod auth_errors;
 pub mod auth_events;
 pub mod auth_models;
-pub mod activation;
+pub mod contracts;
+pub mod outcome_mapping;
 pub mod refresh;
 
 pub mod manager {
@@ -34,4 +36,3 @@ pub mod crypto {
 pub mod machine {
     pub mod machine_id;
 }
-

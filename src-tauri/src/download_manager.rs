@@ -38,7 +38,13 @@ impl DownloadManager {
         app: &AppHandle,
         id: DependencyId,
     ) -> Result<(), VideoError> {
-        self.emit(app, id.clone(), DependencyLifecycleStatus::Downloading, Some(0.0), None);
+        self.emit(
+            app,
+            id.clone(),
+            DependencyLifecycleStatus::Downloading,
+            Some(0.0),
+            None,
+        );
 
         let manifest = self
             .manifest_service
@@ -63,14 +69,26 @@ impl DownloadManager {
             return Err(e);
         }
 
-        self.emit(app, id.clone(), DependencyLifecycleStatus::Verifying, None, None);
+        self.emit(
+            app,
+            id.clone(),
+            DependencyLifecycleStatus::Verifying,
+            None,
+            None,
+        );
         if let Err(e) = self.verify_checksum(&download_path, &info.sha256).await {
             let _ = std::fs::remove_file(&download_path);
             self.cleanup_staging(&staging_root);
             return Err(e);
         }
 
-        self.emit(app, id.clone(), DependencyLifecycleStatus::Extracting, None, None);
+        self.emit(
+            app,
+            id.clone(),
+            DependencyLifecycleStatus::Extracting,
+            None,
+            None,
+        );
         let install_target_path = self.install_target_path(&runtime, &id, &info.filename);
         if let Some(parent) = install_target_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -142,8 +160,13 @@ impl DownloadManager {
         hasher.update(bytes);
         let computed = format!("{:x}", hasher.finalize());
         if computed != expected_sha256.to_lowercase() {
-            error!("Checksum mismatch. expected={}, actual={}", expected_sha256, computed);
-            return Err(VideoError::InvalidInput("Downloaded file integrity check failed".to_string()));
+            error!(
+                "Checksum mismatch. expected={}, actual={}",
+                expected_sha256, computed
+            );
+            return Err(VideoError::InvalidInput(
+                "Downloaded file integrity check failed".to_string(),
+            ));
         }
         Ok(())
     }
@@ -179,7 +202,9 @@ impl DownloadManager {
         match id {
             DependencyId::WhisperBinary => runtime.dependency_current_dir("whisper").join(filename),
             DependencyId::WhisperModel => runtime.model_current_dir("whisper").join(filename),
-            DependencyId::Ffmpeg | DependencyId::Ffprobe => runtime.dependency_current_dir("sidecars").join(filename),
+            DependencyId::Ffmpeg | DependencyId::Ffprobe => {
+                runtime.dependency_current_dir("sidecars").join(filename)
+            }
         }
     }
 

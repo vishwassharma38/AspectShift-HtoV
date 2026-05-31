@@ -1,4 +1,6 @@
-﻿use thiserror::Error;
+use thiserror::Error;
+
+use crate::auth::outcome_mapping::structured_error_code_from_error;
 use crate::video::types::StructuredError;
 
 #[derive(Error, Debug)]
@@ -11,10 +13,12 @@ pub enum AuthError {
     LicenseExpired,
     #[error("Token is corrupted or tampered")]
     TokenCorrupted,
-    #[error("Machine identifier mismatch — license bound to another machine")]
+    #[error("Machine identifier mismatch - license bound to another machine")]
     MachineMismatch,
     #[error("Activation failed: {reason}")]
     ActivationFailed { reason: String },
+    #[error("Invalid or unsupported license tier")]
+    InvalidLicenseTier,
     #[error("Refresh failed: {reason}")]
     RefreshFailed { reason: String },
     #[error("Phase D provider path not implemented")]
@@ -35,28 +39,9 @@ pub enum AuthError {
 
 impl From<AuthError> for StructuredError {
     fn from(error: AuthError) -> Self {
-        let code = match &error {
-            AuthError::NotActivated => "not_activated",
-            AuthError::InvalidLicenseKey => "invalid_license_key",
-            AuthError::LicenseExpired => "license_expired",
-            AuthError::TokenCorrupted => "token_corrupted",
-            AuthError::MachineMismatch => "machine_mismatch",
-            AuthError::ActivationFailed { .. } => "activation_failed",
-            AuthError::RefreshFailed { .. } => "refresh_failed",
-            AuthError::PhaseDNotImplemented => "phase_d_not_implemented",
-            AuthError::StorageError(_) => "storage_error",
-            AuthError::MachineIdError(_) => "machine_id_error",
-            AuthError::JwtError(_) => "jwt_error",
-            AuthError::IoError(_) => "io_error",
-            AuthError::JsonError(_) => "json_error",
-            AuthError::TauriError(_) => "tauri_error",
-        }
-        .to_string();
         Self {
-            code,
+            code: structured_error_code_from_error(&error).to_string(),
             message: error.to_string(),
         }
     }
 }
-
-

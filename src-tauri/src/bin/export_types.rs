@@ -1,22 +1,23 @@
-use aspectshift_htov_lib::dependency_manager::{
-    AppDepsState, DependencyId, DependencyReport, DependencyStatus, DependencyScanStatus,
-};
 use aspectshift_htov_lib::auth::{
     auth_models::ActivationResult,
     state::auth_state::{AuthState, AuthStatus},
     state::license_tier::LicenseTier,
 };
-use aspectshift_htov_lib::video::{
-    ffmpeg::VideoProgress,
-    types::{
-        AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress, ConversionRequestDTO,
-        CustomPreset, EncodingProfile, FileProgress, FileReadiness, JobStatus, LogoOptions,
-        LogoPosition, OrientationInfo, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
-        PreviewLayoutRequest, StructuredError, VideoEffectsSettings, VideoTransform,
-    },
-    render_layout::{PreviewFitMode, PreviewRenderLayout},
+use aspectshift_htov_lib::dependency_manager::{
+    AppDepsState, DependencyId, DependencyReport, DependencyScanStatus, DependencyStatus,
 };
 use aspectshift_htov_lib::subtitles::positioning::SubtitleLayoutMetrics;
+use aspectshift_htov_lib::video::{
+    ffmpeg::VideoProgress,
+    render_layout::{PreviewFitMode, PreviewRenderLayout},
+    types::{
+        AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress,
+        ConversionRequestDTO, CustomPreset, EncodingProfile, FileProgress, FileReadiness,
+        JobStatus, LogoOptions, LogoPosition, OrientationInfo, OutputFormat, OutputJob,
+        PlatformConfig, PlatformPreset, PreviewLayoutRequest, StructuredError,
+        VideoEffectsSettings, VideoTransform,
+    },
+};
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use std::path::PathBuf;
@@ -57,7 +58,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<AuthStatus>()
         .register::<LicenseTier>()
         .register::<AuthState>()
-        .register::<ActivationResult>();
+        .register::<ActivationResult>()
+        .register::<aspectshift_htov_lib::auth::contracts::ActivationRequest>()
+        .register::<aspectshift_htov_lib::auth::contracts::ActivationResponse>()
+        .register::<aspectshift_htov_lib::auth::contracts::RefreshRequest>()
+        .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckRequest>()
+        .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckResponse>()
+        .register::<aspectshift_htov_lib::auth::contracts::UpdateEntitlement>()
+        .register::<aspectshift_htov_lib::auth::contracts::LicenseTierWire>()
+        .register::<aspectshift_htov_lib::auth::contracts::BuildChannel>();
 
     let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

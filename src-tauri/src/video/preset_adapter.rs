@@ -44,7 +44,9 @@ fn resolve_logo(effects: &VideoEffectsSettings, input: &str) -> Option<LogoPrese
     })
 }
 
-pub fn create_render_plan_resolved(job: &crate::video::types::ResolvedJob) -> Result<RenderPlan, VideoError> {
+pub fn create_render_plan_resolved(
+    job: &crate::video::types::ResolvedJob,
+) -> Result<RenderPlan, VideoError> {
     let logo = resolve_logo(&job.effects, &job.input_path);
     Ok(RenderPlan {
         ratio: job.ratio.clone(),

@@ -29,7 +29,13 @@ pub fn resolve_output_path(
         ratio: format_ratio_tag(target.job.ratio.get_tag()),
         platform: platform_tag,
         blur: target.job.effects.blur_enabled(),
-        logo: target.job.effects.logo.as_ref().map(|l| l.enabled).unwrap_or(false),
+        logo: target
+            .job
+            .effects
+            .logo
+            .as_ref()
+            .map(|l| l.enabled)
+            .unwrap_or(false),
         subtitles: target.job.effects.burn_subtitles_enabled()
             || target.job.effects.export_subtitles_enabled()
             || target.job.effects.subtitles.is_some(),

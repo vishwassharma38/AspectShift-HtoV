@@ -1,4 +1,4 @@
-﻿use tauri::{AppHandle, State};
+use tauri::{AppHandle, State};
 
 use crate::auth::auth_models::ActivationResult;
 use crate::auth::manager::auth_manager::AuthManager;
@@ -27,10 +27,7 @@ pub async fn refresh_license(
     app: AppHandle,
     manager: State<'_, AuthManager>,
 ) -> Result<AuthState, StructuredError> {
-    manager
-        .refresh(&app)
-        .await
-        .map_err(StructuredError::from)
+    manager.refresh(&app).await.map_err(StructuredError::from)
 }
 
 #[tauri::command]
@@ -43,4 +40,3 @@ pub async fn clear_license(
         .await
         .map_err(StructuredError::from)
 }
-

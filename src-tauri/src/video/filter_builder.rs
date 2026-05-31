@@ -46,8 +46,7 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
 
     let mut filter_stages = Vec::new();
     let has_transform = !transform_filter.is_empty();
-    let uses_complex_graph =
-        plan.effects.blur_enabled() || plan.logo.is_some() || has_transform;
+    let uses_complex_graph = plan.effects.blur_enabled() || plan.logo.is_some() || has_transform;
 
     // Determine foreground scaling strategy
     let fg_filter = match layout.foreground_fit {

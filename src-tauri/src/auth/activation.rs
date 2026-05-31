@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "dev-auth")]
+#[cfg(feature = "dev-auth")]
 use log::info;
 
 #[cfg(feature = "dev-auth")]
@@ -22,4 +22,3 @@ pub async fn activate_with_key(license_key: &str) -> Result<String, AuthError> {
     info!("Activation: success");
     Ok(jwt)
 }
-

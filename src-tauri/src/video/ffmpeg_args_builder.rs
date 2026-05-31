@@ -3,7 +3,7 @@ use crate::video::preset_adapter::RenderPlan;
 
 fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str) -> String {
     let escaped_path = OsUtils::escape_filter_path(subtitle_path);
-    
+
     let subtitle_filter = format!("subtitles='{escaped_path}'");
 
     if uses_complex_graph(filter_graph) {

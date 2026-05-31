@@ -1,25 +1,25 @@
-﻿pub mod os_utils;
+pub mod auth;
+pub mod dependency_manager;
+pub mod download_manager;
+pub mod manifest_service;
+pub mod os_utils;
 pub mod runtime_paths;
 pub mod subtitles;
 pub mod video;
-pub mod dependency_manager;
-pub mod manifest_service;
-pub mod download_manager;
-pub mod auth;
 
 #[cfg(all(feature = "dev-auth", not(debug_assertions)))]
 compile_error!("dev-auth simulation paths must not be compiled in production builds.");
 
 use std::sync::Arc;
 
-use dotenvy::dotenv;
-use tauri::{AppHandle, Manager, State};
-use video::types::StructuredError;
-use dependency_manager::{AppDepsState, DependencyId, DepsManager};
-use download_manager::DownloadManager;
+use auth::auth_commands::{activate_license, clear_license, get_auth_state, refresh_license};
 use auth::manager::auth_manager::AuthManager;
 use auth::providers::ActiveLicenseProvider;
-use auth::auth_commands::{activate_license, clear_license, get_auth_state, refresh_license};
+use dependency_manager::{AppDepsState, DependencyId, DepsManager};
+use dotenvy::dotenv;
+use download_manager::DownloadManager;
+use tauri::{AppHandle, Manager, State};
+use video::types::StructuredError;
 
 #[tauri::command]
 async fn get_dependency_state(
@@ -47,7 +47,10 @@ async fn install_dependency(
         .install_dependency(&app, id)
         .await
         .map_err(StructuredError::from)?;
-    deps_manager.refresh(&app).await.map_err(StructuredError::from)
+    deps_manager
+        .refresh(&app)
+        .await
+        .map_err(StructuredError::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -55,9 +58,11 @@ pub fn run() {
     dotenv().ok();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::new()
-            .level(log::LevelFilter::Info)
-            .build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -94,7 +99,9 @@ pub fn run() {
             });
             let app_handle_for_auth = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                auth_manager_for_init.run_launch_validation(&app_handle_for_auth).await;
+                auth_manager_for_init
+                    .run_launch_validation(&app_handle_for_auth)
+                    .await;
             });
 
             app.manage(video::queue::BatchManager::new());

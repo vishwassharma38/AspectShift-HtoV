@@ -95,7 +95,9 @@ impl BatchManager {
             // Mark all non-terminal jobs as cancelled in the progress map
             for progress in state.job_progress.values_mut() {
                 match progress.status {
-                    crate::video::types::JobStatus::Queued | crate::video::types::JobStatus::Processing | crate::video::types::JobStatus::Pending => {
+                    crate::video::types::JobStatus::Queued
+                    | crate::video::types::JobStatus::Processing
+                    | crate::video::types::JobStatus::Pending => {
                         progress.status = crate::video::types::JobStatus::Cancelled;
                     }
                     _ => {}

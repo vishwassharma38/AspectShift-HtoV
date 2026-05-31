@@ -1,14 +1,14 @@
+use chrono::Utc;
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::RwLock;
-use chrono::Utc;
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
-use log::{info, warn, error};
-use sha2::{Digest, Sha256};
 
 use crate::manifest_service::{ManifestDependencyInfo, ManifestService};
 use crate::runtime_paths::RuntimePaths;
@@ -65,7 +65,7 @@ pub struct DependencyReport {
     pub path: Option<String>,
     pub description: String,
     pub last_checked: String,
-    
+
     // Future-proofing for manifest/downloader
     pub expected_version: Option<String>,
     pub expected_sha256: Option<String>,
@@ -111,7 +111,7 @@ impl DepsManager {
 
     pub async fn refresh(&self, app: &AppHandle) -> Result<AppDepsState, VideoError> {
         info!("Dependency refresh started");
-        
+
         {
             let mut state_guard = self.state.write().await;
             state_guard.scan_status = DependencyScanStatus::Scanning;
@@ -122,7 +122,10 @@ impl DepsManager {
         let paths = match RuntimePaths::from_app(app) {
             Ok(p) => p,
             Err(e) => {
-                error!("Failed to resolve runtime paths during dependency scan: {}", e);
+                error!(
+                    "Failed to resolve runtime paths during dependency scan: {}",
+                    e
+                );
                 let mut state_guard = self.state.write().await;
                 state_guard.scan_status = DependencyScanStatus::Error;
                 return Err(e);
@@ -133,18 +136,20 @@ impl DepsManager {
         let manifest = self.manifest_service.get_manifest(app).await;
 
         // 1. Whisper Binary
-        let whisper_binary_meta = manifest
-            .as_ref()
-            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_binary"));
+        let whisper_binary_meta = manifest.as_ref().and_then(|m| {
+            self.manifest_service
+                .get_dependency_info(m, "whisper_binary")
+        });
         deps.insert(
             DependencyId::WhisperBinary,
             self.check_whisper_binary(&paths, whisper_binary_meta).await,
         );
 
         // 2. Whisper Model
-        let whisper_model_meta = manifest
-            .as_ref()
-            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_model"));
+        let whisper_model_meta = manifest.as_ref().and_then(|m| {
+            self.manifest_service
+                .get_dependency_info(m, "whisper_model")
+        });
         deps.insert(
             DependencyId::WhisperModel,
             self.check_whisper_model(&paths, whisper_model_meta).await,
@@ -153,17 +158,19 @@ impl DepsManager {
         // 3. FFmpeg (Sidecar)
         deps.insert(
             DependencyId::Ffmpeg,
-            self.check_sidecar_executable(app, "ffmpeg", DependencyId::Ffmpeg, None).await,
+            self.check_sidecar_executable(app, "ffmpeg", DependencyId::Ffmpeg, None)
+                .await,
         );
 
         // 4. FFprobe (Sidecar)
         deps.insert(
             DependencyId::Ffprobe,
-            self.check_sidecar_executable(app, "ffprobe", DependencyId::Ffprobe, None).await,
+            self.check_sidecar_executable(app, "ffprobe", DependencyId::Ffprobe, None)
+                .await,
         );
 
         let all_ready = deps.values().all(|d| d.status == DependencyStatus::Ready);
-        
+
         let new_state = AppDepsState {
             scan_status: DependencyScanStatus::ScanCompleted,
             dependencies: deps,
@@ -186,13 +193,15 @@ impl DepsManager {
         expected: Option<ManifestDependencyInfo>,
     ) -> DependencyReport {
         let path = paths.whisper_binary_path();
-        
+
         let status = if !path.exists() {
             warn!("Whisper binary missing at {}", path.display());
             DependencyStatus::Missing
         } else if !path.is_file() {
             warn!("Whisper path {} exists but is not a file", path.display());
-            DependencyStatus::Invalid { message: "Path exists but is not a file".to_string() }
+            DependencyStatus::Invalid {
+                message: "Path exists but is not a file".to_string(),
+            }
         } else {
             match std::fs::metadata(&path) {
                 Ok(metadata) => {
@@ -204,7 +213,9 @@ impl DepsManager {
                                 DependencyStatus::Ready
                             } else {
                                 warn!("Whisper binary at {} is not executable", path.display());
-                                DependencyStatus::Invalid { message: "Binary is not executable".to_string() }
+                                DependencyStatus::Invalid {
+                                    message: "Binary is not executable".to_string(),
+                                }
                             }
                         }
                         #[cfg(not(unix))]
@@ -213,12 +224,16 @@ impl DepsManager {
                         }
                     } else {
                         warn!("Whisper binary at {} is empty", path.display());
-                        DependencyStatus::Corrupted { message: "Binary file is empty".to_string() }
+                        DependencyStatus::Corrupted {
+                            message: "Binary file is empty".to_string(),
+                        }
                     }
                 }
                 Err(e) => {
                     error!("Failed to read metadata for whisper binary: {}", e);
-                    DependencyStatus::Invalid { message: format!("Metadata error: {}", e) }
+                    DependencyStatus::Invalid {
+                        message: format!("Metadata error: {}", e),
+                    }
                 }
             }
         };
@@ -277,29 +292,36 @@ impl DepsManager {
         expected: Option<ManifestDependencyInfo>,
     ) -> DependencyReport {
         let path = paths.whisper_model_path();
-        
+
         let status = if !path.exists() {
             warn!("Whisper model missing at {}", path.display());
             DependencyStatus::Missing
         } else if !path.is_file() {
-            warn!("Whisper model path {} exists but is not a file", path.display());
-            DependencyStatus::Invalid { message: "Path exists but is not a file".to_string() }
+            warn!(
+                "Whisper model path {} exists but is not a file",
+                path.display()
+            );
+            DependencyStatus::Invalid {
+                message: "Path exists but is not a file".to_string(),
+            }
         } else {
             match std::fs::metadata(&path) {
-                Ok(metadata) if metadata.len() > 0 => {
-                    DependencyStatus::Ready
-                }
+                Ok(metadata) if metadata.len() > 0 => DependencyStatus::Ready,
                 Ok(metadata) if metadata.len() == 0 => {
                     warn!("Whisper model at {} is empty", path.display());
-                    DependencyStatus::Corrupted { message: "Model file is empty".to_string() }
+                    DependencyStatus::Corrupted {
+                        message: "Model file is empty".to_string(),
+                    }
                 }
                 Err(e) => {
                     error!("Failed to read metadata for whisper model: {}", e);
-                    DependencyStatus::Invalid { message: format!("Metadata error: {}", e) }
+                    DependencyStatus::Invalid {
+                        message: format!("Metadata error: {}", e),
+                    }
                 }
-                _ => {
-                    DependencyStatus::Corrupted { message: "Validation failed".to_string() }
-                }
+                _ => DependencyStatus::Corrupted {
+                    message: "Validation failed".to_string(),
+                },
             }
         };
 
@@ -362,21 +384,32 @@ impl DepsManager {
         let mut version = None;
 
         let (display_name, description) = match id {
-            DependencyId::Ffmpeg => ("FFmpeg".to_string(), "Universal media converter for video processing.".to_string()),
-            DependencyId::Ffprobe => ("FFprobe".to_string(), "Media analysis tool for detecting video properties.".to_string()),
+            DependencyId::Ffmpeg => (
+                "FFmpeg".to_string(),
+                "Universal media converter for video processing.".to_string(),
+            ),
+            DependencyId::Ffprobe => (
+                "FFprobe".to_string(),
+                "Media analysis tool for detecting video properties.".to_string(),
+            ),
             _ => (name.to_string(), String::new()),
         };
 
         let status = match app.shell().sidecar(name) {
             Ok(sidecar) => {
-                if let Ok(p) = app.path().resolve(format!("bin/{}", name), tauri::path::BaseDirectory::Resource) {
+                if let Ok(p) = app.path().resolve(
+                    format!("bin/{}", name),
+                    tauri::path::BaseDirectory::Resource,
+                ) {
                     path_str = Some(p.to_string_lossy().to_string());
                 }
 
                 match timeout(Duration::from_secs(2), async {
                     let cmd = sidecar.args(["-version"]);
                     cmd.output().await
-                }).await {
+                })
+                .await
+                {
                     Ok(Ok(output)) => {
                         if output.status.success() {
                             let out_str = String::from_utf8_lossy(&output.stdout);
@@ -386,17 +419,26 @@ impl DepsManager {
                             DependencyStatus::Ready
                         } else {
                             let err_msg = String::from_utf8_lossy(&output.stderr);
-                            error!("Sidecar {} failed with exit code {:?}: {}", name, output.status, err_msg);
-                            DependencyStatus::Corrupted { message: format!("Executable failed: {}", err_msg) }
+                            error!(
+                                "Sidecar {} failed with exit code {:?}: {}",
+                                name, output.status, err_msg
+                            );
+                            DependencyStatus::Corrupted {
+                                message: format!("Executable failed: {}", err_msg),
+                            }
                         }
                     }
                     Ok(Err(e)) => {
                         error!("Failed to execute sidecar {}: {}", name, e);
-                        DependencyStatus::Invalid { message: format!("Execution failed: {}", e) }
+                        DependencyStatus::Invalid {
+                            message: format!("Execution failed: {}", e),
+                        }
                     }
                     Err(_) => {
                         error!("Sidecar {} validation timed out after 2 seconds", name);
-                        DependencyStatus::Invalid { message: "Validation timed out".to_string() }
+                        DependencyStatus::Invalid {
+                            message: "Validation timed out".to_string(),
+                        }
                     }
                 }
             }

@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Emitter};
 
@@ -68,5 +68,3 @@ pub fn emit_license_invalid(app: &AppHandle, auth_state: &AuthState) {
         },
     );
 }
-
-

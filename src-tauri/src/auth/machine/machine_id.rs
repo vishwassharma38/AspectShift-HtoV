@@ -1,4 +1,4 @@
-﻿use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256};
 
 use crate::auth::auth_errors::AuthError;
 
@@ -94,7 +94,9 @@ fn get_hostname_fallback() -> Result<String, AuthError> {
         .or_else(|_| {
             std::env::var("COMPUTERNAME")
                 .or_else(|_| std::env::var("HOSTNAME"))
-                .map_err(|e| AuthError::MachineIdError(format!("All machine ID sources failed: {}", e)))
+                .map_err(|e| {
+                    AuthError::MachineIdError(format!("All machine ID sources failed: {}", e))
+                })
         })
 }
 
@@ -107,7 +109,11 @@ mod tests {
         let id = get_machine_id();
         assert!(id.is_ok(), "machine_id should not fail: {:?}", id);
         let id = id.unwrap();
-        assert!(id.starts_with("mid_"), "should start with mid_ prefix: {}", id);
+        assert!(
+            id.starts_with("mid_"),
+            "should start with mid_ prefix: {}",
+            id
+        );
         assert_eq!(id.len(), MACHINE_ID_PREFIX.len() + MACHINE_ID_LENGTH);
     }
 
@@ -118,5 +124,3 @@ mod tests {
         assert_eq!(id1, id2, "machine_id must be deterministic");
     }
 }
-
-

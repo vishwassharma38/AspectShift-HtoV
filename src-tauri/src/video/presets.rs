@@ -8,8 +8,8 @@ use tauri::Manager;
 
 pub fn get_builtin_presets() -> Vec<PlatformPreset> {
     const RAW: &str = include_str!("../../resources/presets/platform_specific_presets.json");
-    let presets: Vec<PlatformPreset> =
-        serde_json::from_str(RAW).expect("platform_specific_presets.json is malformed - fix the file");
+    let presets: Vec<PlatformPreset> = serde_json::from_str(RAW)
+        .expect("platform_specific_presets.json is malformed - fix the file");
 
     for preset in &presets {
         validate_preset(preset).expect("platform_specific_presets.json contains an invalid preset");
@@ -20,8 +20,8 @@ pub fn get_builtin_presets() -> Vec<PlatformPreset> {
 
 pub fn get_aspect_ratio_targets() -> Vec<AspectRatioTarget> {
     const RAW: &str = include_str!("../../resources/presets/aspect_ratio_presets.json");
-    let targets: Vec<AspectRatioTarget> = serde_json::from_str(RAW)
-        .expect("aspect_ratio_presets.json is malformed - fix the file");
+    let targets: Vec<AspectRatioTarget> =
+        serde_json::from_str(RAW).expect("aspect_ratio_presets.json is malformed - fix the file");
 
     let mut ids = HashSet::new();
     for target in &targets {
@@ -55,14 +55,16 @@ pub fn load_custom_presets(app: &AppHandle) -> Result<Vec<CustomPreset>, VideoEr
     let path = get_presets_path(app)?;
     if path.exists() {
         let content = fs::read_to_string(&path)?;
-        let presets: Vec<CustomPreset> = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        let presets: Vec<CustomPreset> =
+            serde_json::from_str(&content).map_err(VideoError::JsonError)?;
         return Ok(presets);
     }
 
     let legacy = get_legacy_presets_path(app)?;
     if legacy.exists() {
         let content = fs::read_to_string(&legacy)?;
-        let presets: Vec<CustomPreset> = serde_json::from_str(&content).map_err(VideoError::JsonError)?;
+        let presets: Vec<CustomPreset> =
+            serde_json::from_str(&content).map_err(VideoError::JsonError)?;
         return Ok(presets);
     }
 

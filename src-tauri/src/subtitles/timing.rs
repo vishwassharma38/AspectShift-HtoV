@@ -34,11 +34,13 @@ pub fn optimize_segments(
         if seg.words.is_empty() {
             // If no word timing, try to infer it (crude but better than nothing)
             let text_words: Vec<&str> = seg.text.split_whitespace().collect();
-            if text_words.is_empty() { continue; }
-            
+            if text_words.is_empty() {
+                continue;
+            }
+
             let duration = seg.end_ms - seg.start_ms;
             let word_duration = duration / (text_words.len() as u64);
-            
+
             for (i, w) in text_words.into_iter().enumerate() {
                 words.push(WordTiming {
                     word: w.to_string(),
@@ -51,18 +53,20 @@ pub fn optimize_segments(
         }
     }
 
-    if words.is_empty() { return Vec::new(); }
+    if words.is_empty() {
+        return Vec::new();
+    }
 
     let mut result = Vec::new();
     let mut current_words: Vec<WordTiming> = Vec::new();
 
     for word in words {
         let is_current_sentence_end = hard_sentence_end(&word.word);
-        
+
         let should_split = if let Some(last) = current_words.last() {
             let gap = word.start_ms.saturating_sub(last.end_ms);
             let duration = word.end_ms.saturating_sub(current_words[0].start_ms);
-            
+
             let is_max_words = current_words.len() >= config.max_words_per_segment;
             let is_max_duration = duration > config.max_segment_duration_ms;
             let is_silence = gap > config.silence_threshold_ms;
@@ -74,7 +78,7 @@ pub fn optimize_segments(
             // 3. We reached the word limit, UNLESS this current word ends the sentence anyway
             //    (in which case we let it join the current segment and split after it).
             // 4. We significantly exceeded the duration limit.
-            is_silence 
+            is_silence
                 || is_last_sentence_end
                 || (is_max_words && !is_current_sentence_end)
                 || is_max_duration
@@ -121,7 +125,10 @@ fn create_segment(words: Vec<WordTiming>) -> SubtitleSegment {
     }
 }
 
-fn normalize_segments(segments: Vec<SubtitleSegment>, config: &TimingConfig) -> Vec<SubtitleSegment> {
+fn normalize_segments(
+    segments: Vec<SubtitleSegment>,
+    config: &TimingConfig,
+) -> Vec<SubtitleSegment> {
     let mut normalized: Vec<SubtitleSegment> = Vec::new();
 
     for mut seg in segments {
@@ -145,16 +152,17 @@ fn normalize_segments(segments: Vec<SubtitleSegment>, config: &TimingConfig) -> 
             let gap = seg.start_ms.saturating_sub(prev.end_ms);
             let prev_duration = prev.end_ms.saturating_sub(prev.start_ms);
             let seg_duration = seg.end_ms.saturating_sub(seg.start_ms);
-            
+
             let prev_ends_sentence = hard_sentence_end(&prev.text);
 
             // Merge if:
             // 1. The gap is very small (tokenization noise or very fast speech).
             // 2. AND either the previous or current segment is ultra-short.
             // 3. AND we are not merging across a hard sentence boundary.
-            if gap <= config.merge_gap_ms 
-                && (prev_duration < config.min_segment_duration_ms || seg_duration < config.min_segment_duration_ms)
-                && !prev_ends_sentence 
+            if gap <= config.merge_gap_ms
+                && (prev_duration < config.min_segment_duration_ms
+                    || seg_duration < config.min_segment_duration_ms)
+                && !prev_ends_sentence
             {
                 prev.end_ms = seg.end_ms;
                 prev.words.extend(seg.words.into_iter());

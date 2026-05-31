@@ -48,8 +48,8 @@ pub fn calculate_layout_metrics(
         font_size = min_font_by_short_side;
     }
 
-    let base_margin_v_pct =
-        BASE_MARGIN_V_WIDE_PCT + ((BASE_MARGIN_V_TALL_PCT - BASE_MARGIN_V_WIDE_PCT) * portrait_weight);
+    let base_margin_v_pct = BASE_MARGIN_V_WIDE_PCT
+        + ((BASE_MARGIN_V_TALL_PCT - BASE_MARGIN_V_WIDE_PCT) * portrait_weight);
     let base_margin_v = h * base_margin_v_pct;
 
     let frame_h = foreground_frame_height.min(target_height) as f32;
@@ -82,8 +82,12 @@ pub fn calculate_ass_style(
     foreground_frame_height: u32,
     blur_enabled: bool,
 ) -> AssStyle {
-    let metrics =
-        calculate_layout_metrics(target_width, target_height, foreground_frame_height, blur_enabled);
+    let metrics = calculate_layout_metrics(
+        target_width,
+        target_height,
+        foreground_frame_height,
+        blur_enabled,
+    );
 
     AssStyle {
         name: "Professional".to_string(),
