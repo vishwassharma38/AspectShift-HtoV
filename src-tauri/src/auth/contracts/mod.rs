@@ -1,93 +1,96 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-// ── Activation ────────────────────────────────────────────────────────────────
+// Activation
 
-/// POST /activate — request body sent from Tauri app to edge function
+/// POST /api/activate - request body sent from the desktop app to the license server.
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivationRequest {
-    /// Gumroad license key, trimmed, validated before sending
+pub struct ActivateRequest {
+    /// Gumroad license key, trimmed, validated before sending.
     pub license_key: String,
-    /// Machine fingerprint — output of get_machine_id(), already hashed
+    /// Machine fingerprint from `get_machine_id()`.
     pub machine_id: String,
-    /// App version string, e.g. "1.0.0"
+    /// App version string, e.g. "1.0.0".
     pub app_version: String,
-    /// Build channel: "stable" | "beta" | "nightly" | "oss"
-    pub build_channel: BuildChannel,
+    /// Build channel: "stable" | "beta" | "nightly" | "oss".
+    pub channel: BuildChannel,
 }
 
-/// POST /activate — response body returned from edge function
+/// POST /api/activate - success response body returned from the license server.
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivationResponse {
-    /// The signed JWT to be stored locally via secure_storage
-    pub jwt: String,
-    /// ISO-8601 timestamp when the JWT expires
-    pub jwt_expires_at: String,
-    /// ISO-8601 timestamp when the grace period ends (jwt_expires_at + grace_window)
-    pub grace_expires_at: String,
-    /// How long (seconds) the client may operate offline before requiring refresh
-    pub grace_window_secs: u64,
-    /// Update entitlement block — may be None for community tier
-    pub update_entitlement: Option<UpdateEntitlement>,
-    /// The resolved tier from the Supabase license record
-    pub tier: LicenseTierWire,
+pub struct ActivateResponse {
+    pub ok: bool,
+    pub token: String,
+    pub expires_at: String,
 }
 
-// ── Refresh ───────────────────────────────────────────────────────────────────
+/// POST /api/activate - error response body returned from the license server.
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateErrorResponse {
+    pub ok: bool,
+    pub error: String,
+    pub message: String,
+}
 
-/// POST /refresh — request body
+pub type ActivationRequest = ActivateRequest;
+pub type ActivationResponse = ActivateResponse;
+
+// Refresh
+
+/// POST /refresh - request body
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshRequest {
-    /// The current JWT (not yet expired, or within grace window)
+    /// The current JWT (not yet expired, or within grace window).
     pub jwt: String,
-    /// Machine fingerprint — must match the one stored at activation
+    /// Machine fingerprint - must match the one stored at activation.
     pub machine_id: String,
-    /// Current app version — used to detect channel drift
+    /// Current app version - used to detect channel drift.
     pub app_version: String,
 }
 
-/// POST /refresh — response body (same shape as ActivationResponse, intentionally)
-pub type RefreshResponse = ActivationResponse;
+/// POST /refresh - response body (same shape as ActivateResponse, intentionally)
+pub type RefreshResponse = ActivateResponse;
 
-// ── Update entitlement check ──────────────────────────────────────────────────
+// Update entitlement check
 
-/// POST /updates/check — request body
+/// POST /updates/check - request body
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckRequest {
-    /// The current JWT — edge validates this before checking update entitlement
+    /// The current JWT - edge validates this before checking update entitlement.
     pub jwt: String,
-    /// Machine fingerprint
+    /// Machine fingerprint.
     pub machine_id: String,
-    /// Currently installed version
+    /// Currently installed version.
     pub current_version: String,
-    /// The channel the binary was built for
+    /// The channel the binary was built for.
     pub build_channel: BuildChannel,
 }
 
-/// POST /updates/check — response body
+/// POST /updates/check - response body
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResponse {
-    /// Whether an update is available and the entitlement allows it
+    /// Whether an update is available and the entitlement allows it.
     pub update_available: bool,
-    /// The version the client is allowed to update to, if any
+    /// The version the client is allowed to update to, if any.
     pub allowed_version: Option<String>,
-    /// URL of the signed update manifest, if update is available
+    /// URL of the signed update manifest, if update is available.
     pub manifest_url: Option<String>,
-    /// Whether the client is eligible for rollback to the previous version
+    /// Whether the client is eligible for rollback to the previous version.
     pub rollback_eligible: bool,
-    /// Optional message to surface in the UI (e.g. "maintenance expired")
+    /// Optional message to surface in the UI (e.g. "maintenance expired").
     pub message: Option<String>,
 }
 
-// ── Shared value types ────────────────────────────────────────────────────────
+// Shared value types
 
-/// Mirrors LicenseTier in auth/state/license_tier.rs but uses the wire name.
-/// These must stay in sync — add a compile-time assert below.
+/// Mirrors LicenseTier in `auth/state/license_tier.rs` but uses the wire name.
+/// These must stay in sync.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum LicenseTierWire {
@@ -104,48 +107,44 @@ pub enum BuildChannel {
     Oss,
 }
 
-/// Update entitlement block embedded in activation/refresh responses
+/// Update entitlement block embedded in activation/refresh responses.
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateEntitlement {
-    /// ISO-8601 timestamp: this license receives updates until this date
+    /// ISO-8601 timestamp: this license receives updates until this date.
     pub entitled_until: String,
-    /// Whether this is a perpetual (lifetime) license with no expiry
+    /// Whether this is a perpetual (lifetime) license with no expiry.
     pub is_perpetual: bool,
-    /// Whether this license is grandfathered for versions below a cutoff
+    /// Whether this license is grandfathered for versions below a cutoff.
     pub grandfathered_below_version: Option<String>,
 }
 
-// ── JWT claims (the canonical payload — frozen here, used by both Rust validator
-//    and edge function) ────────────────────────────────────────────────────────
+// JWT claims
 
-/// This is the exact JSON shape that will be embedded in the JWT payload.
-/// The edge function and the Rust validator MUST agree on this struct.
-/// Do not rename fields without updating both sides simultaneously.
+/// Exact JSON shape embedded in the JWT payload.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProductionJwtClaims {
-    /// Subject: internal license ID from Supabase (not the raw license key)
+    /// Subject: internal license ID from Supabase (not the raw license key).
     pub sub: String,
-    /// License tier: "community" | "pro"
+    /// License tier: "community" | "pro".
     pub tier: String,
-    /// Machine fingerprint hash: output of get_machine_id()
+    /// Machine fingerprint hash: output of `get_machine_id()`.
     pub mid: String,
-    /// Build channel: "stable" | "beta" | "nightly" | "oss"
+    /// Build channel: "stable" | "beta" | "nightly" | "oss".
     pub channel: String,
-    /// Feature flags as a compact bitmask (reserved for future use, send 0 for now)
+    /// Feature flags as a compact bitmask (reserved for future use, send 0 for now).
     pub flags: u32,
-    /// Issued-at: Unix timestamp seconds
+    /// Issued-at: Unix timestamp seconds.
     pub iat: i64,
-    /// Expires-at: Unix timestamp seconds
+    /// Expires-at: Unix timestamp seconds.
     pub exp: i64,
-    /// Grace-expires-at: Unix timestamp seconds (exp + grace_window_secs)
+    /// Grace-expires-at: Unix timestamp seconds (exp + grace_window_secs).
     pub gexp: i64,
-    /// Update entitlement expiry: Unix timestamp seconds, 0 = no entitlement
+    /// Update entitlement expiry: Unix timestamp seconds, 0 = no entitlement.
     pub uexp: i64,
 }
 
 // Compile-time guard: LicenseTierWire variants must stay in sync with LicenseTier.
-// If you add a variant to one, add it to the other and update this impl.
 impl From<crate::auth::state::license_tier::LicenseTier> for LicenseTierWire {
     fn from(t: crate::auth::state::license_tier::LicenseTier) -> Self {
         match t {

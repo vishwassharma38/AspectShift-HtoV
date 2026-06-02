@@ -217,7 +217,7 @@ export function AuthPanel({ onAuthStateChange }: Props) {
           <div className="banner banner-success">
             Licensed
             {status === "offline_valid" && " (Offline)"}
-            {authState?.tier === "licensed" && " . Pro"}
+            {authState?.tier === "pro" && " . Pro"}
           </div>
           {authState?.machineId && (
             <div className="text-xs text-muted mt-2">

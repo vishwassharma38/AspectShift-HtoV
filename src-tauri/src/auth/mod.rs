@@ -1,4 +1,5 @@
 pub mod activation;
+pub mod config;
 pub mod auth_commands;
 pub mod auth_errors;
 pub mod auth_events;

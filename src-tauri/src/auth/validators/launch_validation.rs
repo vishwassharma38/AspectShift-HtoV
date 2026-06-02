@@ -16,10 +16,18 @@ pub struct LaunchValidationResult {
 pub async fn run_launch_validation() -> LaunchValidationResult {
     info!("LaunchValidation: starting");
 
-    let jwt_opt = match load_jwt() {
-        Ok(j) => j,
-        Err(e) => {
+    let jwt_opt_res = tokio::task::spawn_blocking(|| load_jwt()).await;
+    let jwt_opt = match jwt_opt_res {
+        Ok(Ok(j)) => j,
+        Ok(Err(e)) => {
             warn!("LaunchValidation: failed to load JWT from keychain: {}", e);
+            return LaunchValidationResult {
+                status: AuthStatus::NotActivated,
+                jwt_metadata: None,
+            };
+        }
+        Err(e) => {
+            warn!("LaunchValidation: keychain access task panicked: {}", e);
             return LaunchValidationResult {
                 status: AuthStatus::NotActivated,
                 jwt_metadata: None,
@@ -53,10 +61,18 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
         }
     };
 
-    let current_machine_id = match get_machine_id() {
-        Ok(id) => id,
-        Err(e) => {
+    let mid_res = tokio::task::spawn_blocking(|| get_machine_id()).await;
+    let current_machine_id = match mid_res {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => {
             warn!("LaunchValidation: could not get machine ID: {}", e);
+            return LaunchValidationResult {
+                status: AuthStatus::OfflineValid,
+                jwt_metadata: Some(metadata),
+            };
+        }
+        Err(e) => {
+            warn!("LaunchValidation: machine ID task panicked: {}", e);
             return LaunchValidationResult {
                 status: AuthStatus::OfflineValid,
                 jwt_metadata: Some(metadata),

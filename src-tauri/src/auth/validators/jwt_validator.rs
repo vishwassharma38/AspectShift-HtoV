@@ -10,7 +10,7 @@ pub fn grace_period_secs() -> i64 {
 }
 
 pub const CLOCK_SKEW_SECS: i64 = 300;
-pub const REFRESH_REQUIRED_WINDOW_SECS: i64 = 7 * 24 * 3600;
+pub const REFRESH_REQUIRED_WINDOW_SECS: i64 = 24 * 3600;
 const ALLOWED_CHANNELS: &[&str] = &["stable", "beta", "nightly", "oss"];
 
 pub fn validate_claim_semantics(

@@ -6,6 +6,9 @@ pub mod dev_provider;
 pub use dev_provider::DevLicenseProvider as ActiveLicenseProvider;
 
 #[cfg(not(feature = "dev-auth"))]
-pub mod edge_provider;
+pub mod production_provider;
 #[cfg(not(feature = "dev-auth"))]
-pub use edge_provider::EdgeLicenseProvider as ActiveLicenseProvider;
+pub use production_provider::ProductionLicenseProvider as ActiveLicenseProvider;
+
+#[cfg(not(feature = "dev-auth"))]
+pub use production_provider::ProductionLicenseProvider as EdgeLicenseProvider;

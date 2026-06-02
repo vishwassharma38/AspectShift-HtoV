@@ -25,10 +25,20 @@ fn map_backend_reason(reason: &str) -> AuthOutcomeMapping {
         AuthOutcomeMapping::new(AuthStatus::MachineMismatch, "machine_mismatch")
     } else if reason_contains(reason, "INVALID_TOKEN") || reason_contains(reason, "TOKEN_CORRUPT") {
         AuthOutcomeMapping::new(AuthStatus::Corrupted, "token_corrupted")
+    } else if reason_contains(reason, "LICENSE_NOT_FOUND") {
+        AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license")
+    } else if reason_contains(reason, "LICENSE_REVOKED") {
+        AuthOutcomeMapping::new(AuthStatus::Invalid, "license_revoked")
     } else if reason_contains(reason, "LICENSE_REFUNDED") {
         AuthOutcomeMapping::new(AuthStatus::Invalid, "license_refunded")
     } else if reason_contains(reason, "LICENSE_MAX_MACHINES") {
         AuthOutcomeMapping::new(AuthStatus::Invalid, "license_max_machines")
+    } else if reason_contains(reason, "ACTIVATION_LIMIT_REACHED") {
+        AuthOutcomeMapping::new(AuthStatus::Invalid, "activation_limit_reached")
+    } else if reason_contains(reason, "INVALID_REQUEST") {
+        AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_request")
+    } else if reason_contains(reason, "SERVER_ERROR") {
+        AuthOutcomeMapping::new(AuthStatus::Invalid, "server_error")
     } else if reason_contains(reason, "LICENSE_EXPIRED") {
         AuthOutcomeMapping::new(AuthStatus::Expired, "license_expired")
     } else {
@@ -44,6 +54,7 @@ pub fn map_auth_error(error: &AuthError) -> AuthOutcomeMapping {
         AuthError::InvalidLicenseKey => {
             AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license_key")
         }
+        AuthError::InvalidLicense => AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license"),
         AuthError::InvalidLicenseTier => {
             AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license_tier")
         }
@@ -56,6 +67,22 @@ pub fn map_auth_error(error: &AuthError) -> AuthOutcomeMapping {
         AuthError::MachineMismatch => {
             AuthOutcomeMapping::new(AuthStatus::MachineMismatch, "machine_mismatch")
         }
+        AuthError::LicenseNotFound => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license")
+        }
+        AuthError::LicenseRevoked => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "license_revoked")
+        }
+        AuthError::LicenseRefunded => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "license_refunded")
+        }
+        AuthError::ActivationLimitReached => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "activation_limit_reached")
+        }
+        AuthError::InvalidRequest => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_request")
+        }
+        AuthError::ServerError => AuthOutcomeMapping::new(AuthStatus::Invalid, "server_error"),
         AuthError::ActivationFailed { reason } => map_backend_reason(reason),
         AuthError::RefreshFailed { reason } => {
             let mapped = map_backend_reason(reason);
@@ -66,7 +93,7 @@ pub fn map_auth_error(error: &AuthError) -> AuthOutcomeMapping {
             }
         }
         AuthError::PhaseDNotImplemented => {
-            AuthOutcomeMapping::new(AuthStatus::Invalid, "phase_d_not_implemented")
+            AuthOutcomeMapping::new(AuthStatus::RefreshRequired, "phase_d_not_implemented")
         }
         AuthError::StorageError(_) => AuthOutcomeMapping::new(AuthStatus::Invalid, "storage_error"),
         AuthError::MachineIdError(_) => {

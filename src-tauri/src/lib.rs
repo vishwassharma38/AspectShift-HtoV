@@ -81,12 +81,8 @@ pub fn run() {
             app.manage(deps_manager);
             app.manage(download_manager);
 
-            #[cfg(feature = "dev-auth")]
             let provider: Arc<dyn auth::providers::r#trait::LicenseProvider> =
                 Arc::new(ActiveLicenseProvider::new());
-            #[cfg(not(feature = "dev-auth"))]
-            let provider: Arc<dyn auth::providers::r#trait::LicenseProvider> =
-                Arc::new(ActiveLicenseProvider);
 
             let auth_manager = AuthManager::new(provider);
             let auth_manager_for_init = auth_manager.clone();

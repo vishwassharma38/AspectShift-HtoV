@@ -114,14 +114,29 @@ impl AuthManager {
 
         self.emit_current_state(app).await;
 
-        let result = run_launch_validation().await;
+        let validation_timeout = tokio::time::Duration::from_secs(12);
+        let result = tokio::time::timeout(validation_timeout, run_launch_validation()).await;
 
-        self.apply_validation_result(&result).await;
-        if let Err(e) = self.recover_missing_metadata(&result, app).await {
-            warn!(
-                "AuthManager: could not recover missing auth metadata: {}",
-                e
-            );
+        match result {
+            Ok(res) => {
+                self.apply_validation_result(&res).await;
+                if let Err(e) = self.recover_missing_metadata(&res, app).await {
+                    warn!(
+                        "AuthManager: could not recover missing auth metadata: {}",
+                        e
+                    );
+                }
+            }
+            Err(_) => {
+                warn!(
+                    "AuthManager: launch validation timed out after {}s",
+                    validation_timeout.as_secs()
+                );
+                let current_status = self.auth_status.read().await.clone();
+                if current_status == AuthStatus::Activating {
+                    self.set_status(AuthStatus::NotActivated).await;
+                }
+            }
         }
 
         let state = self.get_auth_state().await;
@@ -272,6 +287,9 @@ impl AuthManager {
     pub async fn refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
         let token = load_jwt()?.ok_or(AuthError::NotActivated)?;
         let rollback_jwt = token.clone();
+
+        self.set_status(AuthStatus::Activating).await;
+        self.emit_current_state(app).await;
 
         match self.provider.refresh(&token).await {
             Ok(new_jwt) => {
@@ -480,7 +498,12 @@ impl AuthManager {
             return Ok(current);
         }
 
-        let machine_id = get_machine_id()?;
+        let mid_res = tokio::task::spawn_blocking(|| get_machine_id()).await;
+        let machine_id = match mid_res {
+            Ok(res) => res?,
+            Err(e) => return Err(AuthError::MachineIdError(e.to_string())),
+        };
+
         let mut guard = self.machine_id.write().await;
         *guard = machine_id.clone();
         Ok(machine_id)

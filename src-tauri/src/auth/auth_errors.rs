@@ -9,12 +9,26 @@ pub enum AuthError {
     NotActivated,
     #[error("License key is invalid")]
     InvalidLicenseKey,
+    #[error("License is invalid")]
+    InvalidLicense,
     #[error("License key has expired")]
     LicenseExpired,
     #[error("Token is corrupted or tampered")]
     TokenCorrupted,
     #[error("Machine identifier mismatch - license bound to another machine")]
     MachineMismatch,
+    #[error("License not found")]
+    LicenseNotFound,
+    #[error("License has been revoked")]
+    LicenseRevoked,
+    #[error("License has been refunded")]
+    LicenseRefunded,
+    #[error("Activation limit reached")]
+    ActivationLimitReached,
+    #[error("Invalid activation request")]
+    InvalidRequest,
+    #[error("License server error")]
+    ServerError,
     #[error("Activation failed: {reason}")]
     ActivationFailed { reason: String },
     #[error("Invalid or unsupported license tier")]
