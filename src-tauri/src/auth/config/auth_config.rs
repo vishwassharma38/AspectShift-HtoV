@@ -7,7 +7,7 @@ use crate::auth::contracts::BuildChannel;
 
 const DEFAULT_PRODUCTION_BASE_URL: &str =
     "https://aspectshift-htov-license-server.vercel.app";
-const DEFAULT_DEVELOPMENT_BASE_URL: &str = "http://localhost:3000";
+const DEFAULT_DEVELOPMENT_BASE_URL: &str = "https://aspectshift-htov-license-server.vercel.app";
 const DEFAULT_TIMEOUT_SECS: u64 = 12;
 
 #[derive(Debug, Clone)]

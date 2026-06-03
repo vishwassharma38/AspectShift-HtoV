@@ -244,14 +244,12 @@ export type PreviewRenderLayout = {
 	subtitle: SubtitleLayoutMetrics,
 };
 
-// POST /refresh - request body
+// POST /api/refresh - request body sent from the desktop app to the license server.
 export type RefreshRequest = {
-	// The current JWT (not yet expired, or within grace window).
-	jwt: string,
+	// The current JWT.
+	token: string,
 	// Machine fingerprint - must match the one stored at activation.
 	machineId: string,
-	// Current app version - used to detect channel drift.
-	appVersion: string,
 };
 
 export type SelectionMetadata = {

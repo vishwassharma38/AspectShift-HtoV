@@ -141,6 +141,20 @@ impl AuthManager {
 
         let state = self.get_auth_state().await;
         self.emit_state_for_status(app, &state).await;
+
+        if state.status.needs_refresh() {
+            info!(
+                "AuthManager: scheduling silent refresh after launch status={:?}",
+                state.status
+            );
+            let manager = self.clone();
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = manager.silent_refresh(&app_handle).await {
+                    warn!("AuthManager: silent refresh finished with error: {}", e);
+                }
+            });
+        }
     }
 
     pub async fn activate(
@@ -285,11 +299,32 @@ impl AuthManager {
     }
 
     pub async fn refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
+        self.refresh_internal(app, false).await
+    }
+
+    async fn silent_refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
+        self.refresh_internal(app, true).await
+    }
+
+    async fn refresh_internal(
+        &self,
+        app: &AppHandle,
+        silent: bool,
+    ) -> Result<AuthState, AuthError> {
+        info!(
+            "AuthManager: refresh started mode={}",
+            if silent { "silent" } else { "manual" }
+        );
+
+        let previous_state = self.get_auth_state().await;
+        let rollback_config = self.auth_config.read().await.clone();
         let token = load_jwt()?.ok_or(AuthError::NotActivated)?;
         let rollback_jwt = token.clone();
 
-        self.set_status(AuthStatus::Activating).await;
-        self.emit_current_state(app).await;
+        if !silent {
+            self.set_status(AuthStatus::Activating).await;
+            self.emit_current_state(app).await;
+        }
 
         match self.provider.refresh(&token).await {
             Ok(new_jwt) => {
@@ -299,12 +334,14 @@ impl AuthManager {
                         let err = AuthError::RefreshFailed {
                             reason: e.to_string(),
                         };
+                        warn!("AuthManager: refresh JWT validation failed: {}", err);
                         self.apply_error_state(&err).await;
                         let state = self.get_auth_state().await;
                         self.emit_state_for_status(app, &state).await;
                         return Err(err);
                     }
                 };
+                info!("AuthManager: refresh JWT validated");
 
                 let machine_id = match self.ensure_machine_id().await {
                     Ok(mid) => mid,
@@ -323,8 +360,8 @@ impl AuthManager {
                     return Err(mismatch);
                 }
 
-                if classify_launch_status(&new_meta, Utc::now().timestamp()) == AuthStatus::Expired
-                {
+                let refreshed_status = classify_launch_status(&new_meta, Utc::now().timestamp());
+                if refreshed_status == AuthStatus::Expired {
                     let expired = AuthError::LicenseExpired;
                     self.apply_error_state(&expired).await;
                     let state = self.get_auth_state().await;
@@ -333,6 +370,7 @@ impl AuthManager {
                 }
 
                 if let Err(e) = store_jwt(&new_jwt) {
+                    warn!("AuthManager: refresh rollback triggered");
                     if let Err(rollback_err) = restore_jwt(&Some(rollback_jwt.clone())) {
                         warn!("AuthManager: failed to restore previous JWT after refresh write error: {}", rollback_err);
                     }
@@ -342,28 +380,55 @@ impl AuthManager {
                     return Err(e);
                 }
 
-                self.save_auth_metadata(
-                    app,
-                    Some(&new_meta),
-                    None,
-                    Some(Utc::now().to_rfc3339()),
-                )
-                .await
-                .map_err(|e| {
+                if let Err(e) = self
+                    .save_auth_metadata(app, Some(&new_meta), None, Some(Utc::now().to_rfc3339()))
+                    .await
+                {
+                    warn!("AuthManager: refresh rollback triggered");
                     if let Err(rollback_err) = restore_jwt(&Some(rollback_jwt.clone())) {
-                        warn!("AuthManager: failed to restore previous JWT after refresh error: {}", rollback_err);
+                        warn!(
+                            "AuthManager: failed to restore previous JWT after refresh error: {}",
+                            rollback_err
+                        );
                     }
-                    e
-                })?;
+                    if let Err(rollback_err) = self.restore_auth_metadata(app, &rollback_config) {
+                        warn!(
+                            "AuthManager: failed to restore previous metadata after refresh error: {}",
+                            rollback_err
+                        );
+                    }
+                    {
+                        let mut config = self.auth_config.write().await;
+                        *config = rollback_config;
+                    }
+                    self.set_status(previous_state.status).await;
+                    let state = self.get_auth_state().await;
+                    self.emit_state_for_status(app, &state).await;
+                    return Err(e);
+                }
                 self.apply_validated_metadata(Some(new_meta)).await;
-                self.set_status(AuthStatus::Valid).await;
+                self.set_status(refreshed_status).await;
 
                 let state = self.get_auth_state().await;
                 emit_auth_state(app, &state);
+                info!("AuthManager: refresh persistence completed");
                 info!("AuthManager: refresh successful");
                 Ok(state)
             }
             Err(e) => {
+                if is_transient_refresh_error(&e) {
+                    warn!(
+                        "AuthManager: refresh failed transiently, retaining existing auth state: {}",
+                        e
+                    );
+                    self.set_status(previous_state.status).await;
+                    let retained_state = self.get_auth_state().await;
+                    if !silent {
+                        self.emit_state_for_status(app, &retained_state).await;
+                    }
+                    return Err(e);
+                }
+
                 self.apply_error_state(&e).await;
                 let state = self.get_auth_state().await;
                 self.emit_state_for_status(app, &state).await;
@@ -622,6 +687,15 @@ impl AuthManager {
         let path = self.metadata_path(app)?;
         write_auth_metadata_file(&path, metadata)
     }
+
+    fn restore_auth_metadata(
+        &self,
+        app: &AppHandle,
+        metadata: &AuthConfigMetadata,
+    ) -> Result<(), AuthError> {
+        let path = self.metadata_path(app)?;
+        write_auth_metadata_file(&path, metadata)
+    }
 }
 
 fn auth_metadata_tmp_path(path: &Path) -> PathBuf {
@@ -704,6 +778,21 @@ fn restore_license_key(key: &Option<String>) -> Result<(), AuthError> {
     match key {
         Some(value) => store_license_key(value),
         None => delete_license_key(),
+    }
+}
+
+fn is_transient_refresh_error(error: &AuthError) -> bool {
+    match error {
+        AuthError::ServerError => true,
+        AuthError::RefreshFailed { reason } => {
+            let normalized = reason.trim().to_ascii_lowercase();
+            normalized.contains("network error")
+                || normalized.contains("timeout")
+                || normalized.contains("dns")
+                || normalized.contains("failed to read refresh response")
+                || normalized.contains("connection")
+        }
+        _ => false,
     }
 }
 

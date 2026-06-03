@@ -40,20 +40,25 @@ pub type ActivationResponse = ActivateResponse;
 
 // Refresh
 
-/// POST /refresh - request body
+/// POST /api/refresh - request body sent from the desktop app to the license server.
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshRequest {
-    /// The current JWT (not yet expired, or within grace window).
-    pub jwt: String,
+    /// The current JWT.
+    pub token: String,
     /// Machine fingerprint - must match the one stored at activation.
     pub machine_id: String,
-    /// Current app version - used to detect channel drift.
-    pub app_version: String,
 }
 
-/// POST /refresh - response body (same shape as ActivateResponse, intentionally)
+/// POST /api/refresh - success response body (same shape as ActivateResponse, intentionally).
 pub type RefreshResponse = ActivateResponse;
+
+/// POST /api/refresh - error response body returned from the license server.
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshErrorResponse {
+    pub error: String,
+}
 
 // Update entitlement check
 
