@@ -24,6 +24,7 @@ pub struct ActivateResponse {
     pub ok: bool,
     pub token: String,
     pub expires_at: String,
+    pub grace_period_ends_at: String,
 }
 
 /// POST /api/activate - error response body returned from the license server.
@@ -67,29 +68,22 @@ pub struct RefreshErrorResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckRequest {
     /// The current JWT - edge validates this before checking update entitlement.
-    pub jwt: String,
-    /// Machine fingerprint.
-    pub machine_id: String,
+    pub token: String,
     /// Currently installed version.
     pub current_version: String,
-    /// The channel the binary was built for.
-    pub build_channel: BuildChannel,
 }
 
 /// POST /updates/check - response body
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateCheckResponse {
-    /// Whether an update is available and the entitlement allows it.
-    pub update_available: bool,
-    /// The version the client is allowed to update to, if any.
-    pub allowed_version: Option<String>,
-    /// URL of the signed update manifest, if update is available.
-    pub manifest_url: Option<String>,
-    /// Whether the client is eligible for rollback to the previous version.
-    pub rollback_eligible: bool,
-    /// Optional message to surface in the UI (e.g. "maintenance expired").
-    pub message: Option<String>,
+#[serde(rename_all = "camelCase", untagged)]
+pub enum UpdateCheckResponse {
+    Allowed {
+        allowed: bool,
+        latest_version: String,
+        manifest_url: String,
+        rollback_version: String,
+    },
+    NotAllowed { allowed: bool },
 }
 
 // Shared value types
@@ -145,7 +139,8 @@ pub struct ProductionJwtClaims {
     pub exp: i64,
     /// Grace-expires-at: Unix timestamp seconds (exp + grace_window_secs).
     pub gexp: i64,
-    /// Update entitlement expiry: Unix timestamp seconds, 0 = no entitlement.
+    /// Update entitlement expiry: Unix timestamp seconds; when no separate update entitlement
+    /// exists, this falls back to the JWT `exp` claim in the runtime implementation.
     pub uexp: i64,
 }
 

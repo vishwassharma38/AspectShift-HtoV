@@ -130,6 +130,7 @@ impl AuthManager {
 
         self.emit_current_state(app).await;
 
+        // Keep this in sync with the HTTP request timeout default used by the license provider.
         let validation_timeout = tokio::time::Duration::from_secs(12);
         let result = tokio::time::timeout(validation_timeout, run_launch_validation()).await;
 

@@ -92,6 +92,15 @@ impl ProductionLicenseProvider {
                 }
             })?;
 
+            DateTime::parse_from_rfc3339(&payload.grace_period_ends_at).map_err(|e| {
+                AuthError::ActivationFailed {
+                    reason: format!(
+                        "Activation response had an invalid gracePeriodEndsAt value: {}",
+                        e
+                    ),
+                }
+            })?;
+
             info!("ProductionAuthProvider: activation succeeded");
             return Ok(payload.token);
         }
@@ -174,6 +183,15 @@ impl ProductionLicenseProvider {
             DateTime::parse_from_rfc3339(&payload.expires_at).map_err(|e| {
                 AuthError::RefreshFailed {
                     reason: format!("Refresh response had an invalid expiresAt value: {}", e),
+                }
+            })?;
+
+            DateTime::parse_from_rfc3339(&payload.grace_period_ends_at).map_err(|e| {
+                AuthError::RefreshFailed {
+                    reason: format!(
+                        "Refresh response had an invalid gracePeriodEndsAt value: {}",
+                        e
+                    ),
                 }
             })?;
 

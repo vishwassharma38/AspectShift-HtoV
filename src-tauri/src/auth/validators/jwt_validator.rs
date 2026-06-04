@@ -35,33 +35,33 @@ pub fn validate_claim_semantics(
         )));
     }
 
-    if claims.iat <= 0 {
+    if claims.iat < 0 {
         return Err(AuthError::JwtError(
-            "JWT issued-at must be positive".to_string(),
+            "JWT issued-at must be non-negative".to_string(),
         ));
     }
 
-    if claims.exp <= 0 {
+    if claims.exp < 0 {
         return Err(AuthError::JwtError(
-            "JWT expiration must be positive".to_string(),
+            "JWT expiration must be non-negative".to_string(),
         ));
     }
 
-    if claims.gexp <= 0 {
+    if claims.gexp < 0 {
         return Err(AuthError::JwtError(
-            "JWT grace expiration must be positive".to_string(),
+            "JWT grace expiration must be non-negative".to_string(),
         ));
     }
 
-    if claims.exp < claims.iat {
+    if claims.exp <= claims.iat {
         return Err(AuthError::JwtError(
-            "JWT expiration precedes issued-at".to_string(),
+            "JWT expiration must be after issued-at".to_string(),
         ));
     }
 
-    if claims.gexp < claims.exp {
+    if claims.gexp <= claims.exp {
         return Err(AuthError::JwtError(
-            "JWT grace expiration precedes expiration".to_string(),
+            "JWT grace expiration must be after expiration".to_string(),
         ));
     }
 
@@ -89,15 +89,15 @@ pub fn validate_jwt_timing(metadata: &JwtMetadata, now: i64) -> Result<(), AuthE
         ));
     }
 
-    if metadata.expires_at < metadata.issued_at {
+    if metadata.expires_at <= metadata.issued_at {
         return Err(AuthError::JwtError(
-            "JWT expiration precedes issued-at".to_string(),
+            "JWT expiration must be after issued-at".to_string(),
         ));
     }
 
-    if metadata.grace_expires_at < metadata.expires_at {
+    if metadata.grace_expires_at <= metadata.expires_at {
         return Err(AuthError::JwtError(
-            "JWT grace expiration precedes expiration".to_string(),
+            "JWT grace expiration must be after expiration".to_string(),
         ));
     }
 
@@ -111,14 +111,17 @@ pub fn validate_jwt_timing(metadata: &JwtMetadata, now: i64) -> Result<(), AuthE
 }
 
 pub fn classify_launch_status(metadata: &JwtMetadata, now: i64) -> AuthStatus {
-    if now >= metadata.expires_at {
-        if now < metadata.grace_expires_at {
-            return AuthStatus::GracePeriod;
-        }
+    if now > metadata.grace_expires_at {
         return AuthStatus::Expired;
     }
 
-    if metadata.expires_at - now <= REFRESH_REQUIRED_WINDOW_SECS {
+    if now > metadata.expires_at {
+        if now <= metadata.grace_expires_at {
+            return AuthStatus::GracePeriod;
+        }
+    }
+
+    if metadata.expires_at.saturating_sub(now) < REFRESH_REQUIRED_WINDOW_SECS {
         return AuthStatus::RefreshRequired;
     }
 
@@ -165,7 +168,7 @@ mod dev {
     ) -> Result<String, AuthError> {
         let now = Utc::now().timestamp();
         let exp = now + (JWT_VALIDITY_DAYS * 24 * 3600);
-        let gexp = exp + (15 * 24 * 3600); // 15 day grace by default in dev
+        let gexp = exp + grace_period_secs();
 
         let claims = JwtClaims {
             sub: sub.to_string(),
@@ -442,5 +445,21 @@ mod tests {
 
         valid.grace_expires_at = now - 1;
         assert_eq!(classify_launch_status(&valid, now), AuthStatus::Expired);
+    }
+
+    #[test]
+    fn grace_period_constant_is_fifteen_days() {
+        assert_eq!(grace_period_secs(), 15 * 24 * 3600);
+    }
+
+    #[cfg(feature = "dev-auth")]
+    #[test]
+    fn dev_generated_jwt_uses_thirty_day_lifetime_and_fifteen_day_grace() {
+        let jwt = generate_jwt("subject-123", &LicenseTier::Pro, "mid_ABC123")
+            .expect("dev JWT should be generated");
+        let metadata = validate_jwt(&jwt).expect("dev JWT should validate");
+
+        assert_eq!(metadata.expires_at - metadata.issued_at, 30 * 24 * 3600);
+        assert_eq!(metadata.grace_expires_at - metadata.expires_at, grace_period_secs());
     }
 }

@@ -75,12 +75,12 @@ pub struct JwtMetadata {
 impl JwtMetadata {
     pub fn is_expired(&self) -> bool {
         let now = chrono::Utc::now().timestamp();
-        self.expires_at < now
+        now > self.grace_expires_at
     }
 
     pub fn is_in_grace_period(&self) -> bool {
         let now = chrono::Utc::now().timestamp();
-        now >= self.expires_at && now < self.grace_expires_at
+        now > self.expires_at && now <= self.grace_expires_at
     }
 
     pub fn expires_in_secs(&self) -> i64 {

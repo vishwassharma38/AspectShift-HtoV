@@ -23,6 +23,7 @@ export type ActivateResponse = {
 	ok: boolean,
 	token: string,
 	expiresAt: string,
+	gracePeriodEndsAt: string,
 };
 
 export type ActivationResult = {
@@ -278,28 +279,13 @@ export type TargetType = "aspectRatio" | "platform" | "custom";
 // POST /updates/check - request body
 export type UpdateCheckRequest = {
 	// The current JWT - edge validates this before checking update entitlement.
-	jwt: string,
-	// Machine fingerprint.
-	machineId: string,
+	token: string,
 	// Currently installed version.
 	currentVersion: string,
-	// The channel the binary was built for.
-	buildChannel: BuildChannel,
 };
 
 // POST /updates/check - response body
-export type UpdateCheckResponse = {
-	// Whether an update is available and the entitlement allows it.
-	updateAvailable: boolean,
-	// The version the client is allowed to update to, if any.
-	allowedVersion: string | null,
-	// URL of the signed update manifest, if update is available.
-	manifestUrl: string | null,
-	// Whether the client is eligible for rollback to the previous version.
-	rollbackEligible: boolean,
-	// Optional message to surface in the UI (e.g. "maintenance expired").
-	message: string | null,
-};
+export type UpdateCheckResponse = { allowed: boolean; latestVersion: string; manifestUrl: string; rollbackVersion: string } | { allowed: boolean };
 
 // Update entitlement block embedded in activation/refresh responses.
 export type UpdateEntitlement = {
