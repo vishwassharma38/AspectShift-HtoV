@@ -73,6 +73,7 @@ pub struct AuthState {
     pub tier: LicenseTier,
     pub activated_at: Option<String>,
     pub jwt_expires_at: Option<String>,
+    pub grace_expires_at: Option<String>,
     pub token_hint: Option<String>,
     pub machine_id: Option<String>,
 }

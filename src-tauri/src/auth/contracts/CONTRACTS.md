@@ -64,7 +64,7 @@ Notes:
 
 - Success JWT claims are built from the current license row, the requested machine id, and the normalized channel.
 - The issued token lifetime is 7 days.
-- `gexp` is 48 hours after `exp`.
+- `gexp` is 15 days after `exp`.
 - `uexp` comes from `licenses.update_entitlement_expires_at` when present; otherwise it falls back to `exp`.
 - `flags` is currently always `0`.
 
@@ -262,7 +262,7 @@ All JWTs issued by the server use these claims:
 | `flags`   | `integer`                                  | Feature flag bitmask, currently always `0`              |
 | `iat`     | `integer`                                  | Issued-at time in Unix seconds                          |
 | `exp`     | `integer`                                  | Expiry time in Unix seconds, 7 days after `iat`         |
-| `gexp`    | `integer`                                  | Grace expiry time in Unix seconds, 48 hours after `exp` |
+| `gexp`    | `integer`                                  | Grace expiry time in Unix seconds, 15 days after `exp` |
 | `uexp`    | `integer`                                  | Update entitlement expiry in Unix seconds               |
 
 Validation rules:

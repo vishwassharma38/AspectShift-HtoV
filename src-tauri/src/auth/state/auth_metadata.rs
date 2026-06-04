@@ -33,6 +33,12 @@ pub struct AuthConfigMetadata {
     pub token_hint: Option<String>,
     pub build_channel: Option<String>,
     pub purchase_token_hint: Option<String>,
+
+    // D7.6 Grace & Diagnostic fields
+    pub grace_started_at: Option<String>,
+    pub last_refresh_attempt_at: Option<String>,
+    pub last_refresh_success_at: Option<String>,
+    pub last_refresh_failure_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

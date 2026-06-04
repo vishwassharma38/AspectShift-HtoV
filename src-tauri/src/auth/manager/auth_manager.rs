@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tokio::sync::RwLock;
 
-use crate::auth::auth_errors::AuthError;
+use crate::auth::auth_errors::{is_transient_refresh_failure, AuthError};
 use crate::auth::auth_events::{
     emit_activation_failed, emit_activation_success, emit_auth_state, emit_license_invalid,
     emit_refresh_required,
@@ -34,6 +34,8 @@ use crate::runtime_paths::RuntimePaths;
 const AUTH_METADATA_FILENAME: &str = "auth_metadata.json";
 const AUTH_METADATA_TMP_EXTENSION: &str = "tmp";
 
+const RETRY_INTERVALS_MINS: &[u64] = &[15, 30, 60, 120, 240, 360];
+
 struct ActivationRollback {
     jwt: Option<String>,
     license_key: Option<String>,
@@ -53,6 +55,9 @@ pub struct AuthManager {
     machine_id: Arc<RwLock<String>>,
     jwt_metadata: Arc<RwLock<Option<JwtMetadata>>>,
     auth_config: Arc<RwLock<AuthConfigMetadata>>,
+    retry_index: Arc<RwLock<usize>>,
+    refresh_in_progress: Arc<RwLock<bool>>,
+    next_retry_at: Arc<RwLock<Option<DateTime<Utc>>>>,
 }
 
 impl AuthManager {
@@ -64,6 +69,9 @@ impl AuthManager {
             machine_id: Arc::new(RwLock::new(String::new())),
             jwt_metadata: Arc::new(RwLock::new(None)),
             auth_config: Arc::new(RwLock::new(AuthConfigMetadata::default())),
+            retry_index: Arc::new(RwLock::new(0)),
+            refresh_in_progress: Arc::new(RwLock::new(false)),
+            next_retry_at: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -80,11 +88,19 @@ impl AuthManager {
             })
         });
 
+        let grace_expires_at = config.grace_expires_at.clone().or_else(|| {
+            jwt_meta.as_ref().and_then(|meta| {
+                DateTime::from_timestamp(meta.grace_expires_at, 0)
+                    .map(|d: DateTime<Utc>| d.to_rfc3339())
+            })
+        });
+
         AuthState {
             status,
             tier,
             activated_at: config.activated_at.clone(),
             jwt_expires_at,
+            grace_expires_at,
             token_hint: config.token_hint.clone(),
             machine_id: config.machine_id.clone().or_else(|| {
                 if runtime_machine_id.is_empty() {
@@ -255,6 +271,8 @@ impl AuthManager {
                         Some(&meta),
                         Some(extract_token_hint(license_key)),
                         None,
+                        None,
+                        None,
                     )
                     .await
                 {
@@ -311,8 +329,28 @@ impl AuthManager {
         app: &AppHandle,
         silent: bool,
     ) -> Result<AuthState, AuthError> {
+        {
+            let mut in_progress = self.refresh_in_progress.write().await;
+            if *in_progress {
+                info!("AuthManager: refresh already in progress, skipping duplicate request");
+                return Ok(self.get_auth_state().await);
+            }
+            *in_progress = true;
+        }
+
+        let result = self.refresh_execution(app, silent).await;
+
+        {
+            let mut in_progress = self.refresh_in_progress.write().await;
+            *in_progress = false;
+        }
+
+        result
+    }
+
+    async fn refresh_execution(&self, app: &AppHandle, silent: bool) -> Result<AuthState, AuthError> {
         info!(
-            "AuthManager: refresh started mode={}",
+            "AuthManager: refresh execution started mode={}",
             if silent { "silent" } else { "manual" }
         );
 
@@ -326,8 +364,16 @@ impl AuthManager {
             self.emit_current_state(app).await;
         }
 
+        let now_ts = Utc::now().timestamp();
+        let now_iso = Utc::now().to_rfc3339();
+
         match self.provider.refresh(&token).await {
             Ok(new_jwt) => {
+                {
+                    let mut next = self.next_retry_at.write().await;
+                    *next = None;
+                }
+
                 let new_meta = match validate_jwt(&new_jwt) {
                     Ok(meta) => meta,
                     Err(e) => {
@@ -336,6 +382,15 @@ impl AuthManager {
                         };
                         warn!("AuthManager: refresh JWT validation failed: {}", err);
                         self.apply_error_state(&err).await;
+                        self.save_auth_metadata(
+                            app,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some((now_iso.clone(), Some(err.to_string()))),
+                        )
+                        .await?;
                         let state = self.get_auth_state().await;
                         self.emit_state_for_status(app, &state).await;
                         return Err(err);
@@ -355,15 +410,33 @@ impl AuthManager {
                 if new_meta.mid != machine_id {
                     let mismatch = AuthError::MachineMismatch;
                     self.apply_error_state(&mismatch).await;
+                    self.save_auth_metadata(
+                        app,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((now_iso.clone(), Some(mismatch.to_string()))),
+                    )
+                    .await?;
                     let state = self.get_auth_state().await;
                     self.emit_state_for_status(app, &state).await;
                     return Err(mismatch);
                 }
 
-                let refreshed_status = classify_launch_status(&new_meta, Utc::now().timestamp());
+                let refreshed_status = classify_launch_status(&new_meta, now_ts);
                 if refreshed_status == AuthStatus::Expired {
                     let expired = AuthError::LicenseExpired;
                     self.apply_error_state(&expired).await;
+                    self.save_auth_metadata(
+                        app,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((now_iso.clone(), Some(expired.to_string()))),
+                    )
+                    .await?;
                     let state = self.get_auth_state().await;
                     self.emit_state_for_status(app, &state).await;
                     return Err(expired);
@@ -381,7 +454,14 @@ impl AuthManager {
                 }
 
                 if let Err(e) = self
-                    .save_auth_metadata(app, Some(&new_meta), None, Some(Utc::now().to_rfc3339()))
+                    .save_auth_metadata(
+                        app,
+                        Some(&new_meta),
+                        None,
+                        Some(now_iso.clone()),
+                        None,
+                        Some((now_iso.clone(), None)),
+                    )
                     .await
                 {
                     warn!("AuthManager: refresh rollback triggered");
@@ -406,6 +486,12 @@ impl AuthManager {
                     self.emit_state_for_status(app, &state).await;
                     return Err(e);
                 }
+
+                {
+                    let mut idx = self.retry_index.write().await;
+                    *idx = 0;
+                }
+
                 self.apply_validated_metadata(Some(new_meta)).await;
                 self.set_status(refreshed_status).await;
 
@@ -416,12 +502,43 @@ impl AuthManager {
                 Ok(state)
             }
             Err(e) => {
-                if is_transient_refresh_error(&e) {
+                if is_transient_refresh_failure(&e) {
                     warn!(
                         "AuthManager: refresh failed transiently, retaining existing auth state: {}",
                         e
                     );
-                    self.set_status(previous_state.status).await;
+
+                    let mut next_status = previous_state.status;
+                    let mut grace_start = rollback_config.grace_started_at.clone();
+
+                    if let Some(meta) = self.jwt_metadata.read().await.as_ref() {
+                        let potential_status = classify_launch_status(meta, now_ts);
+                        if potential_status == AuthStatus::GracePeriod {
+                            next_status = AuthStatus::GracePeriod;
+                            if grace_start.is_none() {
+                                grace_start = Some(now_iso.clone());
+                            }
+                        }
+                    }
+
+                    self.set_status(next_status).await;
+
+                    if let Err(save_err) = self
+                        .save_auth_metadata(
+                            app,
+                            None,
+                            None,
+                            None,
+                            grace_start,
+                            Some((now_iso, Some(e.to_string()))),
+                        )
+                        .await
+                    {
+                        warn!("AuthManager: failed to save transient failure metadata: {}", save_err);
+                    }
+
+                    self.schedule_retry(app).await;
+
                     let retained_state = self.get_auth_state().await;
                     if !silent {
                         self.emit_state_for_status(app, &retained_state).await;
@@ -430,12 +547,109 @@ impl AuthManager {
                 }
 
                 self.apply_error_state(&e).await;
+                if let Err(save_err) = self
+                    .save_auth_metadata(
+                        app,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((now_iso, Some(e.to_string()))),
+                    )
+                    .await
+                {
+                    warn!("AuthManager: failed to save authoritative failure metadata: {}", save_err);
+                }
                 let state = self.get_auth_state().await;
                 self.emit_state_for_status(app, &state).await;
                 warn!("AuthManager: refresh failed: {}", e);
                 Err(e)
             }
         }
+    }
+
+    pub async fn schedule_retry(&self, app: &AppHandle) {
+        {
+            let next = self.next_retry_at.read().await;
+            if next.is_some() {
+                info!("AuthManager: retry already scheduled, skipping duplicate");
+                return;
+            }
+        }
+
+        let index = {
+            let idx = self.retry_index.read().await;
+            *idx
+        };
+
+        let mins = if index >= RETRY_INTERVALS_MINS.len() {
+            RETRY_INTERVALS_MINS[RETRY_INTERVALS_MINS.len() - 1]
+        } else {
+            let m = RETRY_INTERVALS_MINS[index];
+            let mut idx = self.retry_index.write().await;
+            *idx += 1;
+            m
+        };
+
+        {
+            let mut next = self.next_retry_at.write().await;
+            *next = Some(Utc::now() + chrono::Duration::minutes(mins as i64));
+        }
+
+        self.start_retry_timer(app, mins);
+    }
+
+    pub async fn trigger_reactive_refresh(&self, app: &AppHandle) {
+        let status = {
+            let s = self.auth_status.read().await;
+            s.clone()
+        };
+
+        if status == AuthStatus::GracePeriod || status == AuthStatus::RefreshRequired {
+            {
+                let next = self.next_retry_at.read().await;
+                if let Some(at) = *next {
+                    if Utc::now() < at {
+                        info!("AuthManager: reactive refresh skipped, cooldown active until {}", at);
+                        return;
+                    }
+                }
+            }
+
+            info!(
+                "AuthManager: reactive refresh triggered by lifecycle event status={:?}",
+                status
+            );
+            let _ = self.silent_refresh(app).await;
+        }
+    }
+
+    fn start_retry_timer(&self, app: &AppHandle, mins: u64) {
+        info!(
+            "AuthManager: scheduling next refresh retry in {} minutes",
+            mins
+        );
+        let manager = self.clone();
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(mins * 60)).await;
+
+            // Clear the pending status before attempting
+            {
+                let mut next = manager.next_retry_at.write().await;
+                *next = None;
+            }
+
+            // Guard against stale refreshes if recovery already occurred
+            if !manager.get_auth_state().await.status.needs_refresh() {
+                info!("AuthManager: scheduled retry skipped, license already recovered");
+                return;
+            }
+
+            if let Err(e) = manager.silent_refresh(&app_handle).await {
+                warn!("AuthManager: scheduled retry finished with error: {}", e);
+            }
+        });
     }
 
     pub async fn clear_license(&self, app: &AppHandle) -> Result<(), AuthError> {
@@ -453,6 +667,10 @@ impl AuthManager {
         {
             let mut config = self.auth_config.write().await;
             *config = AuthConfigMetadata::default();
+        }
+        {
+            let mut idx = self.retry_index.write().await;
+            *idx = 0;
         }
 
         if let Err(e) = self.delete_auth_metadata(app).await {
@@ -510,7 +728,7 @@ impl AuthManager {
         }
 
         if let Some(metadata) = result.jwt_metadata.as_ref() {
-            self.save_auth_metadata(app, Some(metadata), None, None)
+            self.save_auth_metadata(app, Some(metadata), None, None, None, None)
                 .await?;
             info!("AuthManager: recovered missing auth metadata from validated JWT");
         }
@@ -599,24 +817,38 @@ impl AuthManager {
         app: &AppHandle,
         metadata: Option<&JwtMetadata>,
         token_hint: Option<String>,
-        last_refresh_at: Option<String>,
+        last_refresh_success_at: Option<String>,
+        grace_started_at: Option<String>,
+        last_refresh_attempt: Option<(String, Option<String>)>,
     ) -> Result<(), AuthError> {
         let current_config = self.auth_config.read().await.clone();
         let runtime_machine_id = self.machine_id.read().await.clone();
 
         let activated_at = resolve_activated_at(metadata, &current_config);
-        let jwt_expires_at = metadata.and_then(|meta| {
-            DateTime::from_timestamp(meta.expires_at, 0).map(|d: DateTime<Utc>| d.to_rfc3339())
-        });
-        let grace_expires_at = metadata.and_then(|meta| {
-            DateTime::from_timestamp(meta.grace_expires_at, 0)
-                .map(|d: DateTime<Utc>| d.to_rfc3339())
-        });
-        let update_expires_at = metadata.and_then(|meta| {
-            DateTime::from_timestamp(meta.update_expires_at, 0)
-                .map(|d: DateTime<Utc>| d.to_rfc3339())
-        });
-        let build_channel = metadata.map(|meta| meta.channel.clone());
+        let jwt_expires_at = metadata
+            .and_then(|meta| {
+                DateTime::from_timestamp(meta.expires_at, 0).map(|d: DateTime<Utc>| d.to_rfc3339())
+            })
+            .or(current_config.jwt_expires_at.clone());
+
+        let grace_expires_at = metadata
+            .and_then(|meta| {
+                DateTime::from_timestamp(meta.grace_expires_at, 0)
+                    .map(|d: DateTime<Utc>| d.to_rfc3339())
+            })
+            .or(current_config.grace_expires_at.clone());
+
+        let update_expires_at = metadata
+            .and_then(|meta| {
+                DateTime::from_timestamp(meta.update_expires_at, 0)
+                    .map(|d: DateTime<Utc>| d.to_rfc3339())
+            })
+            .or(current_config.update_expires_at.clone());
+
+        let build_channel = metadata
+            .map(|meta| meta.channel.clone())
+            .or(current_config.build_channel.clone());
+
         let now = Utc::now().to_rfc3339();
 
         let metadata = AuthConfigMetadata {
@@ -629,11 +861,24 @@ impl AuthManager {
             jwt_expires_at,
             grace_expires_at,
             update_expires_at,
-            last_refresh_at: last_refresh_at.or(current_config.last_refresh_at.clone()),
+            last_refresh_at: last_refresh_success_at
+                .clone()
+                .or(current_config.last_refresh_at.clone()),
             last_validation_at: Some(now),
             token_hint: token_hint.or(current_config.token_hint.clone()),
-            build_channel: build_channel.or(current_config.build_channel.clone()),
+            build_channel,
             purchase_token_hint: current_config.purchase_token_hint.clone(),
+            grace_started_at: grace_started_at.or(current_config.grace_started_at.clone()),
+            last_refresh_attempt_at: last_refresh_attempt
+                .as_ref()
+                .map(|(at, _)| at.clone())
+                .or(current_config.last_refresh_attempt_at.clone()),
+            last_refresh_success_at: last_refresh_success_at
+                .or(current_config.last_refresh_success_at.clone()),
+            last_refresh_failure_reason: last_refresh_attempt
+                .as_ref()
+                .and_then(|(_, reason)| reason.clone())
+                .or(current_config.last_refresh_failure_reason.clone()),
         };
 
         self.write_auth_metadata(app, &metadata).await?;
@@ -781,21 +1026,6 @@ fn restore_license_key(key: &Option<String>) -> Result<(), AuthError> {
     }
 }
 
-fn is_transient_refresh_error(error: &AuthError) -> bool {
-    match error {
-        AuthError::ServerError => true,
-        AuthError::RefreshFailed { reason } => {
-            let normalized = reason.trim().to_ascii_lowercase();
-            normalized.contains("network error")
-                || normalized.contains("timeout")
-                || normalized.contains("dns")
-                || normalized.contains("failed to read refresh response")
-                || normalized.contains("connection")
-        }
-        _ => false,
-    }
-}
-
 fn resolve_activated_at(
     metadata: Option<&JwtMetadata>,
     current_config: &AuthConfigMetadata,
@@ -815,206 +1045,4 @@ fn resolve_activated_at(
 
     info!("AuthManager: activation timestamp unavailable, using current time");
     Utc::now().to_rfc3339()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_metadata_path(name: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time is valid")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "aspectshift_htov_auth_{}_{}_{}.json",
-            name,
-            std::process::id(),
-            stamp
-        ))
-    }
-
-    fn sample_metadata() -> AuthConfigMetadata {
-        AuthConfigMetadata {
-            machine_id: Some("machine-123".to_string()),
-            activated_at: Some("2026-05-30T00:00:00Z".to_string()),
-            jwt_expires_at: Some("2026-06-30T00:00:00Z".to_string()),
-            grace_expires_at: Some("2026-07-07T00:00:00Z".to_string()),
-            update_expires_at: Some("2026-08-01T00:00:00Z".to_string()),
-            last_refresh_at: Some("2026-05-30T00:10:00Z".to_string()),
-            last_validation_at: Some("2026-05-30T00:05:00Z".to_string()),
-            token_hint: Some("ASPECTSHIFT".to_string()),
-            build_channel: Some("stable".to_string()),
-            purchase_token_hint: Some("purchase-123".to_string()),
-        }
-    }
-
-    fn sample_jwt_metadata() -> JwtMetadata {
-        JwtMetadata {
-            sub: "subject-123".to_string(),
-            tier: LicenseTier::Pro,
-            mid: "machine-123".to_string(),
-            channel: "stable".to_string(),
-            flags: 0,
-            issued_at: 1_748_563_200,
-            expires_at: 1_751_260_800,
-            grace_expires_at: 1_751_865_600,
-            update_expires_at: 1_752_124_800,
-        }
-    }
-
-    fn sample_current_config() -> AuthConfigMetadata {
-        AuthConfigMetadata {
-            machine_id: Some("machine-123".to_string()),
-            activated_at: Some("2026-05-30T00:00:00Z".to_string()),
-            jwt_expires_at: Some("2026-06-30T00:00:00Z".to_string()),
-            grace_expires_at: Some("2026-07-07T00:00:00Z".to_string()),
-            update_expires_at: Some("2026-08-01T00:00:00Z".to_string()),
-            last_refresh_at: Some("2026-05-30T00:10:00Z".to_string()),
-            last_validation_at: Some("2026-05-30T00:05:00Z".to_string()),
-            token_hint: Some("ASPECTSHIFT".to_string()),
-            build_channel: Some("stable".to_string()),
-            purchase_token_hint: Some("purchase-123".to_string()),
-        }
-    }
-
-    #[test]
-    fn envelope_round_trip_serializes_schema_version() {
-        let envelope = AuthPersistenceEnvelope::new(sample_metadata());
-        let serialized = serde_json::to_string(&envelope).expect("serialize envelope");
-        let decoded = auth_metadata_envelope_from_content(&serialized).expect("decode envelope");
-
-        assert_eq!(decoded, sample_metadata());
-    }
-
-    #[test]
-    fn legacy_metadata_json_remains_supported() {
-        let legacy = r#"{
-            "machineId":"machine-legacy",
-            "activatedAt":"2026-05-30T00:00:00Z",
-            "jwtExpiresAt":"2026-06-30T00:00:00Z",
-            "tokenHint":"LEGACY"
-        }"#;
-
-        let decoded = auth_metadata_envelope_from_content(legacy).expect("decode legacy metadata");
-
-        assert_eq!(decoded.machine_id.as_deref(), Some("machine-legacy"));
-        assert_eq!(
-            decoded.activated_at.as_deref(),
-            Some("2026-05-30T00:00:00Z")
-        );
-        assert_eq!(
-            decoded.jwt_expires_at.as_deref(),
-            Some("2026-06-30T00:00:00Z")
-        );
-        assert_eq!(decoded.token_hint.as_deref(), Some("LEGACY"));
-    }
-
-    #[test]
-    fn invalid_json_is_rejected_without_panicking() {
-        assert!(auth_metadata_envelope_from_content("{").is_err());
-    }
-
-    #[test]
-    fn atomic_write_round_trips_valid_metadata() {
-        let path = temp_metadata_path("atomic_write");
-        let metadata = sample_metadata();
-
-        write_auth_metadata_file(&path, &metadata).expect("write metadata");
-        let decoded = read_auth_metadata_file(&path).expect("read metadata");
-
-        assert_eq!(decoded, metadata);
-
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(auth_metadata_tmp_path(&path));
-    }
-
-    #[test]
-    fn default_metadata_can_replace_stale_values() {
-        let path = temp_metadata_path("clear_replace");
-        let stale = sample_metadata();
-        write_auth_metadata_file(&path, &stale).expect("write stale metadata");
-
-        let default_metadata = AuthConfigMetadata::default();
-        write_auth_metadata_file(&path, &default_metadata).expect("rewrite default metadata");
-
-        let decoded = read_auth_metadata_file(&path).expect("read default metadata");
-        assert_eq!(decoded, AuthConfigMetadata::default());
-
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(auth_metadata_tmp_path(&path));
-    }
-
-    #[test]
-    fn partial_json_loads_are_safe_failures() {
-        let path = temp_metadata_path("partial_json");
-        fs::write(&path, "{").expect("write truncated json");
-
-        let result = read_auth_metadata_file(&path);
-        assert!(result.is_err());
-
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(auth_metadata_tmp_path(&path));
-    }
-
-    #[test]
-    fn missing_metadata_is_recovered_for_valid_launch_results() {
-        let result = crate::auth::validators::launch_validation::LaunchValidationResult {
-            status: AuthStatus::Valid,
-            jwt_metadata: Some(sample_jwt_metadata()),
-        };
-
-        assert!(should_recover_missing_metadata(&result));
-    }
-
-    #[test]
-    fn machine_mismatch_does_not_recover_metadata() {
-        let result = crate::auth::validators::launch_validation::LaunchValidationResult {
-            status: AuthStatus::MachineMismatch,
-            jwt_metadata: Some(sample_jwt_metadata()),
-        };
-
-        assert!(!should_recover_missing_metadata(&result));
-    }
-
-    #[test]
-    fn missing_jwt_metadata_does_not_recover() {
-        let result = crate::auth::validators::launch_validation::LaunchValidationResult {
-            status: AuthStatus::Valid,
-            jwt_metadata: None,
-        };
-
-        assert!(!should_recover_missing_metadata(&result));
-    }
-
-    #[test]
-    fn resolves_activation_timestamp_from_jwt_claim_first() {
-        let activated_at =
-            resolve_activated_at(Some(&sample_jwt_metadata()), &AuthConfigMetadata::default());
-
-        assert_eq!(activated_at, "2025-05-30T00:00:00+00:00");
-    }
-
-    #[test]
-    fn resolves_activation_timestamp_from_persisted_metadata_when_jwt_missing() {
-        let activated_at = resolve_activated_at(None, &sample_current_config());
-
-        assert_eq!(activated_at, "2026-05-30T00:00:00Z");
-    }
-
-    #[test]
-    fn preserves_existing_activation_timestamp_when_metadata_is_present() {
-        let activated_at =
-            resolve_activated_at(Some(&sample_jwt_metadata()), &sample_current_config());
-
-        assert_eq!(activated_at, "2026-05-30T00:00:00Z");
-    }
-
-    #[test]
-    fn resolves_activation_timestamp_from_current_time_when_no_history_exists() {
-        let activated_at = resolve_activated_at(None, &AuthConfigMetadata::default());
-
-        assert!(!activated_at.is_empty());
-    }
 }

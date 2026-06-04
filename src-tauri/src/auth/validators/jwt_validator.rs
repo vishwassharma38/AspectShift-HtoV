@@ -5,7 +5,7 @@ use crate::auth::state::license_tier::LicenseTier;
 
 // grace_period_secs is unconditionally needed by launch_validation.rs
 pub fn grace_period_secs() -> i64 {
-    const GRACE_PERIOD_DAYS: i64 = 7;
+    const GRACE_PERIOD_DAYS: i64 = 15;
     GRACE_PERIOD_DAYS * 24 * 3600
 }
 
@@ -165,7 +165,7 @@ mod dev {
     ) -> Result<String, AuthError> {
         let now = Utc::now().timestamp();
         let exp = now + (JWT_VALIDITY_DAYS * 24 * 3600);
-        let gexp = exp + (7 * 24 * 3600); // 7 day grace by default in dev
+        let gexp = exp + (15 * 24 * 3600); // 15 day grace by default in dev
 
         let claims = JwtClaims {
             sub: sub.to_string(),

@@ -103,6 +103,17 @@ pub fn run() {
             app.manage(video::queue::BatchManager::new());
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                let app_handle = window.app_handle().clone();
+                if let Some(auth_manager) = window.app_handle().try_state::<AuthManager>() {
+                    let manager = auth_manager.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        manager.trigger_reactive_refresh(&app_handle).await;
+                    });
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_dependency_state,
             rescan_dependencies,

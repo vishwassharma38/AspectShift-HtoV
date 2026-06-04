@@ -246,8 +246,12 @@ export function AuthPanel({ onAuthStateChange }: Props) {
 
       {status === "grace_period" && (
         <>
-          <div className="banner banner-warning">
-            Offline grace period active - reconnect to verify license
+          <div className="banner banner-warning" style={{ fontSize: 12 }}>
+            {authState?.graceExpiresAt && (new Date(authState.graceExpiresAt).getTime() - Date.now()) < 48 * 3600 * 1000 ? (
+              "Unable to verify your license. Reconnect to the internet soon to avoid interruption."
+            ) : (
+              "Connection issue detected. Your license couldn't be refreshed, but everything will continue working. We'll retry automatically."
+            )}
           </div>
           <button className="btn btn-sm btn-full mt-2" onClick={handleRefresh}>
             Reconnect &amp; Refresh
@@ -257,10 +261,12 @@ export function AuthPanel({ onAuthStateChange }: Props) {
 
       {status === "expired" && (
         <>
-          <div className="banner banner-error">License expired</div>
+          <div className="banner banner-error">
+            License verification required. Please reconnect to continue.
+          </div>
           <input
             className="input mt-2"
-            placeholder="Enter new license key"
+            placeholder="Enter license key (if new)"
             value={licenseKey}
             onChange={(e) => setLicenseKey(e.target.value)}
             disabled={isActivating}

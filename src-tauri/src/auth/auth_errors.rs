@@ -59,3 +59,41 @@ impl From<AuthError> for StructuredError {
         }
     }
 }
+
+pub fn is_transient_refresh_failure(error: &AuthError) -> bool {
+    match error {
+        AuthError::ServerError => true,
+        AuthError::RefreshFailed { reason } => {
+            let normalized = reason.trim().to_ascii_lowercase();
+            normalized.contains("network error")
+                || normalized.contains("timeout")
+                || normalized.contains("dns")
+                || normalized.contains("failed to read refresh response")
+                || normalized.contains("connection")
+                || normalized.contains("500")
+                || normalized.contains("502")
+                || normalized.contains("503")
+                || normalized.contains("504")
+        }
+        AuthError::IoError(_) => true,
+        AuthError::TauriError(_) => true,
+        // Authoritative failures (must NOT enter grace)
+        AuthError::InvalidLicenseKey
+        | AuthError::InvalidLicense
+        | AuthError::LicenseExpired
+        | AuthError::TokenCorrupted
+        | AuthError::MachineMismatch
+        | AuthError::LicenseNotFound
+        | AuthError::LicenseRevoked
+        | AuthError::LicenseRefunded
+        | AuthError::ActivationLimitReached
+        | AuthError::InvalidRequest
+        | AuthError::InvalidLicenseTier
+        | AuthError::JwtError(_) => false,
+        // Storage/Internal errors - generally safer not to enter grace
+        AuthError::StorageError(_) | AuthError::MachineIdError(_) | AuthError::JsonError(_) => {
+            false
+        }
+        AuthError::NotActivated | AuthError::ActivationFailed { .. } | AuthError::PhaseDNotImplemented => false,
+    }
+}

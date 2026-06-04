@@ -66,6 +66,7 @@ export type AuthState = {
 	tier: LicenseTier,
 	activatedAt: string | null,
 	jwtExpiresAt: string | null,
+	graceExpiresAt: string | null,
 	tokenHint: string | null,
 	machineId: string | null,
 };
