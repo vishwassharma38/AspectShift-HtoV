@@ -65,9 +65,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<aspectshift_htov_lib::auth::contracts::RefreshRequest>()
         .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckRequest>()
         .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckResponse>()
+        .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckErrorCode>()
+        .register::<aspectshift_htov_lib::auth::contracts::UpdateCheckErrorResponse>()
         .register::<aspectshift_htov_lib::auth::contracts::UpdateEntitlement>()
         .register::<aspectshift_htov_lib::auth::contracts::LicenseTierWire>()
-        .register::<aspectshift_htov_lib::auth::contracts::BuildChannel>();
+        .register::<aspectshift_htov_lib::auth::contracts::BuildChannel>()
+        .register::<aspectshift_htov_lib::auth::auth_models::UpdateCheckAvailableResult>()
+        .register::<aspectshift_htov_lib::auth::auth_models::UpdateEntitlementCheckStatus>()
+        .register::<aspectshift_htov_lib::auth::auth_models::UpdateEntitlementCheckResult>();
 
     let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

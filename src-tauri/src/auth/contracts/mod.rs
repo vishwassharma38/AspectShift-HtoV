@@ -77,6 +77,7 @@ pub struct UpdateCheckRequest {
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum UpdateCheckResponse {
+    #[serde(rename_all = "camelCase")]
     Allowed {
         allowed: bool,
         latest_version: String,
@@ -84,6 +85,27 @@ pub enum UpdateCheckResponse {
         rollback_version: String,
     },
     NotAllowed { allowed: bool },
+}
+
+/// POST /updates/check - error response body returned from the license server.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UpdateCheckErrorCode {
+    InvalidRequest,
+    InvalidToken,
+    LicenseRevoked,
+    LicenseRefunded,
+    ActivationRevoked,
+    UpdatesNotEntitled,
+    ChannelNotAllowed,
+    ServerError,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckErrorResponse {
+    pub ok: bool,
+    pub error: UpdateCheckErrorCode,
 }
 
 // Shared value types
@@ -150,6 +172,41 @@ impl From<crate::auth::state::license_tier::LicenseTier> for LicenseTierWire {
         match t {
             crate::auth::state::license_tier::LicenseTier::Community => Self::Community,
             crate::auth::state::license_tier::LicenseTier::Pro => Self::Pro,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UpdateCheckResponse;
+
+    #[test]
+    fn parses_allowed_update_check_response_with_camel_case_fields() {
+        let body = r#"{
+            "allowed": true,
+            "latestVersion": "0.2.0",
+            "manifestUrl": "https://example.com/manifest.json",
+            "rollbackVersion": "0.1.0"
+        }"#;
+
+        let parsed: UpdateCheckResponse =
+            serde_json::from_str(body).expect("update check response should deserialize");
+
+        match parsed {
+            UpdateCheckResponse::Allowed {
+                allowed,
+                latest_version,
+                manifest_url,
+                rollback_version,
+            } => {
+                assert!(allowed);
+                assert_eq!(latest_version, "0.2.0");
+                assert_eq!(manifest_url, "https://example.com/manifest.json");
+                assert_eq!(rollback_version, "0.1.0");
+            }
+            UpdateCheckResponse::NotAllowed { allowed } => {
+                panic!("expected allowed update response, got NotAllowed({allowed})");
+            }
         }
     }
 }

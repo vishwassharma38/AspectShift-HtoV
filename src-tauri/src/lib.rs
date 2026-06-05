@@ -12,7 +12,9 @@ compile_error!("dev-auth simulation paths must not be compiled in production bui
 
 use std::sync::Arc;
 
-use auth::auth_commands::{activate_license, clear_license, get_auth_state, refresh_license};
+use auth::auth_commands::{
+    activate_license, check_update_entitlement, clear_license, get_auth_state, refresh_license,
+};
 use auth::manager::auth_manager::AuthManager;
 use auth::providers::ActiveLicenseProvider;
 use dependency_manager::{AppDepsState, DependencyId, DepsManager};
@@ -121,6 +123,7 @@ pub fn run() {
             get_auth_state,
             activate_license,
             refresh_license,
+            check_update_entitlement,
             clear_license,
             video::allow_path_scope,
             video::get_first_video_in_folder,

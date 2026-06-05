@@ -1,7 +1,11 @@
 ﻿import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AuthState, ActivationResult } from "../types/backend";
+import type {
+  ActivationResult,
+  AuthState,
+  UpdateEntitlementCheckResult,
+} from "../types/backend";
 
 interface AuthStatusChangedPayload {
   authState: AuthState;
@@ -20,11 +24,15 @@ export function AuthPanel({ onAuthStateChange }: Props) {
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [licenseKey, setLicenseKey] = useState("");
   const [isActivating, setIsActivating] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] =
+    useState<UpdateEntitlementCheckResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleAuthState = useCallback(
     (state: AuthState) => {
       setAuthState(state);
+      setUpdateCheckResult(null);
       onAuthStateChange(state);
       if (state.status === "activating") {
         setIsActivating(true);
@@ -172,6 +180,83 @@ export function AuthPanel({ onAuthStateChange }: Props) {
   };
 
   const status = authState?.status ?? "not_activated";
+  const canCheckUpdates =
+    status === "valid" ||
+    status === "refresh_required" ||
+    status === "grace_period" ||
+    status === "offline_valid";
+
+  const handleUpdateCheck = async () => {
+    if (!canCheckUpdates || isCheckingUpdates) return;
+
+    setIsCheckingUpdates(true);
+    setUpdateCheckResult(null);
+
+    try {
+      const result = await invoke<UpdateEntitlementCheckResult>(
+        "check_update_entitlement",
+      );
+      setUpdateCheckResult(result);
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? (e as { message: string }).message
+          : String(e);
+      setUpdateCheckResult({ status: "server_error" });
+      setErrorMessage(msg);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
+  const updateStatusBanner = (() => {
+    if (!updateCheckResult) return null;
+
+    switch (updateCheckResult.status) {
+      case "update_available":
+        return (
+          <div className="banner banner-success mt-2">
+            Update available: {updateCheckResult.data?.latestVersion}
+          </div>
+        );
+      case "no_update":
+        return (
+          <div className="banner banner-success mt-2">No update available</div>
+        );
+      case "not_entitled":
+        return (
+          <div className="banner banner-warning mt-2">
+            Official updates are unavailable for this license.
+          </div>
+        );
+      case "channel_not_allowed":
+        return (
+          <div className="banner banner-warning mt-2">
+            Official updates are unavailable for this build channel.
+          </div>
+        );
+      case "auth_required":
+        return (
+          <div className="banner banner-warning mt-2">
+            Refresh your license before checking for updates.
+          </div>
+        );
+      case "offline":
+        return (
+          <div className="banner banner-warning mt-2">
+            Offline: unable to verify update entitlement.
+          </div>
+        );
+      case "server_error":
+        return (
+          <div className="banner banner-error mt-2">
+            Update check failed. Please try again.
+          </div>
+        );
+      default:
+        return null;
+    }
+  })();
 
   return (
     <div className="settings-group">
@@ -232,6 +317,26 @@ export function AuthPanel({ onAuthStateChange }: Props) {
           <button className="btn btn-ghost btn-sm mt-4" onClick={handleClear}>
             Deactivate
           </button>
+        </>
+      )}
+
+      {canCheckUpdates && (
+        <>
+          <div className="settings-group-title mt-4">Updates</div>
+          <button
+            className="btn btn-sm btn-full"
+            onClick={handleUpdateCheck}
+            disabled={isCheckingUpdates}
+          >
+            {isCheckingUpdates ? (
+              <>
+                <span className="spinner" /> Checking updates...
+              </>
+            ) : (
+              "Check for Updates"
+            )}
+          </button>
+          {updateStatusBanner}
         </>
       )}
 

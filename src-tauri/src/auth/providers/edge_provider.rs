@@ -1,4 +1,5 @@
 use crate::auth::auth_errors::AuthError;
+use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::auth::providers::r#trait::{
     ActivationResponse, EntitlementClaims, LicenseProvider, LicenseToken, RefreshResponse,
 };
@@ -20,6 +21,21 @@ impl LicenseProvider for EdgeLicenseProvider {
         _token: &'a LicenseToken,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>,
+    > {
+        Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
+    }
+
+    fn check_updates<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+        _current_version: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<UpdateEntitlementCheckResult, AuthError>,
+                > + Send
+                + 'a,
+        >,
     > {
         Box::pin(async { Err(AuthError::PhaseDNotImplemented) })
     }

@@ -4,6 +4,8 @@ use log::info;
 #[cfg(feature = "dev-auth")]
 use crate::auth::auth_errors::AuthError;
 #[cfg(feature = "dev-auth")]
+use crate::auth::auth_models::UpdateEntitlementCheckResult;
+#[cfg(feature = "dev-auth")]
 use crate::auth::providers::r#trait::{
     ActivationResponse, EntitlementClaims, LicenseProvider, LicenseToken, RefreshResponse,
 };
@@ -52,6 +54,21 @@ impl LicenseProvider for DevLicenseProvider {
             let existing_metadata = validate_jwt(token)?;
             simulate_refresh(&existing_metadata)
         })
+    }
+
+    fn check_updates<'a>(
+        &'a self,
+        _token: &'a LicenseToken,
+        _current_version: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<UpdateEntitlementCheckResult, AuthError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(UpdateEntitlementCheckResult::no_update()) })
     }
 
     fn validate<'a>(

@@ -13,7 +13,10 @@ use crate::auth::auth_events::{
     emit_activation_failed, emit_activation_success, emit_auth_state, emit_license_invalid,
     emit_refresh_required,
 };
-use crate::auth::auth_models::ActivationResult;
+use crate::auth::auth_models::{
+    ActivationResult, UpdateEntitlementCheckResult, UpdateEntitlementCheckStatus,
+};
+use crate::auth::config::auth_config::app_version;
 use crate::auth::machine::machine_id::get_machine_id;
 use crate::auth::outcome_mapping::map_auth_error;
 use crate::auth::providers::r#trait::LicenseProvider;
@@ -319,6 +322,144 @@ impl AuthManager {
 
     pub async fn refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
         self.refresh_internal(app, false).await
+    }
+
+    pub async fn check_update_entitlement(
+        &self,
+        app: &AppHandle,
+    ) -> UpdateEntitlementCheckResult {
+        let current_state = self.get_auth_state().await;
+
+        if matches!(current_state.status, AuthStatus::OfflineValid) {
+            return UpdateEntitlementCheckResult::offline();
+        }
+
+        if matches!(
+            current_state.status,
+            AuthStatus::NotActivated
+                | AuthStatus::Activating
+                | AuthStatus::Invalid
+                | AuthStatus::Expired
+                | AuthStatus::MachineMismatch
+                | AuthStatus::Corrupted
+        ) {
+            return UpdateEntitlementCheckResult::auth_required();
+        }
+
+        let mut status = current_state.status.clone();
+
+        if matches!(status, AuthStatus::GracePeriod | AuthStatus::RefreshRequired) {
+            match self.silent_refresh(app).await {
+                Ok(refreshed_state) => {
+                    status = refreshed_state.status;
+                }
+                Err(e) => {
+                    if is_transient_refresh_failure(&e) {
+                        return UpdateEntitlementCheckResult::offline();
+                    }
+
+                    return self.result_from_refresh_failure(&e);
+                }
+            }
+        }
+
+        if !status.allows_access() {
+            return UpdateEntitlementCheckResult::auth_required();
+        }
+
+        let current_version = app_version();
+        let mut retry_after_refresh = true;
+        let mut token = match load_jwt() {
+            Ok(Some(jwt)) => jwt,
+            Ok(None) => return UpdateEntitlementCheckResult::auth_required(),
+            Err(_) => return UpdateEntitlementCheckResult::server_error(),
+        };
+
+        loop {
+            match self.provider.check_updates(&token, current_version).await {
+                Ok(result) => match result.status {
+                    UpdateEntitlementCheckStatus::UpdateAvailable => return result,
+                    UpdateEntitlementCheckStatus::NoUpdate => {
+                        return UpdateEntitlementCheckResult::no_update();
+                    }
+                    UpdateEntitlementCheckStatus::NotEntitled => {
+                        return UpdateEntitlementCheckResult::not_entitled();
+                    }
+                    UpdateEntitlementCheckStatus::ChannelNotAllowed => {
+                        return UpdateEntitlementCheckResult::channel_not_allowed();
+                    }
+                    UpdateEntitlementCheckStatus::Offline => {
+                        return UpdateEntitlementCheckResult::offline();
+                    }
+                    UpdateEntitlementCheckStatus::ServerError => {
+                        return UpdateEntitlementCheckResult::server_error();
+                    }
+                    UpdateEntitlementCheckStatus::AuthRequired => {
+                        return UpdateEntitlementCheckResult::auth_required();
+                    }
+                }
+                Err(AuthError::TokenCorrupted) if retry_after_refresh && status.allows_access() => {
+                    retry_after_refresh = false;
+                    match self.silent_refresh(app).await {
+                        Ok(refreshed_state) => {
+                            status = refreshed_state.status;
+                            match load_jwt() {
+                                Ok(Some(jwt)) => {
+                                    token = jwt;
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    return UpdateEntitlementCheckResult::auth_required();
+                                }
+                                Err(_) => {
+                                    return UpdateEntitlementCheckResult::server_error();
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if is_transient_refresh_failure(&e) {
+                                return UpdateEntitlementCheckResult::offline();
+                            }
+
+                            return self.result_from_refresh_failure(&e);
+                        }
+                    }
+                }
+                Err(AuthError::TokenCorrupted) => {
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::LicenseRevoked) => {
+                    self.apply_error_state(&AuthError::LicenseRevoked).await;
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::LicenseRefunded) => {
+                    self.apply_error_state(&AuthError::LicenseRefunded).await;
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::MachineMismatch) => {
+                    self.apply_error_state(&AuthError::MachineMismatch).await;
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::LicenseExpired) => {
+                    self.apply_error_state(&AuthError::LicenseExpired).await;
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::NotActivated) => {
+                    self.apply_error_state(&AuthError::NotActivated).await;
+                    return UpdateEntitlementCheckResult::auth_required();
+                }
+                Err(AuthError::InvalidRequest) => {
+                    return UpdateEntitlementCheckResult::server_error();
+                }
+                Err(AuthError::ServerError) => {
+                    return UpdateEntitlementCheckResult::server_error();
+                }
+                Err(err) => {
+                    warn!("AuthManager: update entitlement check failed: {}", err);
+                    return UpdateEntitlementCheckResult::server_error();
+                }
+            }
+        }
     }
 
     async fn silent_refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
@@ -769,6 +910,18 @@ impl AuthManager {
     async fn apply_error_state(&self, error: &AuthError) {
         let mapped = map_auth_error(error);
         self.set_status(mapped.status).await;
+    }
+
+    fn result_from_refresh_failure(&self, error: &AuthError) -> UpdateEntitlementCheckResult {
+        match error {
+            AuthError::ServerError
+            | AuthError::InvalidRequest
+            | AuthError::StorageError(_)
+            | AuthError::MachineIdError(_)
+            | AuthError::JsonError(_)
+            | AuthError::TauriError(_) => UpdateEntitlementCheckResult::server_error(),
+            _ => UpdateEntitlementCheckResult::auth_required(),
+        }
     }
 
     async fn set_status(&self, status: AuthStatus) {

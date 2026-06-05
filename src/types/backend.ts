@@ -276,6 +276,20 @@ export type SubtitleLayoutMetrics = {
 
 export type TargetType = "aspectRatio" | "platform" | "custom";
 
+export type UpdateCheckAvailableResult = {
+	latestVersion: string,
+	manifestUrl: string,
+	rollbackVersion: string,
+};
+
+// POST /updates/check - error response body returned from the license server.
+export type UpdateCheckErrorCode = "INVALID_REQUEST" | "INVALID_TOKEN" | "LICENSE_REVOKED" | "LICENSE_REFUNDED" | "ACTIVATION_REVOKED" | "UPDATES_NOT_ENTITLED" | "CHANNEL_NOT_ALLOWED" | "SERVER_ERROR";
+
+export type UpdateCheckErrorResponse = {
+	ok: boolean,
+	error: UpdateCheckErrorCode,
+};
+
 // POST /updates/check - request body
 export type UpdateCheckRequest = {
 	// The current JWT - edge validates this before checking update entitlement.
@@ -296,6 +310,13 @@ export type UpdateEntitlement = {
 	// Whether this license is grandfathered for versions below a cutoff.
 	grandfatheredBelowVersion: string | null,
 };
+
+export type UpdateEntitlementCheckResult = {
+	status: UpdateEntitlementCheckStatus,
+	data?: UpdateCheckAvailableResult | null,
+};
+
+export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "not_entitled" | "channel_not_allowed" | "auth_required" | "offline" | "server_error";
 
 export type VideoEffectsSettings = {
 	blur: boolean | null,

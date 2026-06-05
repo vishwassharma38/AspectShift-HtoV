@@ -3,6 +3,7 @@ use tauri::{AppHandle, State};
 use crate::auth::auth_models::ActivationResult;
 use crate::auth::manager::auth_manager::AuthManager;
 use crate::auth::state::auth_state::AuthState;
+use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::video::types::StructuredError;
 
 #[tauri::command]
@@ -28,6 +29,14 @@ pub async fn refresh_license(
     manager: State<'_, AuthManager>,
 ) -> Result<AuthState, StructuredError> {
     manager.refresh(&app).await.map_err(StructuredError::from)
+}
+
+#[tauri::command]
+pub async fn check_update_entitlement(
+    app: AppHandle,
+    manager: State<'_, AuthManager>,
+) -> Result<UpdateEntitlementCheckResult, StructuredError> {
+    Ok(manager.check_update_entitlement(&app).await)
 }
 
 #[tauri::command]

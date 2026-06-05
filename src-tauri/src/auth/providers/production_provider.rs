@@ -4,11 +4,13 @@ use chrono::DateTime;
 use log::{info, warn};
 use reqwest::StatusCode;
 
+use crate::auth::auth_models::{UpdateCheckAvailableResult, UpdateEntitlementCheckResult};
 use crate::auth::auth_errors::AuthError;
 use crate::auth::config::auth_config::{app_version, current_build_channel, AuthApiConfig};
 use crate::auth::contracts::{
     ActivateErrorResponse, ActivateRequest, ActivateResponse, RefreshErrorResponse, RefreshRequest,
-    RefreshResponse as RefreshApiResponse,
+    RefreshResponse as RefreshApiResponse, UpdateCheckErrorCode, UpdateCheckErrorResponse,
+    UpdateCheckRequest, UpdateCheckResponse,
 };
 use crate::auth::machine::machine_id::get_machine_id;
 use crate::auth::providers::r#trait::{
@@ -212,6 +214,106 @@ impl ProductionLicenseProvider {
             }
         }
     }
+
+    async fn check_updates_remote(
+        &self,
+        token: &str,
+        current_version: &str,
+    ) -> Result<UpdateEntitlementCheckResult, AuthError> {
+        if token.trim().is_empty() {
+            return Err(AuthError::NotActivated);
+        }
+
+        if !is_strict_semver(current_version) {
+            warn!(
+                "ProductionAuthProvider: refusing update check for invalid local version {}",
+                current_version
+            );
+            return Ok(UpdateEntitlementCheckResult::server_error());
+        }
+
+        let request = UpdateCheckRequest {
+            token: token.trim().to_string(),
+            current_version: current_version.trim().to_string(),
+        };
+
+        info!(
+            "ProductionAuthProvider: starting update entitlement check against {}",
+            self.config.updates_url
+        );
+
+        let response = self.client.post(&self.config.updates_url).json(&request).send().await;
+
+        let response = match response {
+            Ok(response) => response,
+            Err(e) => {
+                warn!("ProductionAuthProvider: update check network error: {}", e);
+                return Ok(UpdateEntitlementCheckResult::offline());
+            }
+        };
+
+        let status = response.status();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                warn!(
+                    "ProductionAuthProvider: update check response read failed: {}",
+                    e
+                );
+                return Ok(UpdateEntitlementCheckResult::server_error());
+            }
+        };
+
+        if status.is_success() {
+            let payload = parse_update_check_response(&body)?;
+            match payload {
+                UpdateCheckResponse::Allowed {
+                    allowed,
+                    latest_version,
+                    manifest_url,
+                    rollback_version,
+                } if allowed => Ok(UpdateEntitlementCheckResult::update_available(
+                    UpdateCheckAvailableResult {
+                        latest_version,
+                        manifest_url,
+                        rollback_version,
+                    },
+                )),
+                UpdateCheckResponse::NotAllowed { allowed } if !allowed => {
+                    Ok(UpdateEntitlementCheckResult::no_update())
+                }
+                _ => Ok(UpdateEntitlementCheckResult::server_error()),
+            }
+        } else {
+            match parse_update_check_error(&body) {
+                Ok(err) if !err.ok => match err.error {
+                    UpdateCheckErrorCode::InvalidRequest => {
+                        Ok(UpdateEntitlementCheckResult::server_error())
+                    }
+                    UpdateCheckErrorCode::InvalidToken => Err(AuthError::TokenCorrupted),
+                    UpdateCheckErrorCode::LicenseRevoked => Err(AuthError::LicenseRevoked),
+                    UpdateCheckErrorCode::LicenseRefunded => Err(AuthError::LicenseRefunded),
+                    UpdateCheckErrorCode::ActivationRevoked => Err(AuthError::LicenseRevoked),
+                    UpdateCheckErrorCode::UpdatesNotEntitled => {
+                        Ok(UpdateEntitlementCheckResult::not_entitled())
+                    }
+                    UpdateCheckErrorCode::ChannelNotAllowed => {
+                        Ok(UpdateEntitlementCheckResult::channel_not_allowed())
+                    }
+                    UpdateCheckErrorCode::ServerError => Ok(UpdateEntitlementCheckResult::server_error()),
+                },
+                Ok(_) => Ok(UpdateEntitlementCheckResult::server_error()),
+                Err(parse_err) => {
+                    warn!(
+                        "ProductionAuthProvider: update check failed with HTTP {} and unparseable body",
+                        status
+                    );
+                    warn!("ProductionAuthProvider: update check body parse error: {}", parse_err);
+                    Ok(UpdateEntitlementCheckResult::server_error())
+                }
+            }
+        }
+    }
 }
 
 impl Default for ProductionLicenseProvider {
@@ -237,6 +339,21 @@ impl LicenseProvider for ProductionLicenseProvider {
         Box<dyn std::future::Future<Output = Result<RefreshResponse, AuthError>> + Send + 'a>,
     > {
         Box::pin(async move { self.refresh_remote(token).await })
+    }
+
+    fn check_updates<'a>(
+        &'a self,
+        token: &'a LicenseToken,
+        current_version: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<UpdateEntitlementCheckResult, AuthError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { self.check_updates_remote(token, current_version).await })
     }
 
     fn validate<'a>(
@@ -278,6 +395,18 @@ fn parse_refresh_response(body: &str) -> Result<RefreshApiResponse, AuthError> {
 fn parse_refresh_error(body: &str) -> Result<RefreshErrorResponse, AuthError> {
     serde_json::from_str::<RefreshErrorResponse>(body).map_err(|e| AuthError::RefreshFailed {
         reason: format!("Malformed refresh error payload: {}", e),
+    })
+}
+
+fn parse_update_check_response(body: &str) -> Result<UpdateCheckResponse, AuthError> {
+    serde_json::from_str::<UpdateCheckResponse>(body).map_err(|e| AuthError::RefreshFailed {
+        reason: format!("Malformed update check success payload: {}", e),
+    })
+}
+
+fn parse_update_check_error(body: &str) -> Result<UpdateCheckErrorResponse, AuthError> {
+    serde_json::from_str::<UpdateCheckErrorResponse>(body).map_err(|e| AuthError::RefreshFailed {
+        reason: format!("Malformed update check error payload: {}", e),
     })
 }
 
@@ -325,4 +454,19 @@ fn map_refresh_error(status: StatusCode, payload: RefreshErrorResponse) -> AuthE
             }
         }
     }
+}
+
+fn is_strict_semver(value: &str) -> bool {
+    let trimmed = value.trim();
+    let parts: Vec<&str> = trimmed.split('.').collect();
+
+    if parts.len() != 3 {
+        return false;
+    }
+
+    parts.into_iter().all(|part| {
+        !part.is_empty()
+            && part.chars().all(|c| c.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+    })
 }
