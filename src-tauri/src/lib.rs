@@ -17,7 +17,7 @@ use auth::auth_commands::{
 };
 use auth::manager::auth_manager::AuthManager;
 use auth::providers::ActiveLicenseProvider;
-use dependency_manager::{AppDepsState, DependencyId, DepsManager};
+use dependency_manager::{AppDepsState, DependencyId, DependencyScanSource, DepsManager};
 use dotenvy::dotenv;
 use download_manager::DownloadManager;
 use tauri::{AppHandle, Manager, State};
@@ -34,8 +34,13 @@ async fn get_dependency_state(
 async fn rescan_dependencies(
     app: AppHandle,
     manager: State<'_, DepsManager>,
+    scan_source: Option<DependencyScanSource>,
 ) -> Result<AppDepsState, StructuredError> {
-    manager.refresh(&app).await.map_err(StructuredError::from)
+    let source = scan_source.unwrap_or(DependencyScanSource::Manual);
+    manager
+        .refresh(&app, source)
+        .await
+        .map_err(StructuredError::from)
 }
 
 #[tauri::command]
@@ -49,10 +54,7 @@ async fn install_dependency(
         .install_dependency(&app, id)
         .await
         .map_err(StructuredError::from)?;
-    deps_manager
-        .refresh(&app)
-        .await
-        .map_err(StructuredError::from)
+    Ok(deps_manager.get_state().await)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -90,15 +92,10 @@ pub fn run() {
             let auth_manager_for_init = auth_manager.clone();
             app.manage(auth_manager);
 
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = deps_for_init.refresh(&app_handle).await {
-                    log::error!("Initial dependency refresh failed: {}", e);
-                }
-            });
-            let app_handle_for_auth = app.handle().clone();
+            deps_for_init.bootstrap(&app_handle);
             tauri::async_runtime::spawn(async move {
                 auth_manager_for_init
-                    .run_launch_validation(&app_handle_for_auth)
+                    .run_launch_validation(&app_handle)
                     .await;
             });
 
@@ -110,8 +107,16 @@ pub fn run() {
                 let app_handle = window.app_handle().clone();
                 if let Some(auth_manager) = window.app_handle().try_state::<AuthManager>() {
                     let manager = auth_manager.inner().clone();
+                    let app_handle_for_auth = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
-                        manager.trigger_reactive_refresh(&app_handle).await;
+                        manager.trigger_reactive_refresh(&app_handle_for_auth).await;
+                    });
+                }
+                if let Some(deps_manager) = window.app_handle().try_state::<DepsManager>() {
+                    let manager = deps_manager.inner().clone();
+                    let app_handle_for_deps = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        manager.maybe_run_weekly_scan(&app_handle_for_deps).await;
                     });
                 }
             }

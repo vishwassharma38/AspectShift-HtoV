@@ -49,9 +49,14 @@ export type AppConfig = {
 
 export type AppDepsState = {
 	scanStatus: DependencyScanStatus,
+	scanSource?: DependencyScanSource | null,
+	healthStatus?: DependencyHealthStatus,
 	dependencies: Partial<{ [key in DependencyId]: DependencyReport }>,
 	allReady: boolean,
 	lastUpdated: string,
+	lastFullScanAt?: string | null,
+	lastManualScanAt?: string | null,
+	lastWeeklyScanAt?: string | null,
 };
 
 export type AspectRatio = "ratio9x16" | "ratio1x1" | "ratio4x5" | "ratio2x3" | "ratio16x9";
@@ -114,6 +119,8 @@ export type CustomPreset = {
 	encoding: EncodingProfile,
 };
 
+export type DependencyHealthStatus = "unknown" | "healthy" | "degraded";
+
 export type DependencyId = "whisper_binary" | "whisper_model" | "ffmpeg" | "ffprobe";
 
 export type DependencyLifecycleStatus = "idle" | "checking" | "missing" | "downloading" | "verifying" | "extracting" | "installed" | "failed";
@@ -126,6 +133,7 @@ export type DependencyReport = {
 	path: string | null,
 	description: string,
 	lastChecked: string,
+	sha256Verified: boolean | null,
 	expectedVersion: string | null,
 	expectedSha256: string | null,
 	expectedFilename: string | null,
@@ -135,6 +143,8 @@ export type DependencyReport = {
 	lifecycle: DependencyLifecycleStatus,
 	lifecycleMessage: string | null,
 };
+
+export type DependencyScanSource = "first_launch" | "manual" | "weekly" | "post_download";
 
 export type DependencyScanStatus = "not_scanned" | "scanning" | "scan_completed" | "error";
 

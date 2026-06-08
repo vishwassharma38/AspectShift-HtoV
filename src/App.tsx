@@ -1,8 +1,16 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import {
+  getIdentifier,
+  getName,
+  getTauriVersion,
+  getVersion,
+} from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
 import type {
+  ActivationResult,
   AuthState,
   AppConfig,
   AppDepsState,
@@ -24,14 +32,27 @@ import type {
   PreviewRenderLayout,
   SelectionMetadata,
   TargetType,
+  UpdateEntitlementCheckResult,
   VideoEffectsSettings,
   VideoProgress,
   VideoTransform,
 } from "./types/backend";
 import "./App.css";
-import { AuthPanel } from "./components/AuthPanel";
 import { VideoCanvas } from "./components/VideoCanvas";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
+import { Header } from "./components/layout/Header";
+import { OnboardingModal } from "./components/modals/OnboardingModal";
+import { DependencyModal } from "./components/modals/DependencyModal";
+import { LicensePanelModal } from "./components/modals/LicensePanelModal";
+import { AboutDialog } from "./components/modals/AboutDialog";
+import { SettingsOverlay } from "./components/layout/SettingsOverlay";
+import { AppShellProvider, type LicenseIndicatorStatus } from "./context/AppShellContext";
+import {
+  getMissingDependencies,
+  hasRequiredDependencies,
+  SUBTITLE_CORE_DEPENDENCY_IDS,
+  type DependencyPromptMode,
+} from "./services/dependencyManager";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -135,6 +156,10 @@ const AUDIO_BITRATE_CANDIDATES = [
   "384k",
 ] as const;
 const DEFAULT_PREVIEW_VOLUME = 20;
+const ONBOARDING_STORAGE_KEY = "aspectshift.hasCompletedOnboarding";
+const SKIPPED_DEPENDENCY_PROMPT_KEY = "aspectshift.skippedDependencyPrompt";
+
+type SubtitleIntent = "exportSubtitles" | "burnSubtitles";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -380,7 +405,7 @@ export default function App() {
     return (
       (document.documentElement.getAttribute("data-theme") as
         | "day"
-        | "night") || "night"
+        | "night") || "day"
     );
   });
 
@@ -457,6 +482,32 @@ export default function App() {
     Partial<Record<DependencyId, number>>
   >({});
   const [authState, setAuthState] = useState<AuthState | null>(null);
+  const [licenseKeyInput, setLicenseKeyInput] = useState("");
+  const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
+  const [isActivatingLicense, setIsActivatingLicense] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(() => {
+    return localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true";
+  });
+  const [onboardingSuccess, setOnboardingSuccess] = useState(false);
+  const [skippedDependencyPrompt, setSkippedDependencyPrompt] = useState(() => {
+    return localStorage.getItem(SKIPPED_DEPENDENCY_PROMPT_KEY) === "true";
+  });
+  const [dependencyModalOpen, setDependencyModalOpen] = useState(false);
+  const [dependencyPromptMode, setDependencyPromptMode] =
+    useState<DependencyPromptMode>("startup");
+  const [pendingSubtitleIntent, setPendingSubtitleIntent] =
+    useState<SubtitleIntent | null>(null);
+  const [settingsOverlayOpen, setSettingsOverlayOpen] = useState(false);
+  const [licensePanelOpen, setLicensePanelOpen] = useState(false);
+  const [aboutDialogOpen, setAboutDialogOpen] = useState(false);
+  const [aboutMetadata, setAboutMetadata] = useState({
+    appName: "AspectShift-HtoV",
+    appVersion: "1.0.0",
+    tauriVersion: "2",
+    identifier: "com.softwarefromvish.aspectshift-htov",
+    buildMode: import.meta.env.MODE,
+  });
   const [volumeSliderActive, setVolumeSliderActive] = useState(false);
   const [volumeSliderInteracting, setVolumeSliderInteracting] = useState(false);
   const [volumeSliderHovering, setVolumeSliderHovering] = useState(false);
@@ -465,6 +516,25 @@ export default function App() {
     null,
   );
   const previewVolumeRef = useRef<HTMLDivElement | null>(null);
+  const isLicensed =
+    authState?.status === "valid" ||
+    authState?.status === "offline_valid" ||
+    authState?.status === "grace_period" ||
+    authState?.status === "refresh_required";
+  const licenseIndicatorStatus: LicenseIndicatorStatus =
+    authState?.status === "refresh_required"
+      ? "refresh_required"
+      : isLicensed
+        ? "active"
+        : "unlicensed";
+  const missingSubtitleDependencies = getMissingDependencies(
+    depsState,
+    SUBTITLE_CORE_DEPENDENCY_IDS,
+  );
+  const subtitleCoreReady = hasRequiredDependencies(
+    depsState,
+    SUBTITLE_CORE_DEPENDENCY_IDS,
+  );
 
   const cancelVolumeCollapse = useCallback(() => {
     if (volumeCollapseTimer.current) {
@@ -531,6 +601,360 @@ export default function App() {
     };
   }, [cancelVolumeCollapse]);
 
+  const handleAuthState = useCallback((state: AuthState) => {
+    setAuthState(state);
+    setAuthErrorMessage(null);
+    setIsActivatingLicense(state.status === "activating");
+  }, []);
+
+  const handleActivateLicense = useCallback(async () => {
+    if (!licenseKeyInput.trim() || isActivatingLicense) return;
+    setIsActivatingLicense(true);
+    setAuthErrorMessage(null);
+    try {
+      const result = await invoke<ActivationResult>("activate_license", {
+        licenseKey: licenseKeyInput.trim(),
+      });
+      if (!result.success) {
+        setAuthErrorMessage(
+          result.message ?? "Activation failed. Please check your license key.",
+        );
+        setIsActivatingLicense(false);
+        return;
+      }
+      handleAuthState(result.authState);
+      setOnboardingSuccess(true);
+      setLicenseKeyInput("");
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+      window.setTimeout(() => {
+        setHasCompletedOnboarding(true);
+        setOnboardingSuccess(false);
+      }, 650);
+    } catch (error) {
+      setAuthErrorMessage(errorMessage(error));
+      setIsActivatingLicense(false);
+    }
+  }, [handleAuthState, isActivatingLicense, licenseKeyInput]);
+
+  const handleRefreshLicense = useCallback(async () => {
+    try {
+      const state = await invoke<AuthState>("refresh_license");
+      handleAuthState(state);
+    } catch (error) {
+      setAuthErrorMessage(errorMessage(error));
+    }
+  }, [handleAuthState]);
+
+  const handleClearLicense = useCallback(async () => {
+    try {
+      await invoke("clear_license");
+      const state = await invoke<AuthState>("get_auth_state");
+      handleAuthState(state);
+      setLicenseKeyInput("");
+    } catch (error) {
+      setAuthErrorMessage(errorMessage(error));
+    }
+  }, [handleAuthState]);
+
+  const addLog = useCallback((msg: string, type: LogEntry["type"] = "info") => {
+    setLogs((prev) => {
+      const next = [...prev, { time: formatTime(new Date()), msg, type }];
+      return next.length > 200 ? next.slice(-200) : next;
+    });
+  }, []);
+
+  const handleRefreshApp = useCallback(async () => {
+    try {
+      const [config, dtos, targets, auth, deps, batch] = await Promise.all([
+        invoke<AppConfig>("get_config"),
+        invoke<VideoPresetDTO[]>("get_all_presets"),
+        invoke<AspectRatioTarget[]>("get_all_aspect_ratio_targets"),
+        invoke<AuthState>("get_auth_state"),
+        invoke<AppDepsState>("get_dependency_state"),
+        invoke<BatchProgress>("get_batch_status"),
+      ]);
+
+      handleAuthState(auth);
+      setDepsState(deps);
+      setAspectRatioTargets(targets);
+
+      const {
+        platformPresets: pp,
+        customPresets: cp,
+        displayPresets: dp,
+      } = normalizeDTOsToDisplayPresets(dtos);
+      setPlatformPresets(pp);
+      setCustomPresets(cp);
+      setDisplayPresets(dp);
+
+      if (config.lastOutputDir) setOutputDir(config.lastOutputDir);
+      if (config.enableSubfolders !== null) {
+        setEnableSubfolders(config.enableSubfolders ?? false);
+      }
+      setPreviewVolume(
+        Math.max(
+          0,
+          Math.min(100, config.previewVolume ?? DEFAULT_PREVIEW_VOLUME),
+        ),
+      );
+
+      if (config.logoPath || config.logoOpacity !== null) {
+        setEffectsState((prev) => ({
+          ...prev,
+          logo: config.logoPath
+            ? {
+                enabled: true,
+                path: config.logoPath,
+                opacity: config.logoOpacity ?? 1.0,
+                position:
+                  config.logoPosition ?? prev.logo?.position ?? "bottom_right",
+                gap: prev.logo?.gap ?? 20,
+                scale: prev.logo?.scale ?? 0.15,
+              }
+            : null,
+          blur: config.blur ?? prev.blur,
+          blurSigma: config.blurSigma ?? prev.blurSigma,
+        }));
+      }
+
+      const ratiosToRestore = [...config.selectedRatioIds];
+      const presetsToRestore = [...config.selectedPresetIds];
+      if (
+        config.lastPresetId &&
+        presetsToRestore.length === 0 &&
+        ratiosToRestore.length === 0
+      ) {
+        restorePresetRef.current = config.lastPresetId;
+      } else {
+        setSelectedRatios(ratiosToRestore);
+        setSelectedPresetIds(presetsToRestore);
+      }
+
+      const savedPaths = [
+        config.lastInputDir,
+        config.lastOutputDir,
+        config.logoPath,
+      ].filter((p): p is string => typeof p === "string" && p.length > 0);
+
+      for (const p of savedPaths) {
+        await invoke("allow_path_scope", { path: p }).catch(() => {});
+      }
+
+      if (batch.sessionId) {
+        setBatchProgress(batch);
+        setActiveSessionId(batch.sessionId);
+        activeSessionIdRef.current = batch.sessionId;
+        startRequestedRef.current = false;
+      } else {
+        setBatchProgress(null);
+        setActiveSessionId(null);
+        activeSessionIdRef.current = null;
+        startRequestedRef.current = false;
+      }
+
+      addLog("Application state refreshed.", "info");
+    } catch (error) {
+      addLog(`Refresh failed: ${errorMessage(error)}`, "error");
+    }
+  }, [addLog, handleAuthState]);
+
+  const handleInstallDependencies = useCallback(
+    async (forceAll = false) => {
+      const targetIds = forceAll
+        ? SUBTITLE_CORE_DEPENDENCY_IDS
+        : missingSubtitleDependencies;
+
+      if (targetIds.length === 0) {
+        setDepsInstallMessage("All subtitle dependencies are already ready.");
+        return;
+      }
+
+      try {
+        setDepsInstalling(true);
+        setDepsInstallMessage("Starting install...");
+        for (const dependencyId of targetIds) {
+          await invoke("install_dependency", { id: dependencyId });
+        }
+        const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
+          scan_source: "post_download",
+        });
+        setDepsState(refreshed);
+        setDepsInstallMessage("Dependency installation complete.");
+      } catch (error) {
+        setDepsInstallMessage(`Install failed: ${errorMessage(error)}`);
+      } finally {
+        setDepsInstalling(false);
+      }
+    },
+    [missingSubtitleDependencies],
+  );
+
+  const handleRescanDependencies = useCallback(() => {
+    invoke<AppDepsState>("rescan_dependencies", { scan_source: "manual" })
+      .then(setDepsState)
+      .catch((error) => {
+        setDepsInstallMessage(`Rescan failed: ${errorMessage(error)}`);
+      });
+  }, []);
+
+  const openDependencyPrompt = useCallback(
+    (mode: DependencyPromptMode, subtitleIntent: SubtitleIntent | null = null) => {
+      setDependencyPromptMode(mode);
+      setPendingSubtitleIntent(subtitleIntent);
+      setDependencyModalOpen(true);
+    },
+    [],
+  );
+
+  const handleSubtitleFeatureToggle = useCallback(
+    (intent: SubtitleIntent, enabled: boolean) => {
+      if (
+        enabled &&
+        !subtitleCoreReady &&
+        missingSubtitleDependencies.length > 0
+      ) {
+        openDependencyPrompt(
+          intent === "exportSubtitles" ? "subtitle_export" : "subtitle_burn",
+          intent,
+        );
+        return;
+      }
+      setEffectsState((current) => ({ ...current, [intent]: enabled }));
+    },
+    [missingSubtitleDependencies.length, openDependencyPrompt, subtitleCoreReady],
+  );
+
+  const handleCheckForUpdates = useCallback(async () => {
+    if (!isLicensed || isCheckingUpdates) return;
+
+    setIsCheckingUpdates(true);
+    setAuthErrorMessage(null);
+    try {
+      const entitlement = await invoke<UpdateEntitlementCheckResult>(
+        "check_update_entitlement",
+      );
+      if (entitlement.status !== "update_available" && entitlement.status !== "no_update") {
+        setAuthErrorMessage(
+          `Update check unavailable: ${entitlement.status.replace(/_/g, " ")}`,
+        );
+        return;
+      }
+
+      const availableUpdate = await check();
+      if (availableUpdate) {
+        addLog(
+          `Update available: ${availableUpdate.version} is ready to download.`,
+          "success",
+        );
+      } else {
+        addLog("No application update is currently available.", "info");
+      }
+    } catch (error) {
+      setAuthErrorMessage(errorMessage(error));
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }, [isCheckingUpdates, isLicensed]);
+
+  useEffect(() => {
+    Promise.all([getName(), getVersion(), getTauriVersion(), getIdentifier()])
+      .then(([appName, appVersion, tauriVersion, identifier]) => {
+        setAboutMetadata({
+          appName,
+          appVersion,
+          tauriVersion,
+          identifier,
+          buildMode: import.meta.env.MODE,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const setup = async () => {
+      try {
+        const state = await invoke<AuthState>("get_auth_state");
+        handleAuthState(state);
+      } catch (error) {
+        setAuthErrorMessage(errorMessage(error));
+      }
+    };
+
+    const unsubs: Array<() => void> = [];
+    let disposed = false;
+
+    setup();
+
+    const bind = async () => {
+      const channels = [
+        "auth://status-changed",
+        "auth://activation-success",
+        "auth://refresh-required",
+        "auth://license-invalid",
+      ] as const;
+
+      for (const channel of channels) {
+        const unsub = await listen<{ authState: AuthState }>(channel, (event) => {
+          if (!disposed) handleAuthState(event.payload.authState);
+        });
+        if (disposed) unsub();
+        else unsubs.push(unsub);
+      }
+
+      const failureUnsub = await listen<{ reason: string }>(
+        "auth://activation-failed",
+        (event) => {
+          if (disposed) return;
+          setIsActivatingLicense(false);
+          setOnboardingSuccess(false);
+          setAuthErrorMessage(event.payload.reason);
+        },
+      );
+      if (disposed) failureUnsub();
+      else unsubs.push(failureUnsub);
+    };
+
+    bind();
+
+    return () => {
+      disposed = true;
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [handleAuthState]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        handleRefreshApp();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleRefreshApp]);
+
+  useEffect(() => {
+    if (!hasCompletedOnboarding) return;
+    if (subtitleCoreReady) return;
+    if (skippedDependencyPrompt) return;
+    if (dependencyModalOpen) return;
+    openDependencyPrompt("startup");
+  }, [
+    dependencyModalOpen,
+    hasCompletedOnboarding,
+    openDependencyPrompt,
+    skippedDependencyPrompt,
+    subtitleCoreReady,
+  ]);
+
+  useEffect(() => {
+    if (!subtitleCoreReady || !pendingSubtitleIntent) return;
+    setEffectsState((current) => ({ ...current, [pendingSubtitleIntent]: true }));
+    setPendingSubtitleIntent(null);
+    setDependencyModalOpen(false);
+  }, [pendingSubtitleIntent, subtitleCoreReady]);
+
   // Derived: last active selection drives preview ratio.
   // Fallback to existing checked items so restored config stays in sync.
   const activeSelection = useMemo<SelectionItem | null>(() => {
@@ -546,7 +970,6 @@ export default function App() {
     () => transformToUiFlips(effectsState.transform),
     [effectsState.transform],
   );
-
   const previewLayoutRequest = useMemo<PreviewLayoutRequest | null>(() => {
     if (!orientation) return null;
     const sourceAspectRatio =
@@ -644,9 +1067,6 @@ export default function App() {
     loadPresets();
     loadAspectRatioTargets();
     invoke<AppDepsState>("get_dependency_state")
-      .then(setDepsState)
-      .catch(() => {});
-    invoke<AppDepsState>("rescan_dependencies")
       .then(setDepsState)
       .catch(() => {});
     invoke<BatchProgress>("get_batch_status")
@@ -946,13 +1366,6 @@ export default function App() {
   }, [logs]);
 
   // ── Helpers ────────────────────────────────────────────────
-  const addLog = useCallback((msg: string, type: LogEntry["type"] = "info") => {
-    setLogs((prev) => {
-      const next = [...prev, { time: formatTime(new Date()), msg, type }];
-      return next.length > 200 ? next.slice(-200) : next;
-    });
-  }, []);
-
   const loadPresets = async () => {
     try {
       const dtos = await invoke<VideoPresetDTO[]>("get_all_presets");
@@ -1208,6 +1621,16 @@ export default function App() {
       addLog("Select at least one preset or ratio", "warn");
       return;
     }
+    if (!subtitleCoreReady && effectsState.exportSubtitles) {
+      openDependencyPrompt("subtitle_export", "exportSubtitles");
+      addLog("Subtitle export is waiting on dependency installation.", "warn");
+      return;
+    }
+    if (!subtitleCoreReady && effectsState.burnSubtitles) {
+      openDependencyPrompt("subtitle_burn", "burnSubtitles");
+      addLog("Subtitle burn-in is waiting on dependency installation.", "warn");
+      return;
+    }
 
     const normalizedEffects = deepClone(normalizeEffects(effectsState));
 
@@ -1450,98 +1873,48 @@ export default function App() {
     [canNavigatePreview, activePreviewIndex, previewCandidates],
   );
 
-  const handleInstallDependencies = async () => {
-    try {
-      setDepsInstalling(true);
-      setDepsInstallMessage("Starting install...");
-      await invoke<AppDepsState>("install_dependency", { id: "whisper_binary" });
-      await invoke<AppDepsState>("install_dependency", { id: "whisper_model" });
-      const refreshed = await invoke<AppDepsState>("rescan_dependencies");
-      setDepsState(refreshed);
-      setDepsInstallMessage("Ready");
-      setDepsInstalling(false);
-    } catch (e) {
-      setDepsInstallMessage(`Install failed: ${errorMessage(e)}`);
-      setDepsInstalling(false);
-    }
-  };
+  const headerStatusBadge =
+    batchProgress &&
+    batchProgress.percentage >= 100 &&
+    batchProgress.status === "completed"
+      ? { tone: "success" as const, label: "Complete" }
+      : batchProgress && batchProgress.status === "failed"
+        ? { tone: "error" as const, label: "Errors" }
+        : null;
 
   return (
+    <AppShellProvider
+      value={{
+        authState,
+        isLicensed,
+        licenseIndicatorStatus,
+        depsState,
+        subtitleCoreReady,
+        missingSubtitleDependencies,
+      }}
+    >
     <div className="app-shell" data-auth-status={authState?.status ?? "not_activated"}>
-      <header className="topbar">
-        <div className="topbar-logo">
-          <img src="logo.png" alt="AspectShift" className="topbar-logo-img" />
-          <div>
-            <div className="topbar-title">AspectShift</div>
-            <div className="topbar-subtitle">HTOV Converter</div>
-          </div>
-        </div>
-        <div className="topbar-right">
-          {batchProgress &&
-            batchProgress.percentage >= 100 &&
-            batchProgress.status === "completed" && (
-              <span className="badge badge-success">✓ Complete</span>
-            )}
-          {batchProgress && batchProgress.status === "failed" && (
-            <span className="badge badge-error">⚠ Errors</span>
-          )}
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme((t) => (t === "day" ? "night" : "day"))}
-          >
-            {theme === "night" ? "☀" : "☾"}
-          </button>
-        </div>
-      </header>
+      <Header
+        theme={theme}
+        onToggleTheme={() =>
+          setTheme((current) => (current === "day" ? "night" : "day"))
+        }
+        onOpenSettings={() => setSettingsOverlayOpen(true)}
+        onOpenLicensePanel={() => setLicensePanelOpen(true)}
+        onOpenAbout={() => setAboutDialogOpen(true)}
+        onRefresh={handleRefreshApp}
+        onCheckForUpdates={handleCheckForUpdates}
+        isCheckingUpdates={isCheckingUpdates}
+        isLicensed={isLicensed}
+        statusBadge={headerStatusBadge}
+      />
 
-      <section
-        className="sidebar-section"
-        style={{ margin: "12px", marginBottom: 0 }}
+      <div
+        className={`app-content-stage${settingsOverlayOpen ? " view-transitioning" : ""}`}
       >
-        <div className="sidebar-section-title">Subtitle Dependencies</div>
-        <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
-          Whisper binary:{" "}
-          {depsState?.dependencies?.whisper_binary?.status.status ?? "checking"}{" "}
-          | Model:{" "}
-          {depsState?.dependencies?.whisper_model?.status.status ?? "checking"}
-        </div>
-        <div className="flex gap-6">
-          <button
-            className="btn btn-sm"
-            disabled={depsInstalling}
-            onClick={handleInstallDependencies}
-          >
-            {depsInstalling ? "Installing..." : "Download Required Components"}
-          </button>
-          <button
-            className="btn btn-sm btn-ghost"
-            onClick={() =>
-              invoke<AppDepsState>("rescan_dependencies")
-                .then(setDepsState)
-                .catch(() => {})
-            }
-          >
-            Rescan
-          </button>
-        </div>
-        {depsInstallMessage && (
-          <div className="text-xs text-muted" style={{ marginTop: 8 }}>
-            {depsInstallMessage}
-          </div>
-        )}
-        {Object.keys(depsProgressById).length > 0 && (
-          <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-            Download progress tracked
-          </div>
-        )}
-      </section>
-
-      <div className="main-content">
+        <div className="main-content">
         {/* ── Left Sidebar ───────────────────────────────────── */}
         <aside className="sidebar">
-          <div className="sidebar-section">
-            <AuthPanel onAuthStateChange={setAuthState} />
-          </div>
           <div className="sidebar-section">
             <div className="sidebar-section-title">Import Files</div>
             <div
@@ -1700,10 +2073,7 @@ export default function App() {
                     <Toggle
                       checked={!!effectsState.exportSubtitles}
                       onChange={(v) =>
-                        setEffectsState({
-                          ...effectsState,
-                          exportSubtitles: v,
-                        })
+                        handleSubtitleFeatureToggle("exportSubtitles", v)
                       }
                     />
                   </div>
@@ -1712,10 +2082,7 @@ export default function App() {
                     <Toggle
                       checked={!!effectsState.burnSubtitles}
                       onChange={(v) =>
-                        setEffectsState({
-                          ...effectsState,
-                          burnSubtitles: v,
-                        })
+                        handleSubtitleFeatureToggle("burnSubtitles", v)
                       }
                     />
                   </div>
@@ -2613,7 +2980,73 @@ export default function App() {
             </div>
           )}
         </aside>
+        </div>
+
+        <SettingsOverlay
+          open={settingsOverlayOpen}
+          depsState={depsState}
+          depsInstalling={depsInstalling}
+          depsInstallMessage={depsInstallMessage}
+          aboutMetadata={aboutMetadata}
+          onClose={() => setSettingsOverlayOpen(false)}
+          onInstallMissing={() => handleInstallDependencies(false)}
+          onForceReinstall={() => handleInstallDependencies(true)}
+          onRescan={handleRescanDependencies}
+          missingSubtitleDependencies={missingSubtitleDependencies}
+        />
       </div>
+
+      <OnboardingModal
+        open={!hasCompletedOnboarding}
+        licenseKey={licenseKeyInput}
+        onLicenseKeyChange={setLicenseKeyInput}
+        onVerify={handleActivateLicense}
+        onBypass={() => {
+          localStorage.setItem(ONBOARDING_STORAGE_KEY, "true")
+          setHasCompletedOnboarding(true)
+          setOnboardingSuccess(false)
+        }}
+        isVerifying={isActivatingLicense}
+        verificationError={authErrorMessage}
+        verificationSuccess={onboardingSuccess}
+      />
+
+      <DependencyModal
+        open={dependencyModalOpen}
+        mode={dependencyPromptMode}
+        missingDependencies={missingSubtitleDependencies}
+        installMessage={depsInstallMessage}
+        progressById={depsProgressById}
+        isInstalling={depsInstalling}
+        canDefer={dependencyPromptMode === "startup"}
+        onInstall={() => handleInstallDependencies(false)}
+        onDefer={() => {
+          localStorage.setItem(SKIPPED_DEPENDENCY_PROMPT_KEY, "true")
+          setSkippedDependencyPrompt(true)
+          setDependencyModalOpen(false)
+        }}
+        onClose={() => setDependencyModalOpen(false)}
+      />
+
+      <LicensePanelModal
+        open={licensePanelOpen}
+        authState={authState}
+        licenseKey={licenseKeyInput}
+        errorMessage={authErrorMessage}
+        isActivating={isActivatingLicense}
+        onLicenseKeyChange={setLicenseKeyInput}
+        onActivate={handleActivateLicense}
+        onRefresh={handleRefreshLicense}
+        onClear={handleClearLicense}
+        onClose={() => setLicensePanelOpen(false)}
+      />
+
+      <AboutDialog
+        open={aboutDialogOpen}
+        onClose={() => setAboutDialogOpen(false)}
+        metadata={aboutMetadata}
+      />
     </div>
+    </AppShellProvider>
   );
 }

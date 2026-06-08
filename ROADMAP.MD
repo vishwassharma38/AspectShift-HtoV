@@ -59,8 +59,8 @@ The desktop application operates without network dependency at startup by loadin
 
 ### In Progress 🚧
 
-- D7.7 — Update Entitlement Integration
-- D7.8 — OSS vs Commercial Behavior
+- D7.7 — Update Entitlement Integration ✅ Completed
+- D7.8 — OSS vs Commercial Behavior [[SKIPPED]]
 - D7.9 — End-to-End Desktop Validation
 
 ### Planned ⬜
@@ -237,7 +237,7 @@ AuthManager mirrors the existing DepsManager lifecycle pattern for internal cons
 Desktop primary. Server shared for `/activate` and `/refresh` contract.
 
 **Current Status**
-🚧 In Progress — D7.1–D7.6 complete; D7.7–D7.9 pending.
+🚧 In Progress — D7.1–D7.7 complete; D7.8 ([SKIPPED]) –D7.9 pending.
 
 ---
 
@@ -260,8 +260,8 @@ Desktop primary. Server shared for `/activate` and `/refresh` contract.
 | D7.4     | `/activate` integration              | Both    | ✅ Completed |
 | D7.5     | Silent `/refresh` integration        | Both    | ✅ Completed |
 | D7.6     | Grace-state lifecycle                | Server  | ✅ Completed |
-| D7.7     | Update entitlement integration       | Both    | ⬜ Planned   |
-| D7.8     | OSS vs commercial behavior           | Desktop | ⬜ Planned   |
+| D7.7     | Update entitlement integration       | Both    | ✅ Completed |
+| D7.8     | OSS vs commercial behavior           | Desktop | [SKIPPED]    |
 | D7.9     | End-to-end desktop validation matrix | Desktop | ⬜ Planned   |
 
 ---
@@ -321,7 +321,7 @@ Shared — Server owns entitlement evaluation; Desktop owns updater request cons
 D7.7 (update entitlement integration), D3 `/updates/check` endpoint, valid JWT in `auth://state`.
 
 **Status**
-⬜ Planned
+✅ Completed
 
 ---
 
@@ -415,7 +415,7 @@ Desktop primary. Server may provide a telemetry ingestion endpoint.
 OSS vs commercial build flag (D7.8), E4 release pipeline (channel identification).
 
 **Status**
-⬜ Planned
+[SKIPPED]
 
 ---
 
@@ -453,7 +453,7 @@ Desktop primary (build configuration, installer signing, OSS flag behavior). Ser
 D7.8 (OSS vs commercial behavior), E4 (release pipeline), E1 (update entitlement enforcement), code-signing setup.
 
 **Status**
-⬜ Planned
+[SKIPPED]
 
 ---
 

@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use log::error;
 use serde::{Deserialize, Serialize};
@@ -23,6 +27,7 @@ pub struct DependencyInstallEvent {
 pub struct DownloadManager {
     manifest_service: ManifestService,
     client: reqwest::Client,
+    active_installs: Arc<AtomicUsize>,
 }
 
 impl DownloadManager {
@@ -30,7 +35,12 @@ impl DownloadManager {
         Self {
             manifest_service: ManifestService::new(),
             client: reqwest::Client::new(),
+            active_installs: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.active_installs.load(Ordering::SeqCst) > 0
     }
 
     pub async fn install_dependency(
@@ -38,6 +48,7 @@ impl DownloadManager {
         app: &AppHandle,
         id: DependencyId,
     ) -> Result<(), VideoError> {
+        let _guard = ActiveInstallGuard::new(self.active_installs.clone());
         self.emit(
             app,
             id.clone(),
@@ -229,6 +240,23 @@ impl DownloadManager {
             message,
         };
         let _ = app.emit("deps://install-progress", event);
+    }
+}
+
+struct ActiveInstallGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl ActiveInstallGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self { counter }
+    }
+}
+
+impl Drop for ActiveInstallGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

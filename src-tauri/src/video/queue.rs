@@ -107,4 +107,8 @@ impl BatchManager {
         }; // lock released here
         token.cancel();
     }
+
+    pub async fn is_processing(&self) -> bool {
+        self.state.lock().await.status == BatchStatus::Processing
+    }
 }
