@@ -1,0 +1,52 @@
+[
+  {
+    "id": "ratio9x16",
+    "ratio": "ratio9x16",
+    "encoding": {
+      "crf": 18,
+      "qualityPreset": "high",
+      "speedPreset": "slow",
+      "audioBitrate": "192k"
+    }
+  },
+  {
+    "id": "ratio1x1",
+    "ratio": "ratio1x1",
+    "encoding": {
+      "crf": 18,
+      "qualityPreset": "high",
+      "speedPreset": "slow",
+      "audioBitrate": "192k"
+    }
+  },
+  {
+    "id": "ratio4x5",
+    "ratio": "ratio4x5",
+    "encoding": {
+      "crf": 18,
+      "qualityPreset": "high",
+      "speedPreset": "slow",
+      "audioBitrate": "192k"
+    }
+  },
+  {
+    "id": "ratio2x3",
+    "ratio": "ratio2x3",
+    "encoding": {
+      "crf": 19,
+      "qualityPreset": "high",
+      "speedPreset": "slow",
+      "audioBitrate": "192k"
+    }
+  },
+  {
+    "id": "ratio16x9",
+    "ratio": "ratio16x9",
+    "encoding": {
+      "crf": 18,
+      "qualityPreset": "high",
+      "speedPreset": "slow",
+      "audioBitrate": "320k"
+    }
+  }
+]
