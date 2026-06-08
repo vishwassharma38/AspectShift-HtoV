@@ -64,6 +64,4 @@ jobs:
             The release is gated by the existing /api/updates/check entitlement flow in the app.
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
-          uploadWorkflowArtifacts: false
+          includeUpdaterJson: true

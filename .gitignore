@@ -26,6 +26,10 @@ src-tauri/resources/*
 !src-tauri/resources/presets/platform_specific_presets.json
 !src-tauri/resources/presets/aspect_ratio_presets.json
 
+!src-tauri/bin/
+!src-tauri/bin/ffmpeg-x86_64-pc-windows-msvc.exe
+!src-tauri/bin/ffprobe-x86_64-pc-windows-msvc.exe
+
 # ===========================
 # Environment & Secrets
 # ===========================
