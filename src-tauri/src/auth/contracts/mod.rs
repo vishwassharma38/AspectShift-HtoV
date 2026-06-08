@@ -11,7 +11,7 @@ pub struct ActivateRequest {
     pub license_key: String,
     /// Machine fingerprint from `get_machine_id()`.
     pub machine_id: String,
-    /// App version string, e.g. "1.0.0".
+    /// App version string, e.g. "0.1.0".
     pub app_version: String,
     /// Build channel: "stable" | "beta" | "nightly" | "oss".
     pub channel: BuildChannel,

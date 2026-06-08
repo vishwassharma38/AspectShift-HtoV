@@ -8,6 +8,7 @@
     "opener:default",
     "dialog:default",
     "shell:default",
+    "updater:allow-check",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

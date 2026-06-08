@@ -503,7 +503,7 @@ export default function App() {
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false);
   const [aboutMetadata, setAboutMetadata] = useState({
     appName: "AspectShift-HtoV",
-    appVersion: "1.0.0",
+    appVersion: "0.1.0",
     tauriVersion: "2",
     identifier: "com.softwarefromvish.aspectshift-htov",
     buildMode: import.meta.env.MODE,

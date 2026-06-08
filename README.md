@@ -1,6 +1,11 @@
-# Tauri + React + Typescript
+# AspectShift-HtoV
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+This repo now includes an updater-signing readiness audit for Phase E1:
+
+- [E1_UPDATER_SIGNING_AUDIT.md](./E1_UPDATER_SIGNING_AUDIT.md)
+- [E2_RELEASE_PIPELINE_AUDIT.md](./E2_RELEASE_PIPELINE_AUDIT.md)
+
+Updater signing is separate from the JWT licensing keypair used by the auth backend. The updater private key must stay out of the repository and in CI secrets or secure local storage.
 
 ## Recommended IDE Setup
 

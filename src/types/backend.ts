@@ -12,7 +12,7 @@ export type ActivateRequest = {
 	licenseKey: string,
 	// Machine fingerprint from `get_machine_id()`.
 	machineId: string,
-	// App version string, e.g. "1.0.0".
+	// App version string, e.g. "0.1.0".
 	appVersion: string,
 	// Build channel: "stable" | "beta" | "nightly" | "oss".
 	channel: BuildChannel,
