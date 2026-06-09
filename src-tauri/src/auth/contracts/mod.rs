@@ -11,7 +11,7 @@ pub struct ActivateRequest {
     pub license_key: String,
     /// Machine fingerprint from `get_machine_id()`.
     pub machine_id: String,
-    /// App version string, e.g. "0.1.0".
+    /// App version string, e.g. "0.1.1".
     pub app_version: String,
     /// Build channel: "stable" | "beta" | "nightly" | "oss".
     pub channel: BuildChannel,
@@ -186,7 +186,7 @@ mod tests {
             "allowed": true,
             "latestVersion": "0.2.0",
             "manifestUrl": "https://example.com/manifest.json",
-            "rollbackVersion": "0.1.0"
+            "rollbackVersion": "0.1.1"
         }"#;
 
         let parsed: UpdateCheckResponse =
@@ -202,7 +202,7 @@ mod tests {
                 assert!(allowed);
                 assert_eq!(latest_version, "0.2.0");
                 assert_eq!(manifest_url, "https://example.com/manifest.json");
-                assert_eq!(rollback_version, "0.1.0");
+                assert_eq!(rollback_version, "0.1.1");
             }
             UpdateCheckResponse::NotAllowed { allowed } => {
                 panic!("expected allowed update response, got NotAllowed({allowed})");

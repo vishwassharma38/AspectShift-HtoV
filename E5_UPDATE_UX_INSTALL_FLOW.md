@@ -95,12 +95,12 @@ No broader updater or process permissions were added.
 
 ## Manual Test Plan
 
-### Level 1: Current `0.1.0` validation
+### Level 1: Current `0.1.1` validation
 
 Use this path with the current release state:
 
-- server latest = `0.1.0`
-- installed app version = `0.1.0`
+- server latest = `0.1.1`
+- installed app version = `0.1.1`
 - click `Check for Updates`
 - the app shows `Already on the latest version`
 - `tauri-plugin-updater.check()` is not called
@@ -112,7 +112,7 @@ Use this path once a signed `0.1.1` release exists:
 
 - publish signed `0.1.1` updater artifacts
 - set server latest = `0.1.1`
-- installed app version = `0.1.0`
+- installed app version = `0.1.1`
 - click `Check for Updates`
 - `/api/updates/check` returns `update_available`
 - `tauri-plugin-updater.check()` detects the update

@@ -418,7 +418,6 @@ html.theme-transitioning *::after {
   margin-bottom: var(--space-md);
 }
 
-/* ── Center Panel ─────────────────────────────────────────── */
 .center-panel {
   flex: 1;
   display: flex;

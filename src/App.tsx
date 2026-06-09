@@ -117,6 +117,14 @@ interface UpdateFlowState {
   errorMessage: string | null;
 }
 
+interface AppNotification {
+  tone: UpdateNoticeTone;
+  message: string;
+  progressPercent: number | null;
+  progressLabel: string | null;
+  sticky: boolean;
+}
+
 // ── Constants ────────────────────────────────────────────────
 const DEFAULT_ENCODING: EncodingProfile = {
   crf: 18,
@@ -522,6 +530,9 @@ export default function App() {
   const [isActivatingLicense, setIsActivatingLicense] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [notification, setNotification] = useState<AppNotification | null>(
+    null,
+  );
   const [updateFlow, setUpdateFlow] = useState<UpdateFlowState>({
     stage: "idle",
     tone: "info",
@@ -733,100 +744,43 @@ export default function App() {
     });
   }, []);
 
-  const handleRefreshApp = useCallback(async () => {
-    try {
-      const [config, dtos, targets, auth, deps, batch] = await Promise.all([
-        invoke<AppConfig>("get_config"),
-        invoke<VideoPresetDTO[]>("get_all_presets"),
-        invoke<AspectRatioTarget[]>("get_all_aspect_ratio_targets"),
-        invoke<AuthState>("get_auth_state"),
-        invoke<AppDepsState>("get_dependency_state"),
-        invoke<BatchProgress>("get_batch_status"),
-      ]);
+  useEffect(() => {
+    if (!notification) return;
+    if (notification.sticky) return;
+    const timer = window.setTimeout(() => {
+      setNotification(null);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [notification]);
 
-      handleAuthState(auth);
-      setDepsState(deps);
-      setAspectRatioTargets(targets);
+  const showNotification = useCallback(
+    (
+      next: {
+        tone: UpdateNoticeTone;
+        message: string;
+        progressPercent?: number | null;
+        progressLabel?: string | null;
+      },
+      options?: { sticky?: boolean },
+    ) => {
+      setNotification({
+        tone: next.tone,
+        message: next.message,
+        progressPercent: next.progressPercent ?? null,
+        progressLabel: next.progressLabel ?? null,
+        sticky: !!options?.sticky,
+      });
+    },
+    [],
+  );
 
-      const {
-        platformPresets: pp,
-        customPresets: cp,
-        displayPresets: dp,
-      } = normalizeDTOsToDisplayPresets(dtos);
-      setPlatformPresets(pp);
-      setCustomPresets(cp);
-      setDisplayPresets(dp);
+  const clearNotification = useCallback(() => {
+    setNotification(null);
+  }, []);
 
-      if (config.lastOutputDir) setOutputDir(config.lastOutputDir);
-      if (config.enableSubfolders !== null) {
-        setEnableSubfolders(config.enableSubfolders ?? false);
-      }
-      setPreviewVolume(
-        Math.max(
-          0,
-          Math.min(100, config.previewVolume ?? DEFAULT_PREVIEW_VOLUME),
-        ),
-      );
-
-      if (config.logoPath || config.logoOpacity !== null) {
-        setEffectsState((prev) => ({
-          ...prev,
-          logo: config.logoPath
-            ? {
-                enabled: true,
-                path: config.logoPath,
-                opacity: config.logoOpacity ?? 1.0,
-                position:
-                  config.logoPosition ?? prev.logo?.position ?? "bottom_right",
-                gap: prev.logo?.gap ?? 20,
-                scale: prev.logo?.scale ?? 0.15,
-              }
-            : null,
-          blur: config.blur ?? prev.blur,
-          blurSigma: config.blurSigma ?? prev.blurSigma,
-        }));
-      }
-
-      const ratiosToRestore = [...config.selectedRatioIds];
-      const presetsToRestore = [...config.selectedPresetIds];
-      if (
-        config.lastPresetId &&
-        presetsToRestore.length === 0 &&
-        ratiosToRestore.length === 0
-      ) {
-        restorePresetRef.current = config.lastPresetId;
-      } else {
-        setSelectedRatios(ratiosToRestore);
-        setSelectedPresetIds(presetsToRestore);
-      }
-
-      const savedPaths = [
-        config.lastInputDir,
-        config.lastOutputDir,
-        config.logoPath,
-      ].filter((p): p is string => typeof p === "string" && p.length > 0);
-
-      for (const p of savedPaths) {
-        await invoke("allow_path_scope", { path: p }).catch(() => {});
-      }
-
-      if (batch.sessionId) {
-        setBatchProgress(batch);
-        setActiveSessionId(batch.sessionId);
-        activeSessionIdRef.current = batch.sessionId;
-        startRequestedRef.current = false;
-      } else {
-        setBatchProgress(null);
-        setActiveSessionId(null);
-        activeSessionIdRef.current = null;
-        startRequestedRef.current = false;
-      }
-
-      addLog("Application state refreshed.", "info");
-    } catch (error) {
-      addLog(`Refresh failed: ${errorMessage(error)}`, "error");
-    }
-  }, [addLog, handleAuthState]);
+  const handleRefreshApp = useCallback(() => {
+    window.location.reload();
+  }, []);
 
   const handleInstallDependencies = useCallback(
     async (forceAll = false) => {
@@ -1631,6 +1585,7 @@ export default function App() {
     try {
       await invoke("reset_config");
       setOutputDir("");
+      clearNotification();
       setLastInputDir(null);
       setEffectsState(DEFAULT_EFFECTS);
       setEncodingState(DEFAULT_ENCODING);
@@ -1922,6 +1877,7 @@ export default function App() {
       });
       if (sel && typeof sel === "string") {
         setOutputDir(sel);
+        clearNotification();
         await invoke("allow_path_scope", { path: sel }).catch(() => {});
         addLog(`Output directory: ${sel}`, "info");
       }
@@ -2034,26 +1990,46 @@ export default function App() {
 
   const handleStartBatch = async () => {
     if (!outputDir) {
+      showNotification({
+        message: "Please select an output directory.",
+        tone: "warning",
+      });
       addLog("Please select an output directory", "warn");
       return;
     }
     const files =
       batchFiles.length > 0 ? batchFiles : inputFile ? [inputFile] : [];
     if (files.length === 0) {
+      showNotification({
+        message: "Please select at least one file.",
+        tone: "warning",
+      });
       addLog("Please select at least one file", "warn");
       return;
     }
     if (selectedRatios.length === 0 && selectedPresetIds.length === 0) {
+      showNotification({
+        message: "Select at least one preset or ratio.",
+        tone: "warning",
+      });
       addLog("Select at least one preset or ratio", "warn");
       return;
     }
     if (!subtitleCoreReady && effectsState.exportSubtitles) {
       openDependencyPrompt("subtitle_export", "exportSubtitles");
+      showNotification({
+        message: "Subtitle export is waiting on dependency installation.",
+        tone: "warning",
+      });
       addLog("Subtitle export is waiting on dependency installation.", "warn");
       return;
     }
     if (!subtitleCoreReady && effectsState.burnSubtitles) {
       openDependencyPrompt("subtitle_burn", "burnSubtitles");
+      showNotification({
+        message: "Subtitle burn-in is waiting on dependency installation.",
+        tone: "warning",
+      });
       addLog("Subtitle burn-in is waiting on dependency installation.", "warn");
       return;
     }
@@ -2138,6 +2114,10 @@ export default function App() {
       );
     } catch (e) {
       startRequestedRef.current = false;
+      showNotification({
+        message: `Batch start failed: ${errorMessage(e)}`,
+        tone: "error",
+      });
       addLog(`Batch start failed: ${errorMessage(e)}`, "error");
     }
   };
@@ -2307,6 +2287,25 @@ export default function App() {
       : batchProgress && batchProgress.status === "failed"
         ? { tone: "error" as const, label: "Errors" }
         : null;
+  const activeBanner =
+    updateFlow.stage !== "idle"
+      ? {
+          tone: updateFlow.tone,
+          message:
+            updateFlow.progressLabel ?? updateFlow.message,
+          progressPercent: updateFlow.progressPercent,
+          progressStage:
+            updateFlow.stage === "downloading" ||
+            updateFlow.stage === "installing",
+        }
+      : notification
+        ? {
+            tone: notification.tone,
+            message: notification.progressLabel ?? notification.message,
+            progressPercent: notification.progressPercent,
+            progressStage: notification.progressPercent !== null,
+          }
+        : null;
 
   return (
     <AppShellProvider
@@ -2334,15 +2333,13 @@ export default function App() {
         isLicensed={isLicensed}
         statusBadge={headerStatusBadge}
       />
-      {updateFlow.stage !== "idle" && (
-        <div className={`update-notice update-notice-${updateFlow.tone}`}>
+      {activeBanner && (
+        <div className={`update-notice update-notice-${activeBanner.tone}`}>
           <span className="update-notice-dot" aria-hidden="true" />
           <span className="update-notice-text">
-            {updateFlow.progressLabel ?? updateFlow.message}
-            {updateFlow.progressPercent !== null &&
-            (updateFlow.stage === "downloading" ||
-              updateFlow.stage === "installing")
-              ? ` (${updateFlow.progressPercent}%)`
+            {activeBanner.message}
+            {activeBanner.progressPercent !== null && activeBanner.progressStage
+              ? ` (${activeBanner.progressPercent}%)`
               : ""}
           </span>
         </div>

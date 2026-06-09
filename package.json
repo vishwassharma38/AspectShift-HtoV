@@ -1,7 +1,7 @@
 {
   "name": "aspectshift-htov",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "gen:types": "node -e \"require('fs').mkdirSync('src/types',{ recursive: true })\" && cargo run --manifest-path src-tauri/Cargo.toml --bin export_types",
