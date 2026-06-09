@@ -9,6 +9,9 @@
     "dialog:default",
     "shell:default",
     "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

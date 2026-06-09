@@ -272,14 +272,25 @@ impl ProductionLicenseProvider {
                     latest_version,
                     manifest_url,
                     rollback_version,
-                } if allowed => Ok(UpdateEntitlementCheckResult::update_available(
-                    UpdateCheckAvailableResult {
+                } if allowed => {
+                    info!(
+                        "ProductionAuthProvider: update entitlement response allowed=true latest_version={} manifest_url={} rollback_version={}",
                         latest_version,
                         manifest_url,
-                        rollback_version,
-                    },
-                )),
+                        rollback_version
+                    );
+                    Ok(UpdateEntitlementCheckResult::update_available(
+                        UpdateCheckAvailableResult {
+                            latest_version,
+                            manifest_url,
+                            rollback_version,
+                        },
+                    ))
+                }
                 UpdateCheckResponse::NotAllowed { allowed } if !allowed => {
+                    info!(
+                        "ProductionAuthProvider: update entitlement response allowed=false"
+                    );
                     Ok(UpdateEntitlementCheckResult::no_update())
                 }
                 _ => Ok(UpdateEntitlementCheckResult::server_error()),

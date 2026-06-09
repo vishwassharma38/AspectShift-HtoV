@@ -377,25 +377,31 @@ impl AuthManager {
 
         loop {
             match self.provider.check_updates(&token, current_version).await {
-                Ok(result) => match result.status {
-                    UpdateEntitlementCheckStatus::UpdateAvailable => return result,
-                    UpdateEntitlementCheckStatus::NoUpdate => {
-                        return UpdateEntitlementCheckResult::no_update();
-                    }
-                    UpdateEntitlementCheckStatus::NotEntitled => {
-                        return UpdateEntitlementCheckResult::not_entitled();
-                    }
-                    UpdateEntitlementCheckStatus::ChannelNotAllowed => {
-                        return UpdateEntitlementCheckResult::channel_not_allowed();
-                    }
-                    UpdateEntitlementCheckStatus::Offline => {
-                        return UpdateEntitlementCheckResult::offline();
-                    }
-                    UpdateEntitlementCheckStatus::ServerError => {
-                        return UpdateEntitlementCheckResult::server_error();
-                    }
-                    UpdateEntitlementCheckStatus::AuthRequired => {
-                        return UpdateEntitlementCheckResult::auth_required();
+                Ok(result) => {
+                    info!(
+                        "AuthManager: update entitlement response status={:?}",
+                        result.status
+                    );
+                    match result.status {
+                        UpdateEntitlementCheckStatus::UpdateAvailable => return result,
+                        UpdateEntitlementCheckStatus::NoUpdate => {
+                            return UpdateEntitlementCheckResult::no_update();
+                        }
+                        UpdateEntitlementCheckStatus::NotEntitled => {
+                            return UpdateEntitlementCheckResult::not_entitled();
+                        }
+                        UpdateEntitlementCheckStatus::ChannelNotAllowed => {
+                            return UpdateEntitlementCheckResult::channel_not_allowed();
+                        }
+                        UpdateEntitlementCheckStatus::Offline => {
+                            return UpdateEntitlementCheckResult::offline();
+                        }
+                        UpdateEntitlementCheckStatus::ServerError => {
+                            return UpdateEntitlementCheckResult::server_error();
+                        }
+                        UpdateEntitlementCheckStatus::AuthRequired => {
+                            return UpdateEntitlementCheckResult::auth_required();
+                        }
                     }
                 }
                 Err(AuthError::TokenCorrupted) if retry_after_refresh && status.allows_access() => {

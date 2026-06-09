@@ -3,6 +3,10 @@ import {
   getDependencyPromptCopy,
   type DependencyPromptMode,
 } from "../../services/dependencyManager";
+import {
+  PRESENCE_TRANSITION_MS,
+  usePresenceTransition,
+} from "./usePresenceTransition";
 
 interface DependencyModalProps {
   open: boolean;
@@ -101,7 +105,12 @@ export function DependencyModal({
   onDefer,
   onClose,
 }: DependencyModalProps) {
-  if (!open) return null;
+  const { isRendered, isClosing } = usePresenceTransition(
+    open,
+    PRESENCE_TRANSITION_MS,
+  );
+
+  if (!isRendered) return null;
 
   const copy = getDependencyPromptCopy(mode);
 
@@ -118,9 +127,14 @@ export function DependencyModal({
   const isModeWarn = mode !== "startup";
 
   return (
-    <div className="modal-backdrop dm-backdrop">
+    <div
+      className="modal-backdrop modal-summon-backdrop dm-backdrop"
+      data-state={isClosing ? "closing" : "open"}
+      onClick={onClose}
+    >
       <div
-        className="modal-panel dm-panel"
+        className="modal-panel modal-summon-panel dm-panel"
+        data-state={isClosing ? "closing" : "open"}
         role="dialog"
         aria-modal="true"
         aria-label={copy.title}

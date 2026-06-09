@@ -1,4 +1,8 @@
 import type { AuthState, AuthStatus } from "../../types/backend";
+import {
+  PRESENCE_TRANSITION_MS,
+  usePresenceTransition,
+} from "./usePresenceTransition";
 
 interface LicensePanelModalProps {
   open: boolean;
@@ -92,7 +96,12 @@ export function LicensePanelModal({
   onClear,
   onClose,
 }: LicensePanelModalProps) {
-  if (!open) return null;
+  const { isRendered, isClosing } = usePresenceTransition(
+    open,
+    PRESENCE_TRANSITION_MS,
+  );
+
+  if (!isRendered) return null;
 
   const rawStatus = authState?.status ?? "not_activated";
   const statusCfg = getStatusConfig(rawStatus);
@@ -116,9 +125,14 @@ export function LicensePanelModal({
     : null;
 
   return (
-    <div className="modal-backdrop lp-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop modal-summon-backdrop lp-backdrop"
+      data-state={isClosing ? "closing" : "open"}
+      onClick={onClose}
+    >
       <div
-        className="modal-panel lp-panel"
+        className="modal-panel modal-summon-panel lp-panel"
+        data-state={isClosing ? "closing" : "open"}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

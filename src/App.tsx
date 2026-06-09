@@ -8,7 +8,12 @@ import {
 } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { check } from "@tauri-apps/plugin-updater";
+import {
+  check,
+  type DownloadEvent,
+  type Update,
+} from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type {
   ActivationResult,
   AuthState,
@@ -45,6 +50,10 @@ import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { DependencyModal } from "./components/modals/DependencyModal";
 import { LicensePanelModal } from "./components/modals/LicensePanelModal";
 import { AboutDialog } from "./components/modals/AboutDialog";
+import {
+  UpdateModal,
+  type UpdateFlowStage,
+} from "./components/modals/UpdateModal";
 import { SettingsOverlay } from "./components/layout/SettingsOverlay";
 import { AppShellProvider, type LicenseIndicatorStatus } from "./context/AppShellContext";
 import {
@@ -92,6 +101,20 @@ interface DependencyInstallEvent {
     | "failed";
   progressPercent: number | null;
   message: string | null;
+}
+
+type UpdateNoticeTone = "success" | "warning" | "error" | "info";
+
+interface UpdateFlowState {
+  stage: UpdateFlowStage;
+  tone: UpdateNoticeTone;
+  message: string;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  releaseNotes: string | null;
+  progressPercent: number | null;
+  progressLabel: string | null;
+  errorMessage: string | null;
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -297,6 +320,18 @@ function audioBitrateLabel(value: string): string {
   return `${kbps}k (Max)`;
 }
 
+function formatUpdateProgressBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatUpdateVersion(version: string | null | undefined): string {
+  if (!version) return "n/a";
+  return version.startsWith("v") ? version : `v${version}`;
+}
+
 /**
  * Resolves JobStatus (which can be a string or {error: string}) to a stable
  * string key safe for CSS class names and display logic.
@@ -486,6 +521,18 @@ export default function App() {
   const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
   const [isActivatingLicense, setIsActivatingLicense] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [updateFlow, setUpdateFlow] = useState<UpdateFlowState>({
+    stage: "idle",
+    tone: "info",
+    message: "",
+    currentVersion: null,
+    latestVersion: null,
+    releaseNotes: null,
+    progressPercent: null,
+    progressLabel: null,
+    errorMessage: null,
+  });
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(() => {
     return localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true";
   });
@@ -535,6 +582,29 @@ export default function App() {
     depsState,
     SUBTITLE_CORE_DEPENDENCY_IDS,
   );
+  const updateRef = useRef<Update | null>(null);
+  const isUpdateFlowBusy =
+    updateFlow.stage === "checking_entitlement" ||
+    updateFlow.stage === "checking_updater" ||
+    updateFlow.stage === "downloading" ||
+    updateFlow.stage === "installing";
+
+  const closePendingUpdate = useCallback(async () => {
+    const pendingUpdate = updateRef.current;
+    updateRef.current = null;
+    if (!pendingUpdate) return;
+    try {
+      await pendingUpdate.close();
+    } catch {
+      // The resource is best-effort cleanup only.
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      void closePendingUpdate();
+    };
+  }, [closePendingUpdate]);
 
   const cancelVolumeCollapse = useCallback(() => {
     if (volumeCollapseTimer.current) {
@@ -825,36 +895,392 @@ export default function App() {
   );
 
   const handleCheckForUpdates = useCallback(async () => {
-    if (!isLicensed || isCheckingUpdates) return;
+    if (!isLicensed) return;
 
+    if (
+      updateFlow.stage === "update_available" ||
+      updateFlow.stage === "installed_restart_required"
+    ) {
+      setUpdateDialogOpen(true);
+      return;
+    }
+
+    if (isCheckingUpdates || isUpdateFlowBusy) return;
+
+    await closePendingUpdate();
+
+    const currentVersion = aboutMetadata.appVersion;
     setIsCheckingUpdates(true);
-    setAuthErrorMessage(null);
+    setUpdateDialogOpen(false);
+    setUpdateFlow({
+      stage: "checking_entitlement",
+      tone: "info",
+      message: "Checking entitlement...",
+      currentVersion,
+      latestVersion: null,
+      releaseNotes: null,
+      progressPercent: null,
+      progressLabel: "Checking entitlement...",
+      errorMessage: null,
+    });
+    addLog("[Updater] Entitlement check started", "info");
+
     try {
       const entitlement = await invoke<UpdateEntitlementCheckResult>(
         "check_update_entitlement",
       );
-      if (entitlement.status !== "update_available" && entitlement.status !== "no_update") {
-        setAuthErrorMessage(
-          `Update check unavailable: ${entitlement.status.replace(/_/g, " ")}`,
+
+      addLog(
+        `Update entitlement response: status=${entitlement.status}${
+          entitlement.data
+            ? `, latestVersion=${entitlement.data.latestVersion}`
+            : ""
+        }`,
+        entitlement.status === "update_available" ? "success" : "info",
+      );
+
+      if (entitlement.status === "no_update") {
+        setUpdateFlow({
+          stage: "already_latest",
+          tone: "success",
+          message: "Already on the latest version.",
+          currentVersion,
+          latestVersion: currentVersion,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        addLog("[Updater] Already on the latest version", "info");
+        return;
+      }
+
+      if (entitlement.status === "not_entitled") {
+        setUpdateFlow({
+          stage: "entitlement_denied",
+          tone: "warning",
+          message: "Update entitlement denied.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        addLog("[Updater] Update entitlement denied", "warn");
+        return;
+      }
+
+      if (entitlement.status === "channel_not_allowed") {
+        setUpdateFlow({
+          stage: "entitlement_denied",
+          tone: "warning",
+          message: "Update entitlement denied for this release channel.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        addLog("[Updater] Update entitlement denied for this release channel", "warn");
+        return;
+      }
+
+      if (entitlement.status === "auth_required") {
+        setUpdateFlow({
+          stage: "entitlement_denied",
+          tone: "error",
+          message: "Please sign in again before checking for updates.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        addLog("[Updater] Update entitlement requires re-authentication", "warn");
+        return;
+      }
+
+      if (entitlement.status === "offline") {
+        setUpdateFlow({
+          stage: "failed",
+          tone: "warning",
+          message: "Offline: unable to verify update entitlement.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: "Offline: unable to verify update entitlement.",
+        });
+        addLog("[Updater] Update entitlement check failed: offline", "warn");
+        return;
+      }
+
+      if (entitlement.status === "server_error") {
+        setUpdateFlow({
+          stage: "failed",
+          tone: "error",
+          message: "Update check failed. Please try again later.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: "Update check failed. Please try again later.",
+        });
+        addLog("[Updater] Update entitlement check failed: server error", "error");
+        return;
+      }
+
+      if (entitlement.status !== "update_available") {
+        setUpdateFlow({
+          stage: "failed",
+          tone: "error",
+          message: "Update check failed.",
+          currentVersion,
+          latestVersion: entitlement.data?.latestVersion ?? null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: "Update check failed.",
+        });
+        addLog(
+          `[Updater] Unexpected entitlement status: ${entitlement.status}`,
+          "error",
         );
         return;
       }
 
+      addLog("[Updater] Entitlement approved; checking updater manifest", "success");
+      setUpdateFlow({
+        stage: "checking_updater",
+        tone: "info",
+        message: "Entitlement approved. Checking signed updater manifest...",
+        currentVersion,
+        latestVersion: entitlement.data?.latestVersion ?? null,
+        releaseNotes: null,
+        progressPercent: null,
+        progressLabel: "Checking updater manifest...",
+        errorMessage: null,
+      });
+
       const availableUpdate = await check();
-      if (availableUpdate) {
-        addLog(
-          `Update available: ${availableUpdate.version} is ready to download.`,
-          "success",
-        );
-      } else {
-        addLog("No application update is currently available.", "info");
+      if (!availableUpdate) {
+        setUpdateFlow({
+          stage: "already_latest",
+          tone: "success",
+          message: "Already on the latest version.",
+          currentVersion,
+          latestVersion: currentVersion,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        addLog("[Updater] Updater reported no available update", "info");
+        return;
       }
+
+      updateRef.current = availableUpdate;
+      const updateVersion = availableUpdate.version ?? entitlement.data?.latestVersion ?? null;
+      const updateCurrentVersion =
+        availableUpdate.currentVersion ?? currentVersion ?? null;
+
+      setUpdateFlow({
+        stage: "update_available",
+        tone: "success",
+        message: `Update available: ${formatUpdateVersion(updateVersion)}.`,
+        currentVersion: updateCurrentVersion,
+        latestVersion: updateVersion,
+        releaseNotes: availableUpdate.body ?? null,
+        progressPercent: null,
+        progressLabel: null,
+        errorMessage: null,
+      });
+      setUpdateDialogOpen(true);
+      addLog(
+        `[Updater] Update detected: current=${updateCurrentVersion ?? "unknown"}, latest=${updateVersion ?? "unknown"}`,
+        "success",
+      );
     } catch (error) {
-      setAuthErrorMessage(errorMessage(error));
+      await closePendingUpdate();
+      setUpdateFlow({
+        stage: "failed",
+        tone: "error",
+        message: "Updater check failed.",
+        currentVersion,
+        latestVersion: null,
+        releaseNotes: null,
+        progressPercent: null,
+        progressLabel: null,
+        errorMessage: errorMessage(error),
+      });
+      addLog(
+        `[Updater] Update flow failed during check: ${errorMessage(error)}`,
+        "error",
+      );
     } finally {
       setIsCheckingUpdates(false);
     }
-  }, [isCheckingUpdates, isLicensed]);
+  }, [
+    aboutMetadata.appVersion,
+    addLog,
+    closePendingUpdate,
+    isCheckingUpdates,
+    isLicensed,
+    isUpdateFlowBusy,
+    updateFlow.stage,
+  ]);
+
+  const handleDownloadAndInstallUpdate = useCallback(async () => {
+    const pendingUpdate = updateRef.current;
+    if (!pendingUpdate || updateFlow.stage !== "update_available") return;
+
+    setUpdateDialogOpen(true);
+    setUpdateFlow((current) => ({
+      ...current,
+      stage: "downloading",
+      tone: "info",
+      message: "Downloading update...",
+      progressPercent: 0,
+      progressLabel: "Downloading update...",
+      errorMessage: null,
+    }));
+
+    let downloadedBytes = 0;
+    let totalBytes: number | null = null;
+
+    const applyDownloadProgress = (event: DownloadEvent) => {
+      if (event.event === "Started") {
+        totalBytes = event.data.contentLength ?? null;
+        downloadedBytes = 0;
+        setUpdateFlow((current) => ({
+          ...current,
+          stage: "downloading",
+          tone: "info",
+          message: "Downloading update...",
+          progressPercent: 0,
+          progressLabel:
+            totalBytes !== null
+              ? `Downloading 0 of ${formatUpdateProgressBytes(totalBytes)}`
+              : "Downloading update...",
+          errorMessage: null,
+        }));
+        return;
+      }
+
+      if (event.event === "Progress") {
+        downloadedBytes += event.data.chunkLength;
+        const progressPercent =
+          totalBytes && totalBytes > 0
+            ? Math.min(99, Math.round((downloadedBytes / totalBytes) * 100))
+            : null;
+        setUpdateFlow((current) => ({
+          ...current,
+          stage: "downloading",
+          tone: "info",
+          message: "Downloading update...",
+          progressPercent,
+          progressLabel:
+            totalBytes !== null
+              ? `Downloading ${formatUpdateProgressBytes(downloadedBytes)} of ${formatUpdateProgressBytes(totalBytes)}`
+              : `Downloading ${formatUpdateProgressBytes(downloadedBytes)}`,
+          errorMessage: null,
+        }));
+        return;
+      }
+
+      setUpdateFlow((current) => ({
+        ...current,
+        stage: "installing",
+        tone: "info",
+        message: "Installing update...",
+        progressPercent: 100,
+        progressLabel: "Installing update...",
+        errorMessage: null,
+      }));
+    };
+
+    try {
+      addLog(
+        `[Updater] Download started for version ${pendingUpdate.version}`,
+        "info",
+      );
+      await pendingUpdate.download(applyDownloadProgress);
+
+      setUpdateFlow((current) => ({
+        ...current,
+        stage: "installing",
+        tone: "info",
+        message: "Installing update...",
+        progressPercent: 100,
+        progressLabel: "Installing update...",
+        errorMessage: null,
+      }));
+
+      addLog("[Updater] Download complete; installing update", "info");
+      await pendingUpdate.install();
+      await closePendingUpdate();
+
+      const installedVersion = pendingUpdate.version ?? updateFlow.latestVersion;
+      setUpdateFlow({
+        stage: "installed_restart_required",
+        tone: "success",
+        message: `Update ${formatUpdateVersion(installedVersion)} installed. Restart required.`,
+        currentVersion: pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
+        latestVersion: installedVersion ?? null,
+        releaseNotes: pendingUpdate.body ?? null,
+        progressPercent: 100,
+        progressLabel: "Installed successfully",
+        errorMessage: null,
+      });
+      setUpdateDialogOpen(true);
+      addLog("[Updater] Update installed successfully; restart required", "success");
+    } catch (error) {
+      await closePendingUpdate();
+      setUpdateFlow({
+        stage: "failed",
+        tone: "error",
+        message: "Update installation failed.",
+        currentVersion: pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
+        latestVersion: pendingUpdate.version ?? updateFlow.latestVersion ?? null,
+        releaseNotes: pendingUpdate.body ?? null,
+        progressPercent: null,
+        progressLabel: null,
+        errorMessage: errorMessage(error),
+      });
+      setUpdateDialogOpen(true);
+      addLog(
+        `[Updater] Update installation failed: ${errorMessage(error)}`,
+        "error",
+      );
+    }
+  }, [aboutMetadata.appVersion, addLog, closePendingUpdate, updateFlow.latestVersion, updateFlow.stage]);
+
+  const handleRestartNow = useCallback(async () => {
+    if (updateFlow.stage !== "installed_restart_required") return;
+    try {
+      addLog("[Updater] Restart requested by user", "info");
+      await relaunch();
+    } catch (error) {
+      setUpdateFlow((current) => ({
+        ...current,
+        stage: "failed",
+        tone: "error",
+        message: "Restart failed. Please restart the app manually.",
+        errorMessage: errorMessage(error),
+      }));
+      setUpdateDialogOpen(true);
+      addLog(`[Updater] Restart failed: ${errorMessage(error)}`, "error");
+    }
+  }, [addLog, updateFlow.stage]);
+
+  const handleDismissUpdateDialog = useCallback(() => {
+    setUpdateDialogOpen(false);
+  }, []);
 
   useEffect(() => {
     Promise.all([getName(), getVersion(), getTauriVersion(), getIdentifier()])
@@ -1907,6 +2333,32 @@ export default function App() {
         isCheckingUpdates={isCheckingUpdates}
         isLicensed={isLicensed}
         statusBadge={headerStatusBadge}
+      />
+      {updateFlow.stage !== "idle" && (
+        <div className={`update-notice update-notice-${updateFlow.tone}`}>
+          <span className="update-notice-dot" aria-hidden="true" />
+          <span className="update-notice-text">
+            {updateFlow.progressLabel ?? updateFlow.message}
+            {updateFlow.progressPercent !== null &&
+            (updateFlow.stage === "downloading" ||
+              updateFlow.stage === "installing")
+              ? ` (${updateFlow.progressPercent}%)`
+              : ""}
+          </span>
+        </div>
+      )}
+      <UpdateModal
+        open={updateDialogOpen}
+        stage={updateFlow.stage}
+        currentVersion={updateFlow.currentVersion}
+        latestVersion={updateFlow.latestVersion}
+        releaseNotes={updateFlow.releaseNotes}
+        progressPercent={updateFlow.progressPercent}
+        progressLabel={updateFlow.progressLabel}
+        errorMessage={updateFlow.errorMessage}
+        onDownloadAndInstall={handleDownloadAndInstallUpdate}
+        onRestartNow={handleRestartNow}
+        onLater={handleDismissUpdateDialog}
       />
 
       <div

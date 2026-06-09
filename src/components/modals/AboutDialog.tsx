@@ -1,3 +1,8 @@
+import {
+  PRESENCE_TRANSITION_MS,
+  usePresenceTransition,
+} from "./usePresenceTransition";
+
 interface AboutDialogProps {
   open: boolean;
   onClose: () => void;
@@ -17,15 +22,25 @@ const BUILD_MODE_COLORS: Record<string, string> = {
 };
 
 export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
-  if (!open) return null;
+  const { isRendered, isClosing } = usePresenceTransition(
+    open,
+    PRESENCE_TRANSITION_MS,
+  );
+
+  if (!isRendered) return null;
 
   const buildColor =
     BUILD_MODE_COLORS[metadata.buildMode?.toLowerCase()] ?? "var(--text-muted)";
 
   return (
-    <div className="modal-backdrop abt-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop modal-summon-backdrop abt-backdrop"
+      data-state={isClosing ? "closing" : "open"}
+      onClick={onClose}
+    >
       <div
-        className="modal-panel abt-panel"
+        className="modal-panel modal-summon-panel abt-panel"
+        data-state={isClosing ? "closing" : "open"}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
