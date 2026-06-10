@@ -123,8 +123,9 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
 
       <style>{`
         .abt-backdrop {
-          backdrop-filter: blur(6px);
-          -webkit-backdrop-filter: blur(6px);
+          background: var(--glass-backdrop-bg);
+          backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
+          -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
         }
 
         /* ── Panel ─────────────────────────────────────────── */

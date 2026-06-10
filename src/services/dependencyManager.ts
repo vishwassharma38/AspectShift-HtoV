@@ -101,3 +101,12 @@ export function getDependencyPromptCopy(mode: DependencyPromptMode) {
     ctaLabel: "Download Now",
   };
 }
+
+export function formatDependencyProgressPercent(progress: number) {
+  if (!Number.isFinite(progress)) return "0.00";
+
+  const clamped = Math.max(0, Math.min(100, progress));
+  const truncated = Math.floor(clamped * 100) / 100;
+
+  return truncated.toFixed(2);
+}

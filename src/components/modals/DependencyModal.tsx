@@ -1,8 +1,13 @@
 import type { DependencyId } from "../../types/backend";
 import {
   getDependencyPromptCopy,
+  formatDependencyProgressPercent,
   type DependencyPromptMode,
 } from "../../services/dependencyManager";
+import {
+  ONBOARDING_MOTION_EASING,
+  ONBOARDING_PANEL_TRANSITION_MS,
+} from "./onboardingMotion";
 import {
   PRESENCE_TRANSITION_MS,
   usePresenceTransition,
@@ -12,16 +17,14 @@ interface DependencyModalProps {
   open: boolean;
   mode: DependencyPromptMode;
   missingDependencies: DependencyId[];
-  installMessage: string | null;
   progressById: Partial<Record<DependencyId, number>>;
   isInstalling: boolean;
-  canDefer: boolean;
   onInstall: () => void;
-  onDefer: () => void;
   onClose: () => void;
+  embedded?: boolean;
+  onExited?: () => void;
 }
 
-// Icon that maps to each known dependency type
 function DepIcon({ id }: { id: string }) {
   const lower = id.toLowerCase();
   if (lower.includes("ffmpeg"))
@@ -74,7 +77,6 @@ function DepIcon({ id }: { id: string }) {
         />
       </svg>
     );
-  // Generic package icon
   return (
     <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
       <path
@@ -97,236 +99,204 @@ export function DependencyModal({
   open,
   mode,
   missingDependencies,
-  installMessage,
   progressById,
   isInstalling,
-  canDefer,
   onInstall,
-  onDefer,
   onClose,
+  embedded = false,
+  onExited,
 }: DependencyModalProps) {
   const { isRendered, isClosing } = usePresenceTransition(
     open,
     PRESENCE_TRANSITION_MS,
+    onExited,
   );
 
   if (!isRendered) return null;
 
   const copy = getDependencyPromptCopy(mode);
-
-  const totalProgress =
-    missingDependencies.length > 0
-      ? Math.round(
-          missingDependencies.reduce(
-            (sum, id) => sum + (progressById[id] ?? 0),
-            0,
-          ) / missingDependencies.length,
-        )
-      : 0;
-
   const isModeWarn = mode !== "startup";
 
-  return (
+  const panel = (
     <div
-      className="modal-backdrop modal-summon-backdrop dm-backdrop"
+      className="modal-panel modal-summon-panel dm-panel"
       data-state={isClosing ? "closing" : "open"}
-      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={copy.title}
+      onClick={(e) => e.stopPropagation()}
     >
-      <div
-        className="modal-panel modal-summon-panel dm-panel"
-        data-state={isClosing ? "closing" : "open"}
-        role="dialog"
-        aria-modal="true"
-        aria-label={copy.title}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* ── Header ──────────────────────────────────────────── */}
-        <div className="dm-header">
-          <div className="dm-header-icon" data-warn={isModeWarn}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              {isModeWarn ? (
-                <>
-                  <path
-                    d="M8 2L14.5 13.5H1.5L8 2z"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M8 7v3M8 11.5v.5"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                  />
-                </>
-              ) : (
-                <>
-                  <path
-                    d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6-2.7-6-6-6z"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                  />
-                  <path
-                    d="M8 7v4M8 5.5v.5"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                  />
-                </>
-              )}
-            </svg>
-          </div>
-          <div className="dm-header-text">
-            <p className="dm-eyebrow">{copy.eyebrow}</p>
-            <h2 className="dm-title">{copy.title}</h2>
-          </div>
-        </div>
-
-        {/* ── Description ─────────────────────────────────────── */}
-        <p className="dm-description">{copy.description}</p>
-
-        {/* ── Dependency list ──────────────────────────────────── */}
-        <div className="dm-section-label">
-          {missingDependencies.length} module
-          {missingDependencies.length !== 1 ? "s" : ""} required
-        </div>
-        <div className="dm-dep-list">
-          {missingDependencies.map((id, i) => {
-            const pct = progressById[id] ?? null;
-            const started = pct !== null;
-            const done = pct === 100;
-
-            return (
-              <div
-                key={id}
-                className={`dm-dep-row${done ? " dm-dep-row--done" : ""}`}
-                style={{ animationDelay: `${i * 50}ms` }}
-              >
-                {/* Icon */}
-                <div
-                  className={`dm-dep-icon${done ? " dm-dep-icon--done" : ""}`}
-                >
-                  {done ? (
-                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                      <path
-                        d="M2 5.5l2.5 2.5 4.5-5"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  ) : (
-                    <DepIcon id={id} />
-                  )}
-                </div>
-
-                {/* Name + progress */}
-                <div className="dm-dep-body">
-                  <div className="dm-dep-name-row">
-                    <span className="dm-dep-name">{id}</span>
-                    {started && !done && (
-                      <span className="dm-dep-pct">{pct}%</span>
-                    )}
-                    {done && <span className="dm-dep-done-label">Done</span>}
-                  </div>
-                  {/* Per-dep progress track */}
-                  <div className="dm-dep-track">
-                    <div
-                      className={`dm-dep-fill${done ? " dm-dep-fill--done" : ""}`}
-                      style={{
-                        width:
-                          isInstalling || started
-                            ? `${pct ?? (isInstalling ? 4 : 0)}%`
-                            : "0%",
-                        transition: "width 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* ── Overall progress strip ───────────────────────────── */}
-        {(isInstalling || totalProgress > 0) && (
-          <div className="dm-overall">
-            <div className="dm-overall-header">
-              <span className="dm-overall-label">
-                {installMessage ?? (isInstalling ? "Installing…" : "Waiting")}
-              </span>
-              <span className="dm-overall-pct">{totalProgress}%</span>
-            </div>
-            <div className="dm-overall-track">
-              <div
-                className="dm-overall-fill"
-                style={{
-                  width: `${totalProgress || (isInstalling ? 3 : 0)}%`,
-                  transition: "width 0.5s cubic-bezier(0.4, 0, 0.2, 1)",
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* ── Actions ─────────────────────────────────────────── */}
-        <div className="dm-actions">
-          <button
-            className="dm-btn-primary"
-            onClick={onInstall}
-            disabled={isInstalling}
-          >
-            {isInstalling ? (
+      <div className="dm-header">
+        <div className="dm-header-icon" data-warn={isModeWarn}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            {isModeWarn ? (
               <>
-                <span className="dm-spinner" />
-                Installing…
+                <path
+                  d="M8 2L14.5 13.5H1.5L8 2z"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M8 7v3M8 11.5v.5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
               </>
             ) : (
               <>
-                {copy.ctaLabel}
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path
-                    d="M6 1v7M3 5.5L6 8.5l3-3"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M1 10.5h10"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  />
-                </svg>
+                <path
+                  d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6-2.7-6-6-6z"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                />
+                <path
+                  d="M8 7v4M8 5.5v.5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
               </>
             )}
-          </button>
-
-          {canDefer ? (
-            <button className="dm-btn-ghost" onClick={onDefer}>
-              Defer for now
-            </button>
-          ) : (
-            <button
-              className="dm-btn-ghost"
-              onClick={onClose}
-              disabled={isInstalling}
-            >
-              Close
-            </button>
-          )}
+          </svg>
+        </div>
+        <div className="dm-header-text">
+          <p className="dm-eyebrow">{copy.eyebrow}</p>
+          <h2 className="dm-title">{copy.title}</h2>
         </div>
       </div>
 
+      <p className="dm-description">{copy.description}</p>
+
+      <div className="dm-section-label">
+        {missingDependencies.length} module
+        {missingDependencies.length !== 1 ? "s" : ""} required
+      </div>
+
+      <div className="dm-dep-list">
+        {missingDependencies.map((id, i) => {
+          const pct = progressById[id] ?? null;
+          const started = pct !== null;
+          const done = pct === 100;
+
+          return (
+            <div
+              key={id}
+              className={`dm-dep-row${done ? " dm-dep-row--done" : ""}`}
+              style={{ animationDelay: `${i * 50}ms` }}
+            >
+              <div className={`dm-dep-icon${done ? " dm-dep-icon--done" : ""}`}>
+                {done ? (
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                    <path
+                      d="M2 5.5l2.5 2.5 4.5-5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                ) : (
+                  <DepIcon id={id} />
+                )}
+              </div>
+
+              <div className="dm-dep-body">
+                <div className="dm-dep-name-row">
+                  <span className="dm-dep-name">{id}</span>
+                  {started && !done && (
+                    <span className="dm-dep-pct">
+                      {formatDependencyProgressPercent(pct)}%
+                    </span>
+                  )}
+                  {done && <span className="dm-dep-done-label">Done</span>}
+                </div>
+                <div className="dm-dep-track">
+                  <div
+                    className={`dm-dep-fill${done ? " dm-dep-fill--done" : ""}`}
+                    style={{
+                      width:
+                        isInstalling || started
+                          ? `${pct ?? (isInstalling ? 4 : 0)}%`
+                          : "0%",
+                      transition: `width ${ONBOARDING_PANEL_TRANSITION_MS}ms ${ONBOARDING_MOTION_EASING}`,
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="dm-actions">
+        <button
+          className="dm-btn-primary"
+          onClick={onInstall}
+          disabled={isInstalling}
+        >
+          {isInstalling ? (
+            <>
+              <span className="dm-spinner" />
+              Downloading...
+            </>
+          ) : (
+            <>
+              {copy.ctaLabel}
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path
+                  d="M6 1v7M3 5.5L6 8.5l3-3"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M1 10.5h10"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </>
+          )}
+        </button>
+
+        <button className="dm-btn-ghost" onClick={onClose}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className={
+        embedded
+          ? "dm-embedded-stage"
+          : "modal-backdrop modal-summon-backdrop dm-backdrop"
+      }
+      data-state={embedded ? undefined : isClosing ? "closing" : "open"}
+      onClick={embedded ? undefined : onClose}
+    >
+      {panel}
+
       <style>{`
         .dm-backdrop {
-          backdrop-filter: blur(6px);
-          -webkit-backdrop-filter: blur(6px);
+          background: var(--glass-backdrop-bg);
+          backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
+          -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
         }
 
-        /* ── Panel ─────────────────────────────────────────────── */
+        .dm-embedded-stage {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          min-height: 100%;
+        }
+
         .dm-panel {
           width: min(460px, calc(100vw - 32px));
           padding: 0;
@@ -334,14 +304,8 @@ export function DependencyModal({
           overflow: hidden;
           display: flex;
           flex-direction: column;
-          animation: dmIn 0.25s cubic-bezier(0.4, 0, 0.2, 1) both;
-        }
-        @keyframes dmIn {
-          from { opacity: 0; transform: translateY(10px) scale(0.98); }
-          to   { opacity: 1; transform: translateY(0)    scale(1);    }
         }
 
-        /* ── Header ────────────────────────────────────────────── */
         .dm-header {
           display: flex;
           align-items: flex-start;
@@ -386,7 +350,6 @@ export function DependencyModal({
           line-height: 1.15;
         }
 
-        /* ── Description ───────────────────────────────────────── */
         .dm-description {
           font-size: 12px;
           color: var(--text-secondary);
@@ -394,7 +357,6 @@ export function DependencyModal({
           padding: 10px 24px 0;
         }
 
-        /* ── Section label ─────────────────────────────────────── */
         .dm-section-label {
           font-size: 9px;
           font-weight: 700;
@@ -404,7 +366,6 @@ export function DependencyModal({
           padding: 20px 24px 8px;
         }
 
-        /* ── Dep list ──────────────────────────────────────────── */
         .dm-dep-list {
           display: flex;
           flex-direction: column;
@@ -419,7 +380,7 @@ export function DependencyModal({
           border-radius: 9px;
           border: 1px solid var(--border);
           background: var(--bg-input);
-          animation: dmDepIn 0.2s ease both;
+          animation: dmDepIn ${ONBOARDING_PANEL_TRANSITION_MS}ms ${ONBOARDING_MOTION_EASING} both;
           transition: border-color 0.2s ease;
         }
         .dm-dep-row--done {
@@ -427,8 +388,14 @@ export function DependencyModal({
           background: color-mix(in srgb, var(--success) 5%, var(--bg-input));
         }
         @keyframes dmDepIn {
-          from { opacity: 0; transform: translateX(-6px); }
-          to   { opacity: 1; transform: translateX(0);    }
+          from {
+            opacity: 0;
+            transform: translateX(-8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
         }
 
         .dm-dep-icon {
@@ -483,7 +450,6 @@ export function DependencyModal({
           letter-spacing: 0.03em;
         }
 
-        /* Per-dep progress track */
         .dm-dep-track {
           height: 3px;
           border-radius: 2px;
@@ -499,47 +465,6 @@ export function DependencyModal({
           background: var(--success);
         }
 
-        /* ── Overall progress ──────────────────────────────────── */
-        .dm-overall {
-          margin: 16px 24px 0;
-          padding: 12px 14px;
-          border-radius: 9px;
-          border: 1px solid var(--border);
-          background: var(--bg-input);
-          display: flex;
-          flex-direction: column;
-          gap: 7px;
-        }
-        .dm-overall-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .dm-overall-label {
-          font-family: "JetBrains Mono", monospace;
-          font-size: 10px;
-          font-weight: 500;
-          color: var(--text-muted);
-        }
-        .dm-overall-pct {
-          font-family: "JetBrains Mono", monospace;
-          font-size: 10px;
-          font-weight: 700;
-          color: var(--text-secondary);
-        }
-        .dm-overall-track {
-          height: 4px;
-          border-radius: 2px;
-          background: var(--border);
-          overflow: hidden;
-        }
-        .dm-overall-fill {
-          height: 100%;
-          border-radius: 2px;
-          background: var(--accent);
-        }
-
-        /* ── Actions ───────────────────────────────────────────── */
         .dm-actions {
           display: flex;
           align-items: center;
@@ -566,7 +491,9 @@ export function DependencyModal({
         .dm-btn-primary:hover:not(:disabled) {
           background: var(--accent-hover);
         }
-        .dm-btn-primary:active:not(:disabled) { transform: scale(0.98); }
+        .dm-btn-primary:active:not(:disabled) {
+          transform: scale(0.98);
+        }
         .dm-btn-primary:disabled {
           opacity: 0.45;
           cursor: not-allowed;
@@ -596,17 +523,41 @@ export function DependencyModal({
           cursor: not-allowed;
         }
 
-        /* ── Spinner ───────────────────────────────────────────── */
         .dm-spinner {
           width: 12px;
           height: 12px;
-          border: 2px solid rgba(255,255,255,0.3);
+          border: 2px solid rgba(255, 255, 255, 0.3);
           border-top-color: #fff;
           border-radius: 50%;
           animation: dmSpin 0.65s linear infinite;
           flex-shrink: 0;
         }
-        @keyframes dmSpin { to { transform: rotate(360deg); } }
+        @keyframes dmSpin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
+        @media (max-width: 640px) {
+          .dm-panel {
+            width: min(100%, calc(100vw - 24px));
+          }
+
+          .dm-actions {
+            flex-direction: column;
+            align-items: stretch;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .dm-panel,
+          .dm-backdrop,
+          .dm-embedded-stage,
+          .dm-dep-row,
+          .dm-spinner {
+            animation: none !important;
+          }
+        }
       `}</style>
     </div>
   );

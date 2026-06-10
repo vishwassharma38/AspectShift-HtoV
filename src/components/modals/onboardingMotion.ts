@@ -1,0 +1,4 @@
+export const ONBOARDING_PANEL_TRANSITION_MS = 380;
+export const ONBOARDING_OVERLAY_TRANSITION_MS = 420;
+export const ONBOARDING_FLOW_GAP_MS = 420;
+export const ONBOARDING_MOTION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";

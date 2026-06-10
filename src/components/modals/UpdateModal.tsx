@@ -380,9 +380,9 @@ export function UpdateModal({
 
         <style>{`
           .up-backdrop {
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            background: color-mix(in srgb, var(--bg-overlay) 70%, #000 30%);
+            background: var(--glass-backdrop-bg);
+            backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
+            -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
           }
 
           .up-panel {

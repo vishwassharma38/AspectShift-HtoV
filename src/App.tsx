@@ -48,6 +48,8 @@ import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
 import { Header } from "./components/layout/Header";
 import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { DependencyModal } from "./components/modals/DependencyModal";
+import { FirstRunOnboardingOverlay } from "./components/modals/FirstRunOnboardingOverlay";
+import { ONBOARDING_FLOW_GAP_MS } from "./components/modals/onboardingMotion";
 import { LicensePanelModal } from "./components/modals/LicensePanelModal";
 import { AboutDialog } from "./components/modals/AboutDialog";
 import {
@@ -55,10 +57,14 @@ import {
   type UpdateFlowStage,
 } from "./components/modals/UpdateModal";
 import { SettingsOverlay } from "./components/layout/SettingsOverlay";
-import { AppShellProvider, type LicenseIndicatorStatus } from "./context/AppShellContext";
+import {
+  AppShellProvider,
+  type LicenseIndicatorStatus,
+} from "./context/AppShellContext";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
+  formatDependencyProgressPercent,
   SUBTITLE_CORE_DEPENDENCY_IDS,
   type DependencyPromptMode,
 } from "./services/dependencyManager";
@@ -118,11 +124,12 @@ interface UpdateFlowState {
 }
 
 interface AppNotification {
+  id: number;
   tone: UpdateNoticeTone;
   message: string;
   progressPercent: number | null;
   progressLabel: string | null;
-  sticky: boolean;
+  persistent: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -146,6 +153,14 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   outputFormat: "mp4",
   logo: null,
   transform: { rotate: 0, flip_h: false, flip_v: false },
+};
+
+const NOTIFICATION_EXIT_MS = 320;
+const NOTIFICATION_DURATIONS: Record<UpdateNoticeTone, number> = {
+  info: 3600,
+  success: 4600,
+  warning: 6200,
+  error: 0,
 };
 
 const ASPECT_RATIOS: { label: string; value: AspectRatio }[] = [
@@ -189,8 +204,11 @@ const AUDIO_BITRATE_CANDIDATES = [
 const DEFAULT_PREVIEW_VOLUME = 20;
 const ONBOARDING_STORAGE_KEY = "aspectshift.hasCompletedOnboarding";
 const SKIPPED_DEPENDENCY_PROMPT_KEY = "aspectshift.skippedDependencyPrompt";
+const FIRST_LAUNCH_DEPENDENCY_PROMPT_KEY =
+  "aspectshift.firstLaunchDependencyPromptSeen";
 
 type SubtitleIntent = "exportSubtitles" | "burnSubtitles";
+type FirstRunPanel = "license" | "dependency";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -517,6 +535,7 @@ export default function App() {
     DEFAULT_PREVIEW_VOLUME,
   );
   const [depsState, setDepsState] = useState<AppDepsState | null>(null);
+  const [depsStateLoaded, setDepsStateLoaded] = useState(false);
   const [depsInstalling, setDepsInstalling] = useState(false);
   const [depsInstallMessage, setDepsInstallMessage] = useState<string | null>(
     null,
@@ -530,9 +549,14 @@ export default function App() {
   const [isActivatingLicense, setIsActivatingLicense] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [notification, setNotification] = useState<AppNotification | null>(
-    null,
+  const [activeNotification, setActiveNotification] =
+    useState<AppNotification | null>(null);
+  const [notificationQueue, setNotificationQueue] = useState<AppNotification[]>(
+    [],
   );
+  const [isNotificationExiting, setIsNotificationExiting] = useState(false);
+  const [isUpdateBannerDismissed, setIsUpdateBannerDismissed] = useState(false);
+  const [isUpdateBannerExiting, setIsUpdateBannerExiting] = useState(false);
   const [updateFlow, setUpdateFlow] = useState<UpdateFlowState>({
     stage: "idle",
     tone: "info",
@@ -548,14 +572,34 @@ export default function App() {
     return localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true";
   });
   const [onboardingSuccess, setOnboardingSuccess] = useState(false);
-  const [skippedDependencyPrompt, setSkippedDependencyPrompt] = useState(() => {
+  const [firstRunPanel, setFirstRunPanel] = useState<FirstRunPanel | null>(
+    () => (localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true" ? null : "license"),
+  );
+  const [firstRunPanelOpen, setFirstRunPanelOpen] = useState(() => {
+    return localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "true";
+  });
+  const [firstRunOverlayOpen, setFirstRunOverlayOpen] = useState(() => {
+    return localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "true";
+  });
+  const [firstRunPendingNext, setFirstRunPendingNext] = useState<
+    "dependency" | "finish" | null
+  >(null);
+  const [firstRunGapReady, setFirstRunGapReady] = useState(false);
+  const [skippedDependencyPrompt] = useState(() => {
     return localStorage.getItem(SKIPPED_DEPENDENCY_PROMPT_KEY) === "true";
   });
+  const [seenFirstLaunchDependencyPrompt, setSeenFirstLaunchDependencyPrompt] =
+    useState(() => {
+      return (
+        localStorage.getItem(FIRST_LAUNCH_DEPENDENCY_PROMPT_KEY) === "true"
+      );
+    });
   const [dependencyModalOpen, setDependencyModalOpen] = useState(false);
   const [dependencyPromptMode, setDependencyPromptMode] =
     useState<DependencyPromptMode>("startup");
   const [pendingSubtitleIntent, setPendingSubtitleIntent] =
     useState<SubtitleIntent | null>(null);
+  const dependencyPromptDismissedKeyRef = useRef<string | null>(null);
   const [settingsOverlayOpen, setSettingsOverlayOpen] = useState(false);
   const [licensePanelOpen, setLicensePanelOpen] = useState(false);
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false);
@@ -571,6 +615,12 @@ export default function App() {
   const [volumeSliderHovering, setVolumeSliderHovering] = useState(false);
   const [volumeSliderFocusWithin, setVolumeSliderFocusWithin] = useState(false);
   const volumeCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const firstRunSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const firstRunGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   const previewVolumeRef = useRef<HTMLDivElement | null>(null);
@@ -589,11 +639,27 @@ export default function App() {
     depsState,
     SUBTITLE_CORE_DEPENDENCY_IDS,
   );
+  const missingSubtitleDependencyKey = missingSubtitleDependencies.join("|");
   const subtitleCoreReady = hasRequiredDependencies(
     depsState,
     SUBTITLE_CORE_DEPENDENCY_IDS,
   );
+  const shouldShowFirstRunDependencyStep =
+    !subtitleCoreReady &&
+    !skippedDependencyPrompt &&
+    !seenFirstLaunchDependencyPrompt &&
+    !!depsState &&
+    depsState.scanSource === "first_launch" &&
+    depsState.scanStatus === "scan_completed" &&
+    missingSubtitleDependencies.length > 0;
   const updateRef = useRef<Update | null>(null);
+  const notificationIdRef = useRef(0);
+  const notificationExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const updateBannerExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const isUpdateFlowBusy =
     updateFlow.stage === "checking_entitlement" ||
     updateFlow.stage === "checking_updater" ||
@@ -688,6 +754,56 @@ export default function App() {
     setIsActivatingLicense(state.status === "activating");
   }, []);
 
+  const clearFirstRunTimers = useCallback(() => {
+    if (firstRunSuccessTimerRef.current !== null) {
+      clearTimeout(firstRunSuccessTimerRef.current);
+      firstRunSuccessTimerRef.current = null;
+    }
+    if (firstRunGapTimerRef.current !== null) {
+      clearTimeout(firstRunGapTimerRef.current);
+      firstRunGapTimerRef.current = null;
+    }
+  }, []);
+
+  const beginFirstRunPanelClose = useCallback(
+    (next: "dependency" | "finish") => {
+      clearFirstRunTimers();
+      setFirstRunPendingNext(next);
+      setFirstRunGapReady(false);
+      setFirstRunPanelOpen(false);
+    },
+    [clearFirstRunTimers],
+  );
+
+  const handleFirstRunPanelExited = useCallback(() => {
+    if (firstRunPanel === "license") {
+      setOnboardingSuccess(false);
+    }
+    setFirstRunPanel(null);
+    setFirstRunGapReady(false);
+    if (firstRunPendingNext === null) return;
+
+    if (firstRunGapTimerRef.current !== null) {
+      clearTimeout(firstRunGapTimerRef.current);
+      firstRunGapTimerRef.current = null;
+    }
+
+    firstRunGapTimerRef.current = window.setTimeout(() => {
+      setFirstRunGapReady(true);
+    }, ONBOARDING_FLOW_GAP_MS);
+  }, [firstRunPanel, firstRunPendingNext]);
+
+  const finishFirstRunFlow = useCallback(() => {
+    clearFirstRunTimers();
+    setFirstRunPendingNext(null);
+    setFirstRunGapReady(false);
+    setFirstRunPanel(null);
+    setFirstRunPanelOpen(false);
+    setFirstRunOverlayOpen(false);
+    setHasCompletedOnboarding(true);
+    setOnboardingSuccess(false);
+  }, [clearFirstRunTimers]);
+
   const handleActivateLicense = useCallback(async () => {
     if (!licenseKeyInput.trim() || isActivatingLicense) return;
     setIsActivatingLicense(true);
@@ -707,15 +823,36 @@ export default function App() {
       setOnboardingSuccess(true);
       setLicenseKeyInput("");
       localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
-      window.setTimeout(() => {
-        setHasCompletedOnboarding(true);
-        setOnboardingSuccess(false);
+      clearFirstRunTimers();
+      const nextStep =
+        !depsStateLoaded || shouldShowFirstRunDependencyStep
+          ? "dependency"
+          : "finish";
+      firstRunSuccessTimerRef.current = window.setTimeout(() => {
+        beginFirstRunPanelClose(nextStep);
       }, 650);
     } catch (error) {
       setAuthErrorMessage(errorMessage(error));
       setIsActivatingLicense(false);
     }
-  }, [handleAuthState, isActivatingLicense, licenseKeyInput]);
+  }, [
+    beginFirstRunPanelClose,
+    clearFirstRunTimers,
+    handleAuthState,
+    isActivatingLicense,
+    licenseKeyInput,
+    shouldShowFirstRunDependencyStep,
+  ]);
+
+  const handleFirstRunBypass = useCallback(() => {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+    const nextStep =
+      !depsStateLoaded || shouldShowFirstRunDependencyStep
+        ? "dependency"
+        : "finish";
+    setOnboardingSuccess(false);
+    beginFirstRunPanelClose(nextStep);
+  }, [beginFirstRunPanelClose, depsStateLoaded, shouldShowFirstRunDependencyStep]);
 
   const handleRefreshLicense = useCallback(async () => {
     try {
@@ -744,14 +881,45 @@ export default function App() {
     });
   }, []);
 
+  const beginNotificationExit = useCallback(() => {
+    if (!activeNotification || isNotificationExiting) return;
+    setIsNotificationExiting(true);
+    if (notificationExitTimerRef.current) {
+      clearTimeout(notificationExitTimerRef.current);
+    }
+    notificationExitTimerRef.current = setTimeout(() => {
+      setActiveNotification(null);
+      setIsNotificationExiting(false);
+      notificationExitTimerRef.current = null;
+    }, NOTIFICATION_EXIT_MS);
+  }, [activeNotification, isNotificationExiting]);
+
   useEffect(() => {
-    if (!notification) return;
-    if (notification.sticky) return;
-    const timer = window.setTimeout(() => {
-      setNotification(null);
-    }, 4000);
+    if (activeNotification || notificationQueue.length === 0) return;
+    setActiveNotification(notificationQueue[0]);
+    setNotificationQueue((queue) => queue.slice(1));
+  }, [activeNotification, notificationQueue]);
+
+  const hasUpdateBanner =
+    updateFlow.stage !== "idle" &&
+    (!isUpdateBannerDismissed || isUpdateBannerExiting);
+
+  useEffect(() => {
+    if (hasUpdateBanner) return;
+    if (!activeNotification || activeNotification.persistent) return;
+    const duration = NOTIFICATION_DURATIONS[activeNotification.tone];
+    if (duration <= 0) return;
+    const timer = window.setTimeout(beginNotificationExit, duration);
     return () => window.clearTimeout(timer);
-  }, [notification]);
+  }, [activeNotification, beginNotificationExit, hasUpdateBanner]);
+
+  useEffect(() => {
+    return () => {
+      if (notificationExitTimerRef.current) {
+        clearTimeout(notificationExitTimerRef.current);
+      }
+    };
+  }, []);
 
   const showNotification = useCallback(
     (
@@ -761,21 +929,86 @@ export default function App() {
         progressPercent?: number | null;
         progressLabel?: string | null;
       },
-      options?: { sticky?: boolean },
+      options?: { persistent?: boolean },
     ) => {
-      setNotification({
+      const queuedNotification: AppNotification = {
+        id: notificationIdRef.current + 1,
         tone: next.tone,
         message: next.message,
         progressPercent: next.progressPercent ?? null,
         progressLabel: next.progressLabel ?? null,
-        sticky: !!options?.sticky,
-      });
+        persistent:
+          options?.persistent ?? next.tone === "error",
+      };
+      notificationIdRef.current = queuedNotification.id;
+      setNotificationQueue((queue) => [...queue, queuedNotification]);
     },
     [],
   );
 
   const clearNotification = useCallback(() => {
-    setNotification(null);
+    if (activeNotification) {
+      beginNotificationExit();
+      return;
+    }
+    setNotificationQueue([]);
+  }, [activeNotification, beginNotificationExit]);
+
+  const updateBannerKey = `${updateFlow.stage}:${updateFlow.tone}:${updateFlow.message}:${updateFlow.progressLabel ?? ""}:${updateFlow.progressPercent ?? ""}`;
+  const isUpdateBannerPersistent =
+    updateFlow.tone === "error" ||
+    updateFlow.stage === "downloading" ||
+    updateFlow.stage === "installing";
+
+  const dismissUpdateBanner = useCallback(() => {
+    if (
+      updateFlow.stage === "idle" ||
+      isUpdateBannerDismissed ||
+      isUpdateBannerExiting
+    ) {
+      return;
+    }
+    setIsUpdateBannerExiting(true);
+    if (updateBannerExitTimerRef.current) {
+      clearTimeout(updateBannerExitTimerRef.current);
+    }
+    updateBannerExitTimerRef.current = setTimeout(() => {
+      setIsUpdateBannerDismissed(true);
+      setIsUpdateBannerExiting(false);
+      updateBannerExitTimerRef.current = null;
+    }, NOTIFICATION_EXIT_MS);
+  }, [isUpdateBannerDismissed, isUpdateBannerExiting, updateFlow.stage]);
+
+  useEffect(() => {
+    setIsUpdateBannerDismissed(false);
+    setIsUpdateBannerExiting(false);
+    if (updateBannerExitTimerRef.current) {
+      clearTimeout(updateBannerExitTimerRef.current);
+      updateBannerExitTimerRef.current = null;
+    }
+  }, [updateBannerKey]);
+
+  useEffect(() => {
+    if (updateFlow.stage === "idle" || isUpdateBannerDismissed) return;
+    if (isUpdateBannerPersistent) return;
+    const duration = NOTIFICATION_DURATIONS[updateFlow.tone];
+    if (duration <= 0) return;
+    const timer = window.setTimeout(dismissUpdateBanner, duration);
+    return () => window.clearTimeout(timer);
+  }, [
+    dismissUpdateBanner,
+    isUpdateBannerDismissed,
+    isUpdateBannerPersistent,
+    updateFlow.stage,
+    updateFlow.tone,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (updateBannerExitTimerRef.current) {
+        clearTimeout(updateBannerExitTimerRef.current);
+      }
+    };
   }, []);
 
   const handleRefreshApp = useCallback(() => {
@@ -783,14 +1016,14 @@ export default function App() {
   }, []);
 
   const handleInstallDependencies = useCallback(
-    async (forceAll = false) => {
+    async (forceAll = false): Promise<boolean> => {
       const targetIds = forceAll
         ? SUBTITLE_CORE_DEPENDENCY_IDS
         : missingSubtitleDependencies;
 
       if (targetIds.length === 0) {
         setDepsInstallMessage("All subtitle dependencies are already ready.");
-        return;
+        return true;
       }
 
       try {
@@ -804,14 +1037,30 @@ export default function App() {
         });
         setDepsState(refreshed);
         setDepsInstallMessage("Dependency installation complete.");
+        return true;
       } catch (error) {
         setDepsInstallMessage(`Install failed: ${errorMessage(error)}`);
+        return false;
       } finally {
         setDepsInstalling(false);
       }
     },
     [missingSubtitleDependencies],
   );
+
+  useEffect(() => {
+    return () => {
+      clearFirstRunTimers();
+    };
+  }, [clearFirstRunTimers]);
+
+  const handleFirstRunDependencyInstall = useCallback(async () => {
+    const success = await handleInstallDependencies(false);
+    if (!success) return;
+    setFirstRunPanelOpen(false);
+    setFirstRunPendingNext("finish");
+    setFirstRunGapReady(false);
+  }, [handleInstallDependencies]);
 
   const handleRescanDependencies = useCallback(() => {
     invoke<AppDepsState>("rescan_dependencies", { scan_source: "manual" })
@@ -822,13 +1071,27 @@ export default function App() {
   }, []);
 
   const openDependencyPrompt = useCallback(
-    (mode: DependencyPromptMode, subtitleIntent: SubtitleIntent | null = null) => {
+    (
+      mode: DependencyPromptMode,
+      subtitleIntent: SubtitleIntent | null = null,
+    ) => {
+      if (mode === "startup") {
+        localStorage.setItem(FIRST_LAUNCH_DEPENDENCY_PROMPT_KEY, "true");
+        setSeenFirstLaunchDependencyPrompt(true);
+      }
+      dependencyPromptDismissedKeyRef.current = null;
       setDependencyPromptMode(mode);
       setPendingSubtitleIntent(subtitleIntent);
       setDependencyModalOpen(true);
     },
     [],
   );
+
+  const closeDependencyPrompt = useCallback(() => {
+    dependencyPromptDismissedKeyRef.current = missingSubtitleDependencyKey;
+    setPendingSubtitleIntent(null);
+    setDependencyModalOpen(false);
+  }, [missingSubtitleDependencyKey]);
 
   const handleSubtitleFeatureToggle = useCallback(
     (intent: SubtitleIntent, enabled: boolean) => {
@@ -845,7 +1108,11 @@ export default function App() {
       }
       setEffectsState((current) => ({ ...current, [intent]: enabled }));
     },
-    [missingSubtitleDependencies.length, openDependencyPrompt, subtitleCoreReady],
+    [
+      missingSubtitleDependencies.length,
+      openDependencyPrompt,
+      subtitleCoreReady,
+    ],
   );
 
   const handleCheckForUpdates = useCallback(async () => {
@@ -869,12 +1136,12 @@ export default function App() {
     setUpdateFlow({
       stage: "checking_entitlement",
       tone: "info",
-      message: "Checking entitlement...",
+      message: "Checking for updates...",
       currentVersion,
       latestVersion: null,
       releaseNotes: null,
       progressPercent: null,
-      progressLabel: "Checking entitlement...",
+      progressLabel: "Checking for updates...",
       errorMessage: null,
     });
     addLog("[Updater] Entitlement check started", "info");
@@ -937,7 +1204,10 @@ export default function App() {
           progressLabel: null,
           errorMessage: null,
         });
-        addLog("[Updater] Update entitlement denied for this release channel", "warn");
+        addLog(
+          "[Updater] Update entitlement denied for this release channel",
+          "warn",
+        );
         return;
       }
 
@@ -953,7 +1223,10 @@ export default function App() {
           progressLabel: null,
           errorMessage: null,
         });
-        addLog("[Updater] Update entitlement requires re-authentication", "warn");
+        addLog(
+          "[Updater] Update entitlement requires re-authentication",
+          "warn",
+        );
         return;
       }
 
@@ -985,7 +1258,10 @@ export default function App() {
           progressLabel: null,
           errorMessage: "Update check failed. Please try again later.",
         });
-        addLog("[Updater] Update entitlement check failed: server error", "error");
+        addLog(
+          "[Updater] Update entitlement check failed: server error",
+          "error",
+        );
         return;
       }
 
@@ -1008,16 +1284,19 @@ export default function App() {
         return;
       }
 
-      addLog("[Updater] Entitlement approved; checking updater manifest", "success");
+      addLog(
+        "[Updater] Entitlement approved; checking updater manifest",
+        "success",
+      );
       setUpdateFlow({
         stage: "checking_updater",
         tone: "info",
-        message: "Entitlement approved. Checking signed updater manifest...",
+        message: "Checking for updates...",
         currentVersion,
         latestVersion: entitlement.data?.latestVersion ?? null,
         releaseNotes: null,
         progressPercent: null,
-        progressLabel: "Checking updater manifest...",
+        progressLabel: "Checking for updates...",
         errorMessage: null,
       });
 
@@ -1039,7 +1318,8 @@ export default function App() {
       }
 
       updateRef.current = availableUpdate;
-      const updateVersion = availableUpdate.version ?? entitlement.data?.latestVersion ?? null;
+      const updateVersion =
+        availableUpdate.version ?? entitlement.data?.latestVersion ?? null;
       const updateCurrentVersion =
         availableUpdate.currentVersion ?? currentVersion ?? null;
 
@@ -1179,12 +1459,14 @@ export default function App() {
       await pendingUpdate.install();
       await closePendingUpdate();
 
-      const installedVersion = pendingUpdate.version ?? updateFlow.latestVersion;
+      const installedVersion =
+        pendingUpdate.version ?? updateFlow.latestVersion;
       setUpdateFlow({
         stage: "installed_restart_required",
         tone: "success",
         message: `Update ${formatUpdateVersion(installedVersion)} installed. Restart required.`,
-        currentVersion: pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
+        currentVersion:
+          pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
         latestVersion: installedVersion ?? null,
         releaseNotes: pendingUpdate.body ?? null,
         progressPercent: 100,
@@ -1192,15 +1474,20 @@ export default function App() {
         errorMessage: null,
       });
       setUpdateDialogOpen(true);
-      addLog("[Updater] Update installed successfully; restart required", "success");
+      addLog(
+        "[Updater] Update installed successfully; restart required",
+        "success",
+      );
     } catch (error) {
       await closePendingUpdate();
       setUpdateFlow({
         stage: "failed",
         tone: "error",
         message: "Update installation failed.",
-        currentVersion: pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
-        latestVersion: pendingUpdate.version ?? updateFlow.latestVersion ?? null,
+        currentVersion:
+          pendingUpdate.currentVersion ?? aboutMetadata.appVersion,
+        latestVersion:
+          pendingUpdate.version ?? updateFlow.latestVersion ?? null,
         releaseNotes: pendingUpdate.body ?? null,
         progressPercent: null,
         progressLabel: null,
@@ -1212,7 +1499,13 @@ export default function App() {
         "error",
       );
     }
-  }, [aboutMetadata.appVersion, addLog, closePendingUpdate, updateFlow.latestVersion, updateFlow.stage]);
+  }, [
+    aboutMetadata.appVersion,
+    addLog,
+    closePendingUpdate,
+    updateFlow.latestVersion,
+    updateFlow.stage,
+  ]);
 
   const handleRestartNow = useCallback(async () => {
     if (updateFlow.stage !== "installed_restart_required") return;
@@ -1274,9 +1567,12 @@ export default function App() {
       ] as const;
 
       for (const channel of channels) {
-        const unsub = await listen<{ authState: AuthState }>(channel, (event) => {
-          if (!disposed) handleAuthState(event.payload.authState);
-        });
+        const unsub = await listen<{ authState: AuthState }>(
+          channel,
+          (event) => {
+            if (!disposed) handleAuthState(event.payload.authState);
+          },
+        );
         if (disposed) unsub();
         else unsubs.push(unsub);
       }
@@ -1315,22 +1611,70 @@ export default function App() {
   }, [handleRefreshApp]);
 
   useEffect(() => {
+    if (!firstRunGapReady || !firstRunPendingNext) return;
+
+    if (firstRunPendingNext === "dependency") {
+      if (!depsStateLoaded) return;
+      if (!shouldShowFirstRunDependencyStep) {
+        setFirstRunPendingNext("finish");
+        return;
+      }
+
+      localStorage.setItem(FIRST_LAUNCH_DEPENDENCY_PROMPT_KEY, "true");
+      setSeenFirstLaunchDependencyPrompt(true);
+      setFirstRunPanel("dependency");
+      setFirstRunPanelOpen(true);
+      setFirstRunPendingNext(null);
+      setFirstRunGapReady(false);
+      return;
+    }
+
+    setFirstRunOverlayOpen(false);
+    setFirstRunPendingNext(null);
+    setFirstRunGapReady(false);
+  }, [
+    depsStateLoaded,
+    firstRunGapReady,
+    firstRunPendingNext,
+    shouldShowFirstRunDependencyStep,
+  ]);
+
+  useEffect(() => {
+    if (!depsStateLoaded) return;
     if (!hasCompletedOnboarding) return;
     if (subtitleCoreReady) return;
     if (skippedDependencyPrompt) return;
+    if (seenFirstLaunchDependencyPrompt) return;
+    if (!depsState) return;
+    if (depsState.scanSource !== "first_launch") return;
+    if (depsState.scanStatus !== "scan_completed") return;
     if (dependencyModalOpen) return;
+    if (
+      dependencyPromptDismissedKeyRef.current === missingSubtitleDependencyKey
+    )
+      return;
     openDependencyPrompt("startup");
   }, [
+    depsState,
+    depsStateLoaded,
     dependencyModalOpen,
     hasCompletedOnboarding,
     openDependencyPrompt,
+    missingSubtitleDependencyKey,
     skippedDependencyPrompt,
+    seenFirstLaunchDependencyPrompt,
     subtitleCoreReady,
   ]);
 
   useEffect(() => {
+    if (subtitleCoreReady) {
+      dependencyPromptDismissedKeyRef.current = null;
+    }
     if (!subtitleCoreReady || !pendingSubtitleIntent) return;
-    setEffectsState((current) => ({ ...current, [pendingSubtitleIntent]: true }));
+    setEffectsState((current) => ({
+      ...current,
+      [pendingSubtitleIntent]: true,
+    }));
     setPendingSubtitleIntent(null);
     setDependencyModalOpen(false);
   }, [pendingSubtitleIntent, subtitleCoreReady]);
@@ -1447,8 +1791,13 @@ export default function App() {
     loadPresets();
     loadAspectRatioTargets();
     invoke<AppDepsState>("get_dependency_state")
-      .then(setDepsState)
-      .catch(() => {});
+      .then((state) => {
+        setDepsState(state);
+      })
+      .catch(() => {})
+      .finally(() => {
+        setDepsStateLoaded(true);
+      });
     invoke<BatchProgress>("get_batch_status")
       .then((status) => {
         if (!status.sessionId) return;
@@ -1685,9 +2034,12 @@ export default function App() {
           if (lifecycle === "downloading") {
             setDepsInstalling(true);
             const progress = e.payload.progressPercent ?? 0;
-            setDepsProgressById((prev) => ({ ...prev, [e.payload.id]: progress }));
+            setDepsProgressById((prev) => ({
+              ...prev,
+              [e.payload.id]: progress,
+            }));
             setDepsInstallMessage(
-              `Downloading ${e.payload.id}... ${Math.round(progress)}%`,
+              `Downloading ${e.payload.id}... ${formatDependencyProgressPercent(progress)}%`,
             );
           } else if (lifecycle === "verifying") {
             setDepsInstallMessage(`Verifying ${e.payload.id}...`);
@@ -1989,22 +2341,22 @@ export default function App() {
   };
 
   const handleStartBatch = async () => {
-    if (!outputDir) {
-      showNotification({
-        message: "Please select an output directory.",
-        tone: "warning",
-      });
-      addLog("Please select an output directory", "warn");
-      return;
-    }
     const files =
       batchFiles.length > 0 ? batchFiles : inputFile ? [inputFile] : [];
     if (files.length === 0) {
       showNotification({
-        message: "Please select at least one file.",
+        message: "Please select at least one video.",
         tone: "warning",
       });
-      addLog("Please select at least one file", "warn");
+      addLog("Please select at least one video", "warn");
+      return;
+    }
+    if (!outputDir) {
+      showNotification({
+        message: "Please select an output destination.",
+        tone: "warning",
+      });
+      addLog("Please select an output destination", "warn");
       return;
     }
     if (selectedRatios.length === 0 && selectedPresetIds.length === 0) {
@@ -2287,25 +2639,32 @@ export default function App() {
       : batchProgress && batchProgress.status === "failed"
         ? { tone: "error" as const, label: "Errors" }
         : null;
-  const activeBanner =
-    updateFlow.stage !== "idle"
+  const updateBanner =
+    hasUpdateBanner
       ? {
+          source: "update" as const,
           tone: updateFlow.tone,
-          message:
-            updateFlow.progressLabel ?? updateFlow.message,
+          message: updateFlow.progressLabel ?? updateFlow.message,
           progressPercent: updateFlow.progressPercent,
           progressStage:
             updateFlow.stage === "downloading" ||
             updateFlow.stage === "installing",
+          exiting: isUpdateBannerExiting,
         }
-      : notification
+      : null;
+  const activeBanner =
+    updateBanner ??
+    (activeNotification
         ? {
-            tone: notification.tone,
-            message: notification.progressLabel ?? notification.message,
-            progressPercent: notification.progressPercent,
-            progressStage: notification.progressPercent !== null,
+            source: "notification" as const,
+            tone: activeNotification.tone,
+            message:
+              activeNotification.progressLabel ?? activeNotification.message,
+            progressPercent: activeNotification.progressPercent,
+            progressStage: activeNotification.progressPercent !== null,
+            exiting: isNotificationExiting,
           }
-        : null;
+        : null);
 
   return (
     <AppShellProvider
@@ -2318,1184 +2677,1241 @@ export default function App() {
         missingSubtitleDependencies,
       }}
     >
-    <div className="app-shell" data-auth-status={authState?.status ?? "not_activated"}>
-      <Header
-        theme={theme}
-        onToggleTheme={() =>
-          setTheme((current) => (current === "day" ? "night" : "day"))
-        }
-        onOpenSettings={() => setSettingsOverlayOpen(true)}
-        onOpenLicensePanel={() => setLicensePanelOpen(true)}
-        onOpenAbout={() => setAboutDialogOpen(true)}
-        onRefresh={handleRefreshApp}
-        onCheckForUpdates={handleCheckForUpdates}
-        isCheckingUpdates={isCheckingUpdates}
-        isLicensed={isLicensed}
-        statusBadge={headerStatusBadge}
-      />
-      {activeBanner && (
-        <div className={`update-notice update-notice-${activeBanner.tone}`}>
-          <span className="update-notice-dot" aria-hidden="true" />
-          <span className="update-notice-text">
-            {activeBanner.message}
-            {activeBanner.progressPercent !== null && activeBanner.progressStage
-              ? ` (${activeBanner.progressPercent}%)`
-              : ""}
-          </span>
-        </div>
-      )}
-      <UpdateModal
-        open={updateDialogOpen}
-        stage={updateFlow.stage}
-        currentVersion={updateFlow.currentVersion}
-        latestVersion={updateFlow.latestVersion}
-        releaseNotes={updateFlow.releaseNotes}
-        progressPercent={updateFlow.progressPercent}
-        progressLabel={updateFlow.progressLabel}
-        errorMessage={updateFlow.errorMessage}
-        onDownloadAndInstall={handleDownloadAndInstallUpdate}
-        onRestartNow={handleRestartNow}
-        onLater={handleDismissUpdateDialog}
-      />
-
       <div
-        className={`app-content-stage${settingsOverlayOpen ? " view-transitioning" : ""}`}
+        className="app-shell"
+        data-auth-status={authState?.status ?? "not_activated"}
       >
-        <div className="main-content">
-        {/* ── Left Sidebar ───────────────────────────────────── */}
-        <aside className="sidebar">
-          <div className="sidebar-section">
-            <div className="sidebar-section-title">Import Files</div>
-            <div
-              className={`drop-zone${isDragOver ? " drag-over" : ""}`}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={handlePickFile}
-            >
-              <div className="drop-zone-icon">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="lucide lucide-import-icon lucide-import"
-                  style={{ color: "var(--accent)" }}
-                >
-                  <path d="M12 3v12" />
-                  <path d="m8 11 4 4 4-4" />
-                  <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
-                </svg>
-              </div>
-              <div className="drop-zone-text">
-                <strong title={importSelectionTooltip}>
-                  {importSelectionLabel}
-                </strong>
-              </div>
-              <div
-                className="drop-zone-actions"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button className="btn btn-sm" onClick={handlePickFile}>
-                  Files
-                </button>
-                <button className="btn btn-sm" onClick={handlePickFolder}>
-                  Folder
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="sidebar-section">
-            <div className="sidebar-section-title">Output Directory</div>
-            <div className="path-row">
-              <div
-                className={`path-display${outputDir ? "" : " empty"}`}
-                title={outputDir || undefined}
-              >
-                {outputDirLabel}
-              </div>
-            </div>
-            <div className="flex gap-6 mt-2">
-              <button
-                className="btn btn-sm flex-1"
-                onClick={handlePickOutputDir}
-              >
-                Browse
-              </button>
-              {outputDir && (
-                <button className="btn btn-sm" onClick={handleOpenOutput}>
-                  ↗
-                </button>
-              )}
-            </div>
-            <div className="toggle-row mt-4">
-              <span className="toggle-label">Subfolders per target</span>
-              <Toggle
-                checked={enableSubfolders}
-                onChange={setEnableSubfolders}
-              />
-            </div>
-          </div>
-
-          <div className="tabs">
-            <button
-              className={`tab${settingsTab === "effects" ? " active" : ""}`}
-              onClick={() => setSettingsTab("effects")}
-            >
-              Effects
-            </button>
-            <button
-              className={`tab${settingsTab === "encode" ? " active" : ""}`}
-              onClick={() => setSettingsTab("encode")}
-            >
-              Encode
-            </button>
-            <button
-              className={`tab${settingsTab === "presets" ? " active" : ""}`}
-              onClick={() => setSettingsTab("presets")}
-            >
-              Presets
-            </button>
-          </div>
-
-          <div className="settings-scroll">
-            {/* ── Effects Tab ─────────────────────────────── */}
-            {settingsTab === "effects" && (
-              <>
-                <div className="settings-group">
-                  <div className="settings-group-title">Effects</div>
-                  <div className="toggle-row">
-                    <span className="toggle-label">Blur Background</span>
-                    <Toggle
-                      checked={!!effectsState.blur}
-                      onChange={(v) =>
-                        setEffectsState({ ...effectsState, blur: v })
-                      }
-                    />
-                  </div>
-                  {effectsState.blur && (
-                    <div className="slider-row mt-2">
-                      <span className="text-sm text-muted">Sigma</span>
-                      <input
-                        className="slider"
-                        type="range"
-                        min="5"
-                        max="60"
-                        value={effectsState.blurSigma ?? 20}
-                        onChange={(e) =>
-                          setEffectsState({
-                            ...effectsState,
-                            blurSigma: parseFloat(e.target.value),
-                          })
-                        }
-                      />
-                      <span className="slider-value">
-                        {effectsState.blurSigma}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Audio</div>
-                  <div className="toggle-row">
-                    <span className="toggle-label">Remove Audio</span>
-                    <Toggle
-                      checked={!!effectsState.removeAudio}
-                      onChange={(v) =>
-                        setEffectsState({ ...effectsState, removeAudio: v })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Subtitles</div>
-                  <div className="toggle-row">
-                    <span className="toggle-label">Export Subtitles</span>
-                    <Toggle
-                      checked={!!effectsState.exportSubtitles}
-                      onChange={(v) =>
-                        handleSubtitleFeatureToggle("exportSubtitles", v)
-                      }
-                    />
-                  </div>
-                  <div className="toggle-row">
-                    <span className="toggle-label">Burn Subtitles</span>
-                    <Toggle
-                      checked={!!effectsState.burnSubtitles}
-                      onChange={(v) =>
-                        handleSubtitleFeatureToggle("burnSubtitles", v)
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Skip Existing</div>
-                  <div className="toggle-row">
-                    <span className="toggle-label">
-                      Skip if output exists
-                      <span className="label-desc">Saves time on re-runs</span>
-                    </span>
-                    <Toggle
-                      checked={!!effectsState.skipExisting}
-                      onChange={(v) =>
-                        setEffectsState({ ...effectsState, skipExisting: v })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Transform</div>
-                  <div className="transform-grid">
-                    <button
-                      className="btn btn-sm"
-                      onClick={() =>
-                        setEffectsState({
-                          ...effectsState,
-                          transform: {
-                            rotate:
-                              ((effectsState.transform?.rotate ?? 0) + 90) %
-                              360,
-                            flip_h: !!effectsState.transform?.flip_h,
-                            flip_v: !!effectsState.transform?.flip_v,
-                          },
-                        })
-                      }
-                    >
-                      ↻ Rotate {effectsState.transform?.rotate || 0}°
-                    </button>
-                    <button
-                      className="btn btn-sm"
-                      onClick={() =>
-                        setEffectsState({
-                          ...effectsState,
-                          transform: {
-                            rotate: 0,
-                            flip_h: false,
-                            flip_v: false,
-                          },
-                        })
-                      }
-                    >
-                      ⊕ Reset
-                    </button>
-                    <div className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        id="fh"
-                        checked={uiFlips.flipH}
-                        onChange={(e) =>
-                          setEffectsState({
-                            ...effectsState,
-                            transform: uiFlipsToTransform(
-                              effectsState.transform,
-                              e.target.checked,
-                              uiFlips.flipV,
-                            ),
-                          })
-                        }
-                      />
-                      <label className="checkbox-label" htmlFor="fh">
-                        Flip H
-                      </label>
-                    </div>
-                    <div className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        id="fv"
-                        checked={uiFlips.flipV}
-                        onChange={(e) =>
-                          setEffectsState({
-                            ...effectsState,
-                            transform: uiFlipsToTransform(
-                              effectsState.transform,
-                              uiFlips.flipH,
-                              e.target.checked,
-                            ),
-                          })
-                        }
-                      />
-                      <label className="checkbox-label" htmlFor="fv">
-                        Flip V
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Logo</div>
-                  <div className="toggle-row mb-2">
-                    <span className="toggle-label">Enable Logo</span>
-                    <Toggle
-                      checked={!!effectsState.logo?.enabled}
-                      onChange={(v) =>
-                        setEffectsState({
-                          ...effectsState,
-                          logo: v
-                            ? {
-                                enabled: true,
-                                position:
-                                  effectsState.logo?.position ?? "bottom_right",
-                                opacity: effectsState.logo?.opacity ?? 1,
-                                gap: effectsState.logo?.gap ?? 20,
-                                scale: effectsState.logo?.scale ?? 0.15,
-                                path: effectsState.logo?.path ?? null,
-                              }
-                            : null,
-                        })
-                      }
-                    />
-                  </div>
-                  {effectsState.logo?.enabled && (
-                    <>
-                      <div
-                        className="logo-upload-zone"
-                        onClick={handlePickLogo}
-                      >
-                        {effectsState.logo.path ? (
-                          <img
-                            className="logo-preview-thumb"
-                            src={convertFileSrc(effectsState.logo.path)}
-                            alt="logo"
-                          />
-                        ) : (
-                          <span style={{ fontSize: 25 }}>🖼</span>
-                        )}{" "}
-                        <div className="logo-upload-text">
-                          <strong>
-                            {effectsState.logo.path
-                              ? basename(effectsState.logo.path)
-                              : "No logo"}
-                          </strong>{" "}
-                          Click to change
-                        </div>
-                      </div>
-                      <select
-                        className="input select mt-2"
-                        value={effectsState.logo.position}
-                        onChange={(e) =>
-                          setEffectsState({
-                            ...effectsState,
-                            logo: {
-                              ...effectsState.logo!,
-                              position: e.target.value as LogoPosition,
-                            },
-                          })
-                        }
-                      >
-                        <option value="top_left">Top Left</option>
-                        <option value="top_right">Top Right</option>
-                        <option value="bottom_left">Bottom Left</option>
-                        <option value="bottom_right">Bottom Right</option>
-                      </select>
-                      <div className="slider-row mt-2">
-                        <span className="text-xs">Opacity</span>
-                        <input
-                          className="slider"
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={effectsState.logo.opacity}
-                          onChange={(e) =>
-                            setEffectsState({
-                              ...effectsState,
-                              logo: {
-                                ...effectsState.logo!,
-                                opacity: parseFloat(e.target.value),
-                              },
-                            })
-                          }
-                        />
-                        <span className="slider-value">
-                          {Math.round(effectsState.logo.opacity * 100)}%
-                        </span>
-                      </div>
-                      <div className="slider-row mt-2">
-                        <span className="text-xs">Scale</span>
-                        <input
-                          className="slider"
-                          type="range"
-                          min="0.05"
-                          max="0.5"
-                          step="0.01"
-                          value={effectsState.logo.scale}
-                          onChange={(e) =>
-                            setEffectsState({
-                              ...effectsState,
-                              logo: {
-                                ...effectsState.logo!,
-                                scale: parseFloat(e.target.value),
-                              },
-                            })
-                          }
-                        />
-                        <span className="slider-value">
-                          {Math.round(effectsState.logo.scale * 100)}%
-                        </span>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="settings-group">
-                  <button
-                    className="btn btn-ghost btn-sm btn-full mt-4"
-                    onClick={handleResetToDefaults}
-                    style={{ opacity: 0.6, fontSize: 11 }}
-                  >
-                    Reset all settings to defaults
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* ── Encode Tab ──────────────────────────────── */}
-            {settingsTab === "encode" && (
-              <div className="settings-group">
-                <div className="settings-group-title">Quality</div>
-                <label className="input-label">Quality Preset</label>
-                <select
-                  className="input select"
-                  value={encodingState.qualityPreset}
-                  onChange={(e) =>
-                    setEncodingState({
-                      ...encodingState,
-                      qualityPreset: e.target.value,
-                    })
-                  }
-                >
-                  <option value="draft">Draft</option>
-                  <option value="standard">Standard</option>
-                  <option value="high">High</option>
-                </select>
-
-                <div className="slider-row mt-4">
-                  <span className="text-xs">CRF</span>
-                  <input
-                    className="slider"
-                    type="range"
-                    min="0"
-                    max="51"
-                    value={encodingState.crf}
-                    onChange={(e) =>
-                      setEncodingState({
-                        ...encodingState,
-                        crf: parseInt(e.target.value),
-                      })
-                    }
-                  />
-                  <span className="slider-value">{encodingState.crf}</span>
-                </div>
-
-                <label className="input-label mt-4">Speed Preset</label>
-                <select
-                  className="input select"
-                  value={encodingState.speedPreset}
-                  onChange={(e) =>
-                    setEncodingState({
-                      ...encodingState,
-                      speedPreset: e.target.value,
-                    })
-                  }
-                >
-                  {SPEED_PRESETS.map((s) => (
-                    <option key={s} value={s}>
-                      {s.charAt(0).toUpperCase() + s.slice(1)}
-                    </option>
-                  ))}
-                </select>
-
-                <label className="input-label mt-4">Audio Bitrate</label>
-                <select
-                  className="input select"
-                  value={encodingState.audioBitrate}
-                  onChange={(e) =>
-                    setEncodingState({
-                      ...encodingState,
-                      audioBitrate: e.target.value,
-                    })
-                  }
-                >
-                  {audioBitrateOptions.map((bitrate) => (
-                    <option key={bitrate} value={bitrate}>
-                      {audioBitrateLabel(bitrate)}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="settings-group">
-                  <div className="settings-group-title">Output Format</div>
-                  <select
-                    className="input select"
-                    value={effectsState.outputFormat ?? "mp4"}
-                    onChange={(e) =>
-                      setEffectsState({
-                        ...effectsState,
-                        outputFormat: e.target.value as OutputFormat,
-                      })
-                    }
-                  >
-                    <option value="mp4">MP4 (H.264)</option>
-                    <option value="mov">MOV (H.264)</option>
-                    <option value="webm">WebM (VP9)</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* ── Presets Tab ─────────────────────────────── */}
-            {settingsTab === "presets" && (
-              <div className="settings-group">
-                <div className="settings-group-title">
-                  Save Current Encoding as Preset
-                </div>
-                <input
-                  className="input"
-                  placeholder="Preset name"
-                  value={newPresetName}
-                  onChange={(e) => setNewPresetName(e.target.value)}
-                />
-                <button
-                  className="btn btn-primary btn-sm btn-full mt-2"
-                  onClick={handleSavePreset}
-                  disabled={!newPresetName.trim()}
-                >
-                  Save Preset
-                </button>
-
-                {customPresets.length > 0 && (
-                  <div className="mt-8">
-                    <div className="settings-group-title">My Presets</div>
-                    {customPresets.map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex items-center justify-between"
-                        style={{
-                          padding: "6px 0",
-                          borderBottom: "1px solid var(--border)",
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 600 }}>
-                            {p.name}
-                          </div>
-                          <div className="text-xs text-muted">
-                            {RATIO_DISPLAY[p.ratio]} · CRF {p.encoding.crf}
-                          </div>
-                        </div>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDeletePreset(p.id)}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </aside>
-
-        {/* ── Center Panel ──────────────────────────────────── */}
-        <main className="center-panel">
+        <Header
+          theme={theme}
+          onToggleTheme={() =>
+            setTheme((current) => (current === "day" ? "night" : "day"))
+          }
+          onOpenSettings={() => setSettingsOverlayOpen(true)}
+          onOpenLicensePanel={() => setLicensePanelOpen(true)}
+          onOpenAbout={() => setAboutDialogOpen(true)}
+          onRefresh={handleRefreshApp}
+          onCheckForUpdates={handleCheckForUpdates}
+          isCheckingUpdates={isCheckingUpdates}
+          isLicensed={isLicensed}
+          statusBadge={headerStatusBadge}
+        />
+        {activeBanner && (
           <div
-            className="sidebar-section"
-            style={{ background: "var(--bg-card)" }}
+            className={`update-notice update-notice-${activeBanner.tone}${
+              activeBanner.exiting ? " update-notice--exiting" : ""
+            }`}
           >
-            <div className="flex items-center justify-between mb-4">
-              <span className="section-title">Aspect Ratio Targets</span>
-            </div>
-            <div className="ratio-pills">
-              {ASPECT_RATIOS.map((r) => (
-                <label
-                  key={r.value}
-                  className={`ratio-pill${selectedRatios.includes(r.value) ? " active" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    onChange={() => handleToggleRatio(r.value)}
-                  />
-                  {r.label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="preview-wrapper">
+            <span className="update-notice-dot" aria-hidden="true" />
+            <span className="update-notice-text">
+              {activeBanner.message}
+              {activeBanner.progressPercent !== null &&
+              activeBanner.progressStage
+                ? ` (${activeBanner.progressPercent}%)`
+                : ""}
+            </span>
             <button
-              className="preview-nav-btn preview-nav-btn-left"
-              onClick={() => navigatePreview(-1)}
-              disabled={!canNavigatePreview}
-              aria-label="Previous preview video"
-              title="Previous video"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="lucide lucide-chevron-left"
-              >
-                <path d="m15 18-6-6 6-6" />
-              </svg>
-            </button>
-            <button
-              className="preview-nav-btn preview-nav-btn-right"
-              onClick={() => navigatePreview(1)}
-              disabled={!canNavigatePreview}
-              aria-label="Next preview video"
-              title="Next video"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="lucide lucide-chevron-right"
-              >
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </button>
-            <div className="preview-controls-overlay">
-              <button
-                className={`btn btn-xs ${showGuides ? "active" : ""}`}
-                onClick={() => setShowGuides(!showGuides)}
-              >
-                Guides
-              </button>
-              <button
-                className={`btn btn-xs ${showSafeFrames ? "active" : ""}`}
-                onClick={() => setShowSafeFrames(!showSafeFrames)}
-              >
-                Safe Areas
-              </button>
-            </div>
-            <VideoCanvas
-              videoSrc={previewFile}
-              previewLayout={previewLayout}
-              effects={effectsState}
-              orientation={orientation}
-              previewVolume={previewVolume}
-              showGuides={showGuides}
-              showSafeFrames={showSafeFrames}
-            />
-            <div
-              className="preview-volume"
-              ref={previewVolumeRef}
-              aria-label="Preview volume"
-              data-slider-active={volumeSliderActive ? "true" : undefined}
-              onMouseEnter={() => {
-                setVolumeSliderHovering(true);
-                setVolumeSliderActive(true);
-              }}
-              onMouseLeave={() => setVolumeSliderHovering(false)}
-              onFocusCapture={() => {
-                setVolumeSliderFocusWithin(true);
-                setVolumeSliderActive(true);
-              }}
-              onBlurCapture={(e) => {
-                const nextTarget = e.relatedTarget as Node | null;
-                if (
-                  nextTarget &&
-                  previewVolumeRef.current?.contains(nextTarget)
-                ) {
-                  return;
-                }
-                setVolumeSliderFocusWithin(false);
-              }}
-            >
-              <div className="preview-volume-slider-wrap">
-                <input
-                  className="preview-volume-slider"
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={previewVolume}
-                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                  onPointerDown={() => {
-                    cancelVolumeCollapse();
-                    setVolumeSliderInteracting(true);
-                    setVolumeSliderActive(true);
-                  }}
-                  onPointerUp={() => {
-                    setVolumeSliderInteracting(false);
-                  }}
-                  onKeyDown={() => {
-                    cancelVolumeCollapse();
-                    setVolumeSliderActive(true);
-                  }}
-                  onKeyUp={() => {
-                    setVolumeSliderInteracting(false);
-                  }}
-                  aria-label="Preview volume slider"
-                  style={
-                    { "--vol": `${previewVolume}%` } as React.CSSProperties
-                  }
-                />
-              </div>
-              <button
-                className="preview-volume-btn"
-                onClick={() => {
-                  cancelVolumeCollapse();
-                  setVolumeSliderActive(true);
-                  setPreviewVolume((v) => (v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME));
-                }}
-                aria-label={
-                  previewVolume === 0 ? "Unmute preview" : "Mute preview"
-                }
-                title={`Preview volume: ${previewVolume}%`}
-              >
-                {previewVolume === 0 ? (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="lucide lucide-volume-x"
-                  >
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <line x1="22" x2="16" y1="9" y2="15" />
-                    <line x1="16" x2="22" y1="9" y2="15" />
-                  </svg>
-                ) : (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="lucide lucide-volume-2"
-                  >
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  </svg>
-                )}
-              </button>
-            </div>
-            {orientation && (
-              <div className="preview-meta">
-                <span className="preview-meta-item">
-                  ⬛ {orientation.displayWidth}×{orientation.displayHeight}
-                </span>
-                <span className="preview-meta-item">
-                  ◱ {orientation.isVertical ? "Vertical" : "Horizontal"}
-                </span>
-                <span className="preview-meta-item">
-                  ⏱{" "}
-                  {fileReadiness
-                    ? formatDuration(fileReadiness.estimatedDurationSecs)
-                    : "--:--"}
-                </span>
-              </div>
-            )}
-          </div>
-
-          <div
-            className="sidebar-section"
-            style={{
-              background: "var(--bg-card)",
-              borderTop: "1px solid var(--border)",
-              borderBottom: "none",
-            }}
-          >
-            <PresetsPanel
-              presets={displayPresets}
-              selectedPresetIds={selectedPresetIds}
-              onToggle={handleTogglePreset}
-            />
-          </div>
-
-          <div className="controls-bar">
-            <button
-              className="btn btn-primary btn-lg flex-1"
-              onClick={handleStartBatch}
-              disabled={
-                isRunning ||
-                isFileLocked ||
-                (selectedRatios.length === 0 && selectedPresetIds.length === 0)
+              type="button"
+              className="update-notice-dismiss"
+              onClick={
+                activeBanner.source === "update"
+                  ? dismissUpdateBanner
+                  : clearNotification
               }
+              aria-label="Dismiss notification"
             >
-              {isRunning ? (
-                <>
-                  <span className="spinner" /> Processing…
-                </>
-              ) : (
-                <>
-                  ▶ {jobCount > 1 ? `Start Batch (${jobCount})` : "Convert Now"}
-                </>
-              )}
-            </button>
-            {batchProgress && (
-              <>
-                <button
-                  className="btn btn-danger"
-                  onClick={handleCancelBatch}
-                  disabled={!isRunning}
-                >
-                  ✕ Cancel
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  onClick={handleClearBatch}
-                  disabled={isRunning}
-                >
-                  Clear
-                </button>
-              </>
-            )}
-          </div>
-        </main>
-
-        {/* ── Right Panel ───────────────────────────────────── */}
-        <aside className="right-panel">
-          {batchProgress && (
-            <div className="batch-stats">
-              <div className="batch-stats-row">
-                <span className="batch-stats-label">
-                  {isRunning ? (
-                    <>
-                      <span className="spinner" /> Processing
-                    </>
-                  ) : (
-                    "Batch Status"
-                  )}
-                </span>
-                <span
-                  className="text-accent font-mono font-bold"
-                  style={{ fontSize: 13 }}
-                >
-                  {batchProgress.percentage.toFixed(1)}%
-                </span>
-              </div>
-              <div className="progress-bar">
-                <div
-                  className={`progress-bar-fill${isRunning ? " animated" : ""}`}
-                  style={{
-                    width: `${Math.min(100, batchProgress.percentage)}%`,
-                  }}
-                />
-              </div>
-              <div className="batch-stats-nums">
-                <span className="stat-pill stat-completed">
-                  ✓ {batchProgress.completedJobs}
-                </span>
-                {batchProgress.failedJobs > 0 && (
-                  <span className="stat-pill stat-failed">
-                    ✕ {batchProgress.failedJobs}
-                  </span>
-                )}
-                <span className="stat-pill stat-pending">
-                  {batchProgress.totalJobs} TOTAL
-                </span>
-                {isRunning && etaSeconds !== null && (
-                  <span
-                    className="stat-pill"
-                    style={{
-                      background: "var(--accent-subtle)",
-                      color: "var(--accent)",
-                      border: "1px solid var(--accent-glow)",
-                    }}
-                  >
-                    ⏱ {formatETA(etaSeconds)}
-                  </span>
-                )}
-              </div>
-              {batchProgress && (
-                <div
-                  className="text-xs text-muted font-mono"
-                  style={{ marginTop: 2.5, fontSize: 10 }}
-                >
-                  {stageMessage}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div
-            className="tabs"
-            style={{
-              marginTop: batchProgress ? "var(--space-md)" : "var(--space-lg)",
-            }}
-          >
-            <button
-              className={`tab${rightTab === "queue" ? " active" : ""}`}
-              onClick={() => setRightTab("queue")}
-            >
-              Queue
-              {batchProgress && batchProgress.totalJobs > 0 && (
-                <span className="badge badge-muted" style={{ marginLeft: 6 }}>
-                  {batchProgress.totalJobs}
-                </span>
-              )}
-            </button>
-            <button
-              className={`tab${rightTab === "log" ? " active" : ""}`}
-              onClick={() => setRightTab("log")}
-            >
-              Log
+              x
             </button>
           </div>
+        )}
+        <UpdateModal
+          open={updateDialogOpen}
+          stage={updateFlow.stage}
+          currentVersion={updateFlow.currentVersion}
+          latestVersion={updateFlow.latestVersion}
+          releaseNotes={updateFlow.releaseNotes}
+          progressPercent={updateFlow.progressPercent}
+          progressLabel={updateFlow.progressLabel}
+          errorMessage={updateFlow.errorMessage}
+          onDownloadAndInstall={handleDownloadAndInstallUpdate}
+          onRestartNow={handleRestartNow}
+          onLater={handleDismissUpdateDialog}
+        />
 
-          {rightTab === "queue" ? (
-            <div className="queue-list">
-              {queueItems.length === 0 && (
-                <div className="queue-empty">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="48"
-                    height="48"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="lucide lucide-folder-open-icon lucide-folder-open"
-                    style={{
-                      color: "var(--accent)",
-                      opacity: 0.5,
-                      marginBottom: "10px",
-                    }}
-                  >
-                    <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
-                  </svg>
-                  <div>Queue is empty</div>
-                </div>
-              )}
-              {queueItems.map((job) => {
-                const statusKey = resolveJobStatusKey(job.status);
-                const errorMsg = getJobStatusError(job.status);
-                const isProc = statusKey === "processing";
-                const isDone = statusKey === "completed";
-                const isFail = statusKey === "failed";
-                const isCancelled = statusKey === "cancelled";
-
-                const progress = isProc
-                  ? Math.max(videoProgresses[job.jobId] ?? 0, job.progress)
-                  : job.progress;
-
-                return (
-                  <div
-                    key={job.jobId}
-                    className={`queue-item${isProc ? " is-processing" : ""}`}
-                  >
-                    {job.thumbnailPath && (
-                      <div className="queue-item-thumb">
-                        <img
-                          src={convertFileSrc(job.thumbnailPath)}
-                          alt="thumb"
-                          loading="lazy"
-                        />
-                      </div>
-                    )}
-                    <div className="queue-item-body">
-                      <div className="queue-item-name">
-                        {basename(job.filePath)}
-                      </div>
-                      <div className="queue-item-meta">
-                        <span className="queue-item-ratio">
-                          {job.selection.label}
-                        </span>
-                        <span
-                          className={`queue-item-status-text${isFail ? " text-error" : ""}`}
-                          title={errorMsg ?? undefined}
-                        >
-                          {isProc
-                            ? `${progress.toFixed(0)}%`
-                            : isDone
-                              ? "Done"
-                              : isFail
-                                ? "Failed"
-                                : isCancelled
-                                  ? "Cancelled"
-                                  : "Queued"}
-                        </span>
-                      </div>
-                      {isProc && (
-                        <div className="queue-item-progress">
-                          <div
-                            className="queue-item-progress-fill"
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                      )}
-                      {isFail && errorMsg && (
-                        <div
-                          className="text-xs text-error truncate"
-                          title={errorMsg}
-                          style={{ marginTop: 2 }}
-                        >
-                          {errorMsg}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="log-panel">
-              <div className="log-body" ref={logRef}>
-                {logs.length === 0 && (
-                  <div className="queue-empty">
+        <div
+          className={`app-content-stage${settingsOverlayOpen ? " view-transitioning" : ""}`}
+        >
+          <div className="main-content">
+            {/* ── Left Sidebar ───────────────────────────────────── */}
+            <aside className="sidebar">
+              <div className="sidebar-section">
+                <div className="sidebar-section-title">Import Files</div>
+                <div
+                  className={`drop-zone${isDragOver ? " drag-over" : ""}`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={handlePickFile}
+                >
+                  <div className="drop-zone-icon">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      width="48"
-                      height="48"
+                      width="24"
+                      height="24"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth="1.5"
+                      strokeWidth="2"
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      className="lucide lucide-logs-icon lucide-logs"
-                      style={{
-                        color: "var(--accent)",
-                        opacity: 0.5,
-                        marginBottom: "10px",
-                      }}
+                      className="lucide lucide-import-icon lucide-import"
+                      style={{ color: "var(--accent)" }}
                     >
-                      <path d="M3 5h1" />
-                      <path d="M3 12h1" />
-                      <path d="M3 19h1" />
-                      <path d="M8 5h1" />
-                      <path d="M8 12h1" />
-                      <path d="M8 19h1" />
-                      <path d="M13 5h8" />
-                      <path d="M13 12h8" />
-                      <path d="M13 19h8" />
+                      <path d="M12 3v12" />
+                      <path d="m8 11 4 4 4-4" />
+                      <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
                     </svg>
-                    <div style={{ fontSize: 13 }}>No log entries yet</div>
+                  </div>
+                  <div className="drop-zone-text">
+                    <strong title={importSelectionTooltip}>
+                      {importSelectionLabel}
+                    </strong>
+                  </div>
+                  <div
+                    className="drop-zone-actions"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button className="btn btn-sm" onClick={handlePickFile}>
+                      Files
+                    </button>
+                    <button className="btn btn-sm" onClick={handlePickFolder}>
+                      Folder
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="sidebar-section">
+                <div className="sidebar-section-title">Output Directory</div>
+                <div className="path-row">
+                  <div
+                    className={`path-display${outputDir ? "" : " empty"}`}
+                    title={outputDir || undefined}
+                  >
+                    {outputDirLabel}
+                  </div>
+                </div>
+                <div className="flex gap-6 mt-2">
+                  <button
+                    className="btn btn-sm flex-1"
+                    onClick={handlePickOutputDir}
+                  >
+                    Browse
+                  </button>
+                  {outputDir && (
+                    <button className="btn btn-sm" onClick={handleOpenOutput}>
+                      ↗
+                    </button>
+                  )}
+                </div>
+                <div className="toggle-row mt-4">
+                  <span className="toggle-label">Subfolders per target</span>
+                  <Toggle
+                    checked={enableSubfolders}
+                    onChange={setEnableSubfolders}
+                  />
+                </div>
+              </div>
+
+              <div className="tabs">
+                <button
+                  className={`tab${settingsTab === "effects" ? " active" : ""}`}
+                  onClick={() => setSettingsTab("effects")}
+                >
+                  Effects
+                </button>
+                <button
+                  className={`tab${settingsTab === "encode" ? " active" : ""}`}
+                  onClick={() => setSettingsTab("encode")}
+                >
+                  Encode
+                </button>
+                <button
+                  className={`tab${settingsTab === "presets" ? " active" : ""}`}
+                  onClick={() => setSettingsTab("presets")}
+                >
+                  Presets
+                </button>
+              </div>
+
+              <div className="settings-scroll">
+                {/* ── Effects Tab ─────────────────────────────── */}
+                {settingsTab === "effects" && (
+                  <>
+                    <div className="settings-group">
+                      <div className="settings-group-title">Effects</div>
+                      <div className="toggle-row">
+                        <span className="toggle-label">Blur Background</span>
+                        <Toggle
+                          checked={!!effectsState.blur}
+                          onChange={(v) =>
+                            setEffectsState({ ...effectsState, blur: v })
+                          }
+                        />
+                      </div>
+                      {effectsState.blur && (
+                        <div className="slider-row mt-2">
+                          <span className="text-sm text-muted">Sigma</span>
+                          <input
+                            className="slider"
+                            type="range"
+                            min="5"
+                            max="60"
+                            value={effectsState.blurSigma ?? 20}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                blurSigma: parseFloat(e.target.value),
+                              })
+                            }
+                          />
+                          <span className="slider-value">
+                            {effectsState.blurSigma}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Audio</div>
+                      <div className="toggle-row">
+                        <span className="toggle-label">Remove Audio</span>
+                        <Toggle
+                          checked={!!effectsState.removeAudio}
+                          onChange={(v) =>
+                            setEffectsState({ ...effectsState, removeAudio: v })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Subtitles</div>
+                      <div className="toggle-row">
+                        <span className="toggle-label">Export Subtitles</span>
+                        <Toggle
+                          checked={!!effectsState.exportSubtitles}
+                          onChange={(v) =>
+                            handleSubtitleFeatureToggle("exportSubtitles", v)
+                          }
+                        />
+                      </div>
+                      <div className="toggle-row">
+                        <span className="toggle-label">Burn Subtitles</span>
+                        <Toggle
+                          checked={!!effectsState.burnSubtitles}
+                          onChange={(v) =>
+                            handleSubtitleFeatureToggle("burnSubtitles", v)
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Skip Existing</div>
+                      <div className="toggle-row">
+                        <span className="toggle-label">
+                          Skip if output exists
+                          <span className="label-desc">
+                            Saves time on re-runs
+                          </span>
+                        </span>
+                        <Toggle
+                          checked={!!effectsState.skipExisting}
+                          onChange={(v) =>
+                            setEffectsState({
+                              ...effectsState,
+                              skipExisting: v,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Transform</div>
+                      <div className="transform-grid">
+                        <button
+                          className="btn btn-sm"
+                          onClick={() =>
+                            setEffectsState({
+                              ...effectsState,
+                              transform: {
+                                rotate:
+                                  ((effectsState.transform?.rotate ?? 0) + 90) %
+                                  360,
+                                flip_h: !!effectsState.transform?.flip_h,
+                                flip_v: !!effectsState.transform?.flip_v,
+                              },
+                            })
+                          }
+                        >
+                          ↻ Rotate {effectsState.transform?.rotate || 0}°
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          onClick={() =>
+                            setEffectsState({
+                              ...effectsState,
+                              transform: {
+                                rotate: 0,
+                                flip_h: false,
+                                flip_v: false,
+                              },
+                            })
+                          }
+                        >
+                          ⊕ Reset
+                        </button>
+                        <div className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            id="fh"
+                            checked={uiFlips.flipH}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                transform: uiFlipsToTransform(
+                                  effectsState.transform,
+                                  e.target.checked,
+                                  uiFlips.flipV,
+                                ),
+                              })
+                            }
+                          />
+                          <label className="checkbox-label" htmlFor="fh">
+                            Flip H
+                          </label>
+                        </div>
+                        <div className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            id="fv"
+                            checked={uiFlips.flipV}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                transform: uiFlipsToTransform(
+                                  effectsState.transform,
+                                  uiFlips.flipH,
+                                  e.target.checked,
+                                ),
+                              })
+                            }
+                          />
+                          <label className="checkbox-label" htmlFor="fv">
+                            Flip V
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Logo</div>
+                      <div className="toggle-row mb-2">
+                        <span className="toggle-label">Enable Logo</span>
+                        <Toggle
+                          checked={!!effectsState.logo?.enabled}
+                          onChange={(v) =>
+                            setEffectsState({
+                              ...effectsState,
+                              logo: v
+                                ? {
+                                    enabled: true,
+                                    position:
+                                      effectsState.logo?.position ??
+                                      "bottom_right",
+                                    opacity: effectsState.logo?.opacity ?? 1,
+                                    gap: effectsState.logo?.gap ?? 20,
+                                    scale: effectsState.logo?.scale ?? 0.15,
+                                    path: effectsState.logo?.path ?? null,
+                                  }
+                                : null,
+                            })
+                          }
+                        />
+                      </div>
+                      {effectsState.logo?.enabled && (
+                        <>
+                          <div
+                            className="logo-upload-zone"
+                            onClick={handlePickLogo}
+                          >
+                            {effectsState.logo.path ? (
+                              <img
+                                className="logo-preview-thumb"
+                                src={convertFileSrc(effectsState.logo.path)}
+                                alt="logo"
+                              />
+                            ) : (
+                              <span style={{ fontSize: 25 }}>🖼</span>
+                            )}{" "}
+                            <div className="logo-upload-text">
+                              <strong>
+                                {effectsState.logo.path
+                                  ? basename(effectsState.logo.path)
+                                  : "No logo"}
+                              </strong>{" "}
+                              Click to change
+                            </div>
+                          </div>
+                          <select
+                            className="input select mt-2"
+                            value={effectsState.logo.position}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                logo: {
+                                  ...effectsState.logo!,
+                                  position: e.target.value as LogoPosition,
+                                },
+                              })
+                            }
+                          >
+                            <option value="top_left">Top Left</option>
+                            <option value="top_right">Top Right</option>
+                            <option value="bottom_left">Bottom Left</option>
+                            <option value="bottom_right">Bottom Right</option>
+                          </select>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Opacity</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={effectsState.logo.opacity}
+                              onChange={(e) =>
+                                setEffectsState({
+                                  ...effectsState,
+                                  logo: {
+                                    ...effectsState.logo!,
+                                    opacity: parseFloat(e.target.value),
+                                  },
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {Math.round(effectsState.logo.opacity * 100)}%
+                            </span>
+                          </div>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Scale</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="0.05"
+                              max="0.5"
+                              step="0.01"
+                              value={effectsState.logo.scale}
+                              onChange={(e) =>
+                                setEffectsState({
+                                  ...effectsState,
+                                  logo: {
+                                    ...effectsState.logo!,
+                                    scale: parseFloat(e.target.value),
+                                  },
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {Math.round(effectsState.logo.scale * 100)}%
+                            </span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="settings-group">
+                      <button
+                        className="btn btn-ghost btn-sm btn-full mt-4"
+                        onClick={handleResetToDefaults}
+                        style={{ opacity: 0.6, fontSize: 11 }}
+                      >
+                        Reset all settings to defaults
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* ── Encode Tab ──────────────────────────────── */}
+                {settingsTab === "encode" && (
+                  <div className="settings-group">
+                    <div className="settings-group-title">Quality</div>
+                    <label className="input-label">Quality Preset</label>
+                    <select
+                      className="input select"
+                      value={encodingState.qualityPreset}
+                      onChange={(e) =>
+                        setEncodingState({
+                          ...encodingState,
+                          qualityPreset: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="draft">Draft</option>
+                      <option value="standard">Standard</option>
+                      <option value="high">High</option>
+                    </select>
+
+                    <div className="slider-row mt-4">
+                      <span className="text-xs">CRF</span>
+                      <input
+                        className="slider"
+                        type="range"
+                        min="0"
+                        max="51"
+                        value={encodingState.crf}
+                        onChange={(e) =>
+                          setEncodingState({
+                            ...encodingState,
+                            crf: parseInt(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="slider-value">{encodingState.crf}</span>
+                    </div>
+
+                    <label className="input-label mt-4">Speed Preset</label>
+                    <select
+                      className="input select"
+                      value={encodingState.speedPreset}
+                      onChange={(e) =>
+                        setEncodingState({
+                          ...encodingState,
+                          speedPreset: e.target.value,
+                        })
+                      }
+                    >
+                      {SPEED_PRESETS.map((s) => (
+                        <option key={s} value={s}>
+                          {s.charAt(0).toUpperCase() + s.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+
+                    <label className="input-label mt-4">Audio Bitrate</label>
+                    <select
+                      className="input select"
+                      value={encodingState.audioBitrate}
+                      onChange={(e) =>
+                        setEncodingState({
+                          ...encodingState,
+                          audioBitrate: e.target.value,
+                        })
+                      }
+                    >
+                      {audioBitrateOptions.map((bitrate) => (
+                        <option key={bitrate} value={bitrate}>
+                          {audioBitrateLabel(bitrate)}
+                        </option>
+                      ))}
+                    </select>
+
+                    <div className="settings-group">
+                      <div className="settings-group-title">Output Format</div>
+                      <select
+                        className="input select"
+                        value={effectsState.outputFormat ?? "mp4"}
+                        onChange={(e) =>
+                          setEffectsState({
+                            ...effectsState,
+                            outputFormat: e.target.value as OutputFormat,
+                          })
+                        }
+                      >
+                        <option value="mp4">MP4 (H.264)</option>
+                        <option value="mov">MOV (H.264)</option>
+                        <option value="webm">WebM (VP9)</option>
+                      </select>
+                    </div>
                   </div>
                 )}
-                {logs.map((entry, i) => (
-                  <div key={i} className="log-entry">
-                    <span className="log-time">{entry.time}</span>
-                    <span className={`log-msg log-${entry.type}`}>
-                      {entry.msg}
-                    </span>
+
+                {/* ── Presets Tab ─────────────────────────────── */}
+                {settingsTab === "presets" && (
+                  <div className="settings-group">
+                    <div className="settings-group-title">
+                      Save Current Encoding as Preset
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="Preset name"
+                      value={newPresetName}
+                      onChange={(e) => setNewPresetName(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-primary btn-sm btn-full mt-2"
+                      onClick={handleSavePreset}
+                      disabled={!newPresetName.trim()}
+                    >
+                      Save Preset
+                    </button>
+
+                    {customPresets.length > 0 && (
+                      <div className="mt-8">
+                        <div className="settings-group-title">My Presets</div>
+                        {customPresets.map((p) => (
+                          <div
+                            key={p.id}
+                            className="flex items-center justify-between"
+                            style={{
+                              padding: "6px 0",
+                              borderBottom: "1px solid var(--border)",
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 600 }}>
+                                {p.name}
+                              </div>
+                              <div className="text-xs text-muted">
+                                {RATIO_DISPLAY[p.ratio]} · CRF {p.encoding.crf}
+                              </div>
+                            </div>
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={() => handleDeletePreset(p.id)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))}
+                )}
               </div>
-              {logs.length > 0 && (
-                <div
-                  style={{
-                    padding: "6px 8px",
-                    borderTop: "1px solid var(--border)",
-                    flexShrink: 0,
-                  }}
+            </aside>
+
+            {/* ── Center Panel ──────────────────────────────────── */}
+            <main className="center-panel">
+              <div
+                className="sidebar-section"
+                style={{ background: "var(--bg-card)" }}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <span className="section-title">Aspect Ratio Targets</span>
+                </div>
+                <div className="ratio-pills">
+                  {ASPECT_RATIOS.map((r) => (
+                    <label
+                      key={r.value}
+                      className={`ratio-pill${selectedRatios.includes(r.value) ? " active" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        onChange={() => handleToggleRatio(r.value)}
+                      />
+                      {r.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="preview-wrapper">
+                <button
+                  className="preview-nav-btn preview-nav-btn-left"
+                  onClick={() => navigatePreview(-1)}
+                  disabled={!canNavigatePreview}
+                  aria-label="Previous preview video"
+                  title="Previous video"
                 >
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setLogs([])}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="lucide lucide-chevron-left"
                   >
-                    Clear Log
+                    <path d="m15 18-6-6 6-6" />
+                  </svg>
+                </button>
+                <button
+                  className="preview-nav-btn preview-nav-btn-right"
+                  onClick={() => navigatePreview(1)}
+                  disabled={!canNavigatePreview}
+                  aria-label="Next preview video"
+                  title="Next video"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="lucide lucide-chevron-right"
+                  >
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </button>
+                <div className="preview-controls-overlay">
+                  <button
+                    className={`btn btn-xs ${showGuides ? "active" : ""}`}
+                    onClick={() => setShowGuides(!showGuides)}
+                  >
+                    Guides
+                  </button>
+                  <button
+                    className={`btn btn-xs ${showSafeFrames ? "active" : ""}`}
+                    onClick={() => setShowSafeFrames(!showSafeFrames)}
+                  >
+                    Safe Areas
                   </button>
                 </div>
+                <VideoCanvas
+                  videoSrc={previewFile}
+                  previewLayout={previewLayout}
+                  effects={effectsState}
+                  orientation={orientation}
+                  previewVolume={previewVolume}
+                  showGuides={showGuides}
+                  showSafeFrames={showSafeFrames}
+                />
+                <div
+                  className="preview-volume"
+                  ref={previewVolumeRef}
+                  aria-label="Preview volume"
+                  data-slider-active={volumeSliderActive ? "true" : undefined}
+                  onMouseEnter={() => {
+                    setVolumeSliderHovering(true);
+                    setVolumeSliderActive(true);
+                  }}
+                  onMouseLeave={() => setVolumeSliderHovering(false)}
+                  onFocusCapture={() => {
+                    setVolumeSliderFocusWithin(true);
+                    setVolumeSliderActive(true);
+                  }}
+                  onBlurCapture={(e) => {
+                    const nextTarget = e.relatedTarget as Node | null;
+                    if (
+                      nextTarget &&
+                      previewVolumeRef.current?.contains(nextTarget)
+                    ) {
+                      return;
+                    }
+                    setVolumeSliderFocusWithin(false);
+                  }}
+                >
+                  <div className="preview-volume-slider-wrap">
+                    <input
+                      className="preview-volume-slider"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={previewVolume}
+                      onChange={(e) =>
+                        handleVolumeChange(Number(e.target.value))
+                      }
+                      onPointerDown={() => {
+                        cancelVolumeCollapse();
+                        setVolumeSliderInteracting(true);
+                        setVolumeSliderActive(true);
+                      }}
+                      onPointerUp={() => {
+                        setVolumeSliderInteracting(false);
+                      }}
+                      onKeyDown={() => {
+                        cancelVolumeCollapse();
+                        setVolumeSliderActive(true);
+                      }}
+                      onKeyUp={() => {
+                        setVolumeSliderInteracting(false);
+                      }}
+                      aria-label="Preview volume slider"
+                      style={
+                        { "--vol": `${previewVolume}%` } as React.CSSProperties
+                      }
+                    />
+                  </div>
+                  <button
+                    className="preview-volume-btn"
+                    onClick={() => {
+                      cancelVolumeCollapse();
+                      setVolumeSliderActive(true);
+                      setPreviewVolume((v) =>
+                        v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
+                      );
+                    }}
+                    aria-label={
+                      previewVolume === 0 ? "Unmute preview" : "Mute preview"
+                    }
+                    title={`Preview volume: ${previewVolume}%`}
+                  >
+                    {previewVolume === 0 ? (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="lucide lucide-volume-x"
+                      >
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                        <line x1="22" x2="16" y1="9" y2="15" />
+                        <line x1="16" x2="22" y1="9" y2="15" />
+                      </svg>
+                    ) : (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="lucide lucide-volume-2"
+                      >
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+                {orientation && (
+                  <div className="preview-meta">
+                    <span className="preview-meta-item">
+                      ⬛ {orientation.displayWidth}×{orientation.displayHeight}
+                    </span>
+                    <span className="preview-meta-item">
+                      ◱ {orientation.isVertical ? "Vertical" : "Horizontal"}
+                    </span>
+                    <span className="preview-meta-item">
+                      ⏱{" "}
+                      {fileReadiness
+                        ? formatDuration(fileReadiness.estimatedDurationSecs)
+                        : "--:--"}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div
+                className="sidebar-section"
+                style={{
+                  background: "var(--bg-card)",
+                  borderTop: "1px solid var(--border)",
+                  borderBottom: "none",
+                }}
+              >
+                <PresetsPanel
+                  presets={displayPresets}
+                  selectedPresetIds={selectedPresetIds}
+                  onToggle={handleTogglePreset}
+                />
+              </div>
+
+              <div className="controls-bar">
+                <button
+                  className="btn btn-primary btn-lg flex-1"
+                  onClick={handleStartBatch}
+                  disabled={
+                    isRunning ||
+                    isFileLocked ||
+                    (selectedRatios.length === 0 &&
+                      selectedPresetIds.length === 0)
+                  }
+                >
+                  {isRunning ? (
+                    <>
+                      <span className="spinner" /> Processing…
+                    </>
+                  ) : (
+                    <>
+                      ▶{" "}
+                      {jobCount > 1
+                        ? `Start Batch (${jobCount})`
+                        : "Convert Now"}
+                    </>
+                  )}
+                </button>
+                {batchProgress && (
+                  <>
+                    <button
+                      className="btn btn-danger"
+                      onClick={handleCancelBatch}
+                      disabled={!isRunning}
+                    >
+                      ✕ Cancel
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={handleClearBatch}
+                      disabled={isRunning}
+                    >
+                      Clear
+                    </button>
+                  </>
+                )}
+              </div>
+            </main>
+
+            {/* ── Right Panel ───────────────────────────────────── */}
+            <aside className="right-panel">
+              {batchProgress && (
+                <div className="batch-stats">
+                  <div className="batch-stats-row">
+                    <span className="batch-stats-label">
+                      {isRunning ? (
+                        <>
+                          <span className="spinner" /> Processing
+                        </>
+                      ) : (
+                        "Batch Status"
+                      )}
+                    </span>
+                    <span
+                      className="text-accent font-mono font-bold"
+                      style={{ fontSize: 13 }}
+                    >
+                      {batchProgress.percentage.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="progress-bar">
+                    <div
+                      className={`progress-bar-fill${isRunning ? " animated" : ""}`}
+                      style={{
+                        width: `${Math.min(100, batchProgress.percentage)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="batch-stats-nums">
+                    <span className="stat-pill stat-completed">
+                      ✓ {batchProgress.completedJobs}
+                    </span>
+                    {batchProgress.failedJobs > 0 && (
+                      <span className="stat-pill stat-failed">
+                        ✕ {batchProgress.failedJobs}
+                      </span>
+                    )}
+                    <span className="stat-pill stat-pending">
+                      {batchProgress.totalJobs} TOTAL
+                    </span>
+                    {isRunning && etaSeconds !== null && (
+                      <span
+                        className="stat-pill"
+                        style={{
+                          background: "var(--accent-subtle)",
+                          color: "var(--accent)",
+                          border: "1px solid var(--accent-glow)",
+                        }}
+                      >
+                        ⏱ {formatETA(etaSeconds)}
+                      </span>
+                    )}
+                  </div>
+                  {batchProgress && (
+                    <div
+                      className="text-xs text-muted font-mono"
+                      style={{ marginTop: 2.5, fontSize: 10 }}
+                    >
+                      {stageMessage}
+                    </div>
+                  )}
+                </div>
               )}
-            </div>
-          )}
-        </aside>
+
+              <div
+                className="tabs"
+                style={{
+                  marginTop: batchProgress
+                    ? "var(--space-md)"
+                    : "var(--space-lg)",
+                }}
+              >
+                <button
+                  className={`tab${rightTab === "queue" ? " active" : ""}`}
+                  onClick={() => setRightTab("queue")}
+                >
+                  Queue
+                  {batchProgress && batchProgress.totalJobs > 0 && (
+                    <span
+                      className="badge badge-muted"
+                      style={{ marginLeft: 6 }}
+                    >
+                      {batchProgress.totalJobs}
+                    </span>
+                  )}
+                </button>
+                <button
+                  className={`tab${rightTab === "log" ? " active" : ""}`}
+                  onClick={() => setRightTab("log")}
+                >
+                  Log
+                </button>
+              </div>
+
+              {rightTab === "queue" ? (
+                <div className="queue-list">
+                  {queueItems.length === 0 && (
+                    <div className="queue-empty">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="48"
+                        height="48"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="lucide lucide-folder-open-icon lucide-folder-open"
+                        style={{
+                          color: "var(--accent)",
+                          opacity: 0.5,
+                          marginBottom: "10px",
+                        }}
+                      >
+                        <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+                      </svg>
+                      <div>Queue is empty</div>
+                    </div>
+                  )}
+                  {queueItems.map((job) => {
+                    const statusKey = resolveJobStatusKey(job.status);
+                    const errorMsg = getJobStatusError(job.status);
+                    const isProc = statusKey === "processing";
+                    const isDone = statusKey === "completed";
+                    const isFail = statusKey === "failed";
+                    const isCancelled = statusKey === "cancelled";
+
+                    const progress = isProc
+                      ? Math.max(videoProgresses[job.jobId] ?? 0, job.progress)
+                      : job.progress;
+
+                    return (
+                      <div
+                        key={job.jobId}
+                        className={`queue-item${isProc ? " is-processing" : ""}`}
+                      >
+                        {job.thumbnailPath && (
+                          <div className="queue-item-thumb">
+                            <img
+                              src={convertFileSrc(job.thumbnailPath)}
+                              alt="thumb"
+                              loading="lazy"
+                            />
+                          </div>
+                        )}
+                        <div className="queue-item-body">
+                          <div className="queue-item-name">
+                            {basename(job.filePath)}
+                          </div>
+                          <div className="queue-item-meta">
+                            <span className="queue-item-ratio">
+                              {job.selection.label}
+                            </span>
+                            <span
+                              className={`queue-item-status-text${isFail ? " text-error" : ""}`}
+                              title={errorMsg ?? undefined}
+                            >
+                              {isProc
+                                ? `${progress.toFixed(0)}%`
+                                : isDone
+                                  ? "Done"
+                                  : isFail
+                                    ? "Failed"
+                                    : isCancelled
+                                      ? "Cancelled"
+                                      : "Queued"}
+                            </span>
+                          </div>
+                          {isProc && (
+                            <div className="queue-item-progress">
+                              <div
+                                className="queue-item-progress-fill"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                          )}
+                          {isFail && errorMsg && (
+                            <div
+                              className="text-xs text-error truncate"
+                              title={errorMsg}
+                              style={{ marginTop: 2 }}
+                            >
+                              {errorMsg}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="log-panel">
+                  <div className="log-body" ref={logRef}>
+                    {logs.length === 0 && (
+                      <div className="queue-empty">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="48"
+                          height="48"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="lucide lucide-logs-icon lucide-logs"
+                          style={{
+                            color: "var(--accent)",
+                            opacity: 0.5,
+                            marginBottom: "10px",
+                          }}
+                        >
+                          <path d="M3 5h1" />
+                          <path d="M3 12h1" />
+                          <path d="M3 19h1" />
+                          <path d="M8 5h1" />
+                          <path d="M8 12h1" />
+                          <path d="M8 19h1" />
+                          <path d="M13 5h8" />
+                          <path d="M13 12h8" />
+                          <path d="M13 19h8" />
+                        </svg>
+                        <div style={{ fontSize: 13 }}>No log entries yet</div>
+                      </div>
+                    )}
+                    {logs.map((entry, i) => (
+                      <div key={i} className="log-entry">
+                        <span className="log-time">{entry.time}</span>
+                        <span className={`log-msg log-${entry.type}`}>
+                          {entry.msg}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {logs.length > 0 && (
+                    <div
+                      style={{
+                        padding: "6px 8px",
+                        borderTop: "1px solid var(--border)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setLogs([])}
+                      >
+                        Clear Log
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </aside>
+          </div>
+
+          <SettingsOverlay
+            open={settingsOverlayOpen}
+            depsState={depsState}
+            depsInstalling={depsInstalling}
+            depsInstallMessage={depsInstallMessage}
+            aboutMetadata={aboutMetadata}
+            onClose={() => setSettingsOverlayOpen(false)}
+            onInstallMissing={() => handleInstallDependencies(false)}
+            onForceReinstall={() => handleInstallDependencies(true)}
+            onRescan={handleRescanDependencies}
+            missingSubtitleDependencies={missingSubtitleDependencies}
+          />
         </div>
 
-        <SettingsOverlay
-          open={settingsOverlayOpen}
-          depsState={depsState}
-          depsInstalling={depsInstalling}
-          depsInstallMessage={depsInstallMessage}
-          aboutMetadata={aboutMetadata}
-          onClose={() => setSettingsOverlayOpen(false)}
-          onInstallMissing={() => handleInstallDependencies(false)}
-          onForceReinstall={() => handleInstallDependencies(true)}
-          onRescan={handleRescanDependencies}
-          missingSubtitleDependencies={missingSubtitleDependencies}
+        <FirstRunOnboardingOverlay
+          open={firstRunOverlayOpen}
+          onExited={finishFirstRunFlow}
+        >
+          {firstRunPanel === "license" && (
+            <OnboardingModal
+              embedded
+              open={firstRunPanelOpen}
+              licenseKey={licenseKeyInput}
+              onLicenseKeyChange={setLicenseKeyInput}
+              onVerify={handleActivateLicense}
+              onBypass={handleFirstRunBypass}
+              isVerifying={isActivatingLicense}
+              verificationError={authErrorMessage}
+              verificationSuccess={onboardingSuccess}
+              onExited={handleFirstRunPanelExited}
+            />
+          )}
+
+          {firstRunPanel === "dependency" && (
+            <DependencyModal
+              embedded
+              open={firstRunPanelOpen}
+              mode={dependencyPromptMode}
+              missingDependencies={missingSubtitleDependencies}
+              progressById={depsProgressById}
+              isInstalling={depsInstalling}
+              onInstall={handleFirstRunDependencyInstall}
+              onClose={() => {
+                setFirstRunPanelOpen(false);
+                setFirstRunPendingNext("finish");
+                setFirstRunGapReady(false);
+              }}
+              onExited={handleFirstRunPanelExited}
+            />
+          )}
+        </FirstRunOnboardingOverlay>
+
+        <DependencyModal
+          open={dependencyModalOpen}
+          mode={dependencyPromptMode}
+          missingDependencies={missingSubtitleDependencies}
+          progressById={depsProgressById}
+          isInstalling={depsInstalling}
+          onInstall={() => {
+            void handleInstallDependencies(false);
+          }}
+          onClose={closeDependencyPrompt}
+        />
+
+        <LicensePanelModal
+          open={licensePanelOpen}
+          authState={authState}
+          licenseKey={licenseKeyInput}
+          errorMessage={authErrorMessage}
+          isActivating={isActivatingLicense}
+          onLicenseKeyChange={setLicenseKeyInput}
+          onActivate={handleActivateLicense}
+          onRefresh={handleRefreshLicense}
+          onClear={handleClearLicense}
+          onClose={() => setLicensePanelOpen(false)}
+        />
+
+        <AboutDialog
+          open={aboutDialogOpen}
+          onClose={() => setAboutDialogOpen(false)}
+          metadata={aboutMetadata}
         />
       </div>
-
-      <OnboardingModal
-        open={!hasCompletedOnboarding}
-        licenseKey={licenseKeyInput}
-        onLicenseKeyChange={setLicenseKeyInput}
-        onVerify={handleActivateLicense}
-        onBypass={() => {
-          localStorage.setItem(ONBOARDING_STORAGE_KEY, "true")
-          setHasCompletedOnboarding(true)
-          setOnboardingSuccess(false)
-        }}
-        isVerifying={isActivatingLicense}
-        verificationError={authErrorMessage}
-        verificationSuccess={onboardingSuccess}
-      />
-
-      <DependencyModal
-        open={dependencyModalOpen}
-        mode={dependencyPromptMode}
-        missingDependencies={missingSubtitleDependencies}
-        installMessage={depsInstallMessage}
-        progressById={depsProgressById}
-        isInstalling={depsInstalling}
-        canDefer={dependencyPromptMode === "startup"}
-        onInstall={() => handleInstallDependencies(false)}
-        onDefer={() => {
-          localStorage.setItem(SKIPPED_DEPENDENCY_PROMPT_KEY, "true")
-          setSkippedDependencyPrompt(true)
-          setDependencyModalOpen(false)
-        }}
-        onClose={() => setDependencyModalOpen(false)}
-      />
-
-      <LicensePanelModal
-        open={licensePanelOpen}
-        authState={authState}
-        licenseKey={licenseKeyInput}
-        errorMessage={authErrorMessage}
-        isActivating={isActivatingLicense}
-        onLicenseKeyChange={setLicenseKeyInput}
-        onActivate={handleActivateLicense}
-        onRefresh={handleRefreshLicense}
-        onClear={handleClearLicense}
-        onClose={() => setLicensePanelOpen(false)}
-      />
-
-      <AboutDialog
-        open={aboutDialogOpen}
-        onClose={() => setAboutDialogOpen(false)}
-        metadata={aboutMetadata}
-      />
-    </div>
     </AppShellProvider>
   );
 }
