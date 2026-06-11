@@ -350,14 +350,19 @@ pub async fn transcribe_to_segments(
     );
 
     // 2. Execute Whisper with the extracted WAV file
-    let mut child = TokioCommand::new(&whisper_binary_path)
+    let mut command = TokioCommand::new(&whisper_binary_path);
+    command
         .arg("-m")
         .arg(&model_path)
         .arg("-f")
         .arg(&wav_path)
         .arg("-l")
         .arg("auto")
-        .arg("-otxt")
+        .arg("-otxt");
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x0800_0000);
+
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

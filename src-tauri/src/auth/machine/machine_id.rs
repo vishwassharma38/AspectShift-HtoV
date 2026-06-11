@@ -25,9 +25,15 @@ fn format_machine_id(hashed: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn get_raw_machine_id() -> Result<String, AuthError> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    let output = Command::new("reg")
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut command = Command::new("reg");
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
         .args([
             "query",
             r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
