@@ -77,7 +77,7 @@ export type AuthState = {
 	machineId: string | null,
 };
 
-export type AuthStatus = "not_activated" | "activating" | "valid" | "grace_period" | "refresh_required" | "invalid" | "expired" | "offline_valid" | "machine_mismatch" | "corrupted";
+export type AuthStatus = "initializing" | "credentials_found" | "validating" | "not_activated" | "activating" | "valid" | "grace_period" | "refresh_required" | "invalid" | "expired" | "offline_valid" | "machine_mismatch" | "corrupted" | "recoverable_error";
 
 export type BatchJobSettings = {
 	targets: OutputJob[],

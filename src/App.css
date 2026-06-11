@@ -2042,12 +2042,17 @@ html.theme-transitioning *::after {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 18%, transparent);
 }
 
-.license-status-dot[data-status="refresh_required"] .license-status-dot-core {
+.license-status-dot[data-status="gray"] .license-status-dot-core {
+  background: var(--text-muted);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--text-muted) 14%, transparent);
+}
+
+.license-status-dot[data-status="yellow"] .license-status-dot-core {
   background: var(--warning);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 18%, transparent);
 }
 
-.license-status-dot[data-status="unlicensed"] .license-status-dot-core {
+.license-status-dot[data-status="red"] .license-status-dot-core {
   background: var(--error);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--error) 18%, transparent);
 }

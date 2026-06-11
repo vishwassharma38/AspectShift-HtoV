@@ -59,8 +59,8 @@ import {
 import { SettingsOverlay } from "./components/layout/SettingsOverlay";
 import {
   AppShellProvider,
-  type LicenseIndicatorStatus,
 } from "./context/AppShellContext";
+import { getLicenseIndicatorState } from "./utils/licenseIndicatorMapping";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
@@ -624,17 +624,15 @@ export default function App() {
     null,
   );
   const previewVolumeRef = useRef<HTMLDivElement | null>(null);
-  const isLicensed =
-    authState?.status === "valid" ||
-    authState?.status === "offline_valid" ||
-    authState?.status === "grace_period" ||
-    authState?.status === "refresh_required";
-  const licenseIndicatorStatus: LicenseIndicatorStatus =
-    authState?.status === "refresh_required"
-      ? "refresh_required"
-      : isLicensed
-        ? "active"
-        : "unlicensed";
+  const isAuthHydrating =
+    !authState ||
+    authState.status === "initializing" ||
+    authState.status === "credentials_found" ||
+    authState.status === "validating";
+  const licenseIndicatorState = getLicenseIndicatorState(
+    isAuthHydrating ? "loading" : authState?.status,
+  );
+  const isLicensed = licenseIndicatorState.isAccessAllowed;
   const missingSubtitleDependencies = getMissingDependencies(
     depsState,
     SUBTITLE_CORE_DEPENDENCY_IDS,
@@ -1116,7 +1114,7 @@ export default function App() {
   );
 
   const handleCheckForUpdates = useCallback(async () => {
-    if (!isLicensed) return;
+    if (isAuthHydrating || !isLicensed) return;
 
     if (
       updateFlow.stage === "update_available" ||
@@ -1364,6 +1362,7 @@ export default function App() {
     addLog,
     closePendingUpdate,
     isCheckingUpdates,
+    isAuthHydrating,
     isLicensed,
     isUpdateFlowBusy,
     updateFlow.stage,
@@ -2671,7 +2670,7 @@ export default function App() {
       value={{
         authState,
         isLicensed,
-        licenseIndicatorStatus,
+        licenseIndicatorState,
         depsState,
         subtitleCoreReady,
         missingSubtitleDependencies,
@@ -2679,7 +2678,7 @@ export default function App() {
     >
       <div
         className="app-shell"
-        data-auth-status={authState?.status ?? "not_activated"}
+        data-auth-status={authState?.status ?? "initializing"}
       >
         <Header
           theme={theme}

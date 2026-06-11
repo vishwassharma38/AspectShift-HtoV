@@ -16,20 +16,21 @@ pub struct LaunchValidationResult {
 pub async fn run_launch_validation() -> LaunchValidationResult {
     info!("LaunchValidation: starting");
 
+    info!("LaunchValidation: reading JWT from credential store");
     let jwt_opt_res = tokio::task::spawn_blocking(|| load_jwt()).await;
     let jwt_opt = match jwt_opt_res {
         Ok(Ok(j)) => j,
         Ok(Err(e)) => {
             warn!("LaunchValidation: failed to load JWT from keychain: {}", e);
             return LaunchValidationResult {
-                status: AuthStatus::NotActivated,
+                status: AuthStatus::RecoverableError,
                 jwt_metadata: None,
             };
         }
         Err(e) => {
             warn!("LaunchValidation: keychain access task panicked: {}", e);
             return LaunchValidationResult {
-                status: AuthStatus::NotActivated,
+                status: AuthStatus::RecoverableError,
                 jwt_metadata: None,
             };
         }
@@ -38,7 +39,7 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
     let jwt = match jwt_opt {
         Some(j) => j,
         None => {
-            info!("LaunchValidation: no JWT found - NotActivated");
+            info!("LaunchValidation: credential read complete; no JWT found");
             return LaunchValidationResult {
                 status: AuthStatus::NotActivated,
                 jwt_metadata: None,
@@ -46,6 +47,7 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
         }
     };
 
+    info!("LaunchValidation: JWT found; validating claims");
     let metadata = match validate_jwt(&jwt) {
         Ok(m) => m,
         Err(e) => {
@@ -60,6 +62,7 @@ pub async fn run_launch_validation() -> LaunchValidationResult {
             };
         }
     };
+    info!("LaunchValidation: JWT validation complete; restoring metadata");
 
     let mid_res = tokio::task::spawn_blocking(|| get_machine_id()).await;
     let current_machine_id = match mid_res {

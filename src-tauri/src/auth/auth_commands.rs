@@ -1,14 +1,14 @@
 use tauri::{AppHandle, State};
 
 use crate::auth::auth_models::ActivationResult;
+use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::auth::manager::auth_manager::AuthManager;
 use crate::auth::state::auth_state::AuthState;
-use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::video::types::StructuredError;
 
 #[tauri::command]
 pub async fn get_auth_state(manager: State<'_, AuthManager>) -> Result<AuthState, StructuredError> {
-    Ok(manager.get_auth_state().await)
+    Ok(manager.get_authoritative_auth_state().await)
 }
 
 #[tauri::command]

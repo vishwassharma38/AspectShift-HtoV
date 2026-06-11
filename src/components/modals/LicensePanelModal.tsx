@@ -1,4 +1,5 @@
-import type { AuthState, AuthStatus } from "../../types/backend";
+import type { AuthState } from "../../types/backend";
+import { getLicenseIndicatorState } from "../../utils/licenseIndicatorMapping";
 import {
   PRESENCE_TRANSITION_MS,
   usePresenceTransition,
@@ -23,66 +24,19 @@ const TIER_LABELS: Record<string, string> = {
   enterprise: "Enterprise",
 };
 
-type PanelStatusConfig = {
-  label: string;
-  color: string;
-  bg: string;
-  isActive: boolean;
-};
+const STATUS_COLOR_VAR = {
+  green: "var(--success)",
+  yellow: "var(--warning)",
+  red: "var(--error)",
+  gray: "var(--text-muted)",
+} as const;
 
-const ACTIVE_STATUS_CONFIG: PanelStatusConfig = {
-  label: "Active",
-  color: "var(--success)",
-  bg: "color-mix(in srgb, var(--success) 10%, transparent)",
-  isActive: true,
-};
-
-const WARNING_STATUS_CONFIG: PanelStatusConfig = {
-  label: "Needs Refresh",
-  color: "var(--warning)",
-  bg: "color-mix(in srgb, var(--warning) 10%, transparent)",
-  isActive: true,
-};
-
-const INACTIVE_STATUS_CONFIG: PanelStatusConfig = {
-  label: "Not Activated",
-  color: "var(--text-muted)",
-  bg: "var(--bg-input)",
-  isActive: false,
-};
-
-const ERROR_STATUS_CONFIG: PanelStatusConfig = {
-  label: "License Issue",
-  color: "var(--error)",
-  bg: "color-mix(in srgb, var(--error) 10%, transparent)",
-  isActive: false,
-};
-
-function getStatusConfig(status: AuthStatus): PanelStatusConfig {
-  switch (status) {
-    case "valid":
-    case "offline_valid":
-      return ACTIVE_STATUS_CONFIG;
-    case "grace_period":
-      return {
-        ...ACTIVE_STATUS_CONFIG,
-        label: "Grace Period",
-        color: "var(--warning)",
-        bg: "color-mix(in srgb, var(--warning) 10%, transparent)",
-      };
-    case "refresh_required":
-      return WARNING_STATUS_CONFIG;
-    case "invalid":
-    case "expired":
-    case "machine_mismatch":
-    case "corrupted":
-      return ERROR_STATUS_CONFIG;
-    case "activating":
-    case "not_activated":
-    default:
-      return INACTIVE_STATUS_CONFIG;
-  }
-}
+const STATUS_BG = {
+  green: "color-mix(in srgb, var(--success) 10%, transparent)",
+  yellow: "color-mix(in srgb, var(--warning) 10%, transparent)",
+  red: "color-mix(in srgb, var(--error) 10%, transparent)",
+  gray: "var(--bg-input)",
+} as const;
 
 export function LicensePanelModal({
   open,
@@ -103,8 +57,10 @@ export function LicensePanelModal({
 
   if (!isRendered) return null;
 
-  const rawStatus = authState?.status ?? "not_activated";
-  const statusCfg = getStatusConfig(rawStatus);
+  const rawStatus = authState?.status ?? "initializing";
+  const indicatorState = getLicenseIndicatorState(rawStatus);
+  const statusColor = STATUS_COLOR_VAR[indicatorState.color];
+  const statusBg = STATUS_BG[indicatorState.color];
   const tier = authState?.tier ?? "community";
 
   const expiresAt = authState?.jwtExpiresAt
@@ -162,21 +118,21 @@ export function LicensePanelModal({
         <div
           className="lp-status-banner"
           style={{
-            background: statusCfg.bg,
-            borderColor: `color-mix(in srgb, ${statusCfg.color} 25%, transparent)`,
+            background: statusBg,
+            borderColor: `color-mix(in srgb, ${statusColor} 25%, transparent)`,
           }}
         >
           <span
             className="lp-status-dot"
             style={{
-              background: statusCfg.color,
-              boxShadow: statusCfg.isActive
-                ? `0 0 0 3px color-mix(in srgb, ${statusCfg.color} 20%, transparent)`
+              background: statusColor,
+              boxShadow: indicatorState.color !== "gray"
+                ? `0 0 0 3px color-mix(in srgb, ${statusColor} 20%, transparent)`
                 : "none",
             }}
           />
-          <span className="lp-status-label" style={{ color: statusCfg.color }}>
-            {statusCfg.label}
+          <span className="lp-status-label" style={{ color: statusColor }}>
+            {indicatorState.badgeText}
           </span>
           <span className="lp-status-tier">{TIER_LABELS[tier] ?? tier}</span>
         </div>

@@ -6,6 +6,7 @@ import type {
   AuthState,
   UpdateEntitlementCheckResult,
 } from "../types/backend";
+import { getLicenseIndicatorState } from "../utils/licenseIndicatorMapping";
 
 interface AuthStatusChangedPayload {
   authState: AuthState;
@@ -179,12 +180,9 @@ export function AuthPanel({ onAuthStateChange }: Props) {
     }
   };
 
-  const status = authState?.status ?? "not_activated";
-  const canCheckUpdates =
-    status === "valid" ||
-    status === "refresh_required" ||
-    status === "grace_period" ||
-    status === "offline_valid";
+  const status = authState?.status ?? "initializing";
+  const indicatorState = getLicenseIndicatorState(status);
+  const canCheckUpdates = indicatorState.isAccessAllowed;
 
   const handleUpdateCheck = async () => {
     if (!canCheckUpdates || isCheckingUpdates) return;
@@ -261,6 +259,15 @@ export function AuthPanel({ onAuthStateChange }: Props) {
   return (
     <div className="settings-group">
       <div className="settings-group-title">License</div>
+
+      {(status === "initializing" ||
+        status === "credentials_found" ||
+        status === "validating") && (
+        <div className="flex items-center gap-6">
+          <span className="spinner" />
+          <span className="text-sm text-muted">Checking license...</span>
+        </div>
+      )}
 
       {(status === "not_activated" || status === "invalid") && (
         <>
@@ -397,6 +404,17 @@ export function AuthPanel({ onAuthStateChange }: Props) {
           </div>
           <button className="btn btn-danger btn-sm mt-2" onClick={handleClear}>
             Clear &amp; Re-activate
+          </button>
+        </>
+      )}
+
+      {status === "recoverable_error" && (
+        <>
+          <div className="banner banner-error">
+            License status could not be loaded. Try refreshing.
+          </div>
+          <button className="btn btn-sm btn-full mt-2" onClick={handleRefresh}>
+            Refresh License
           </button>
         </>
       )}

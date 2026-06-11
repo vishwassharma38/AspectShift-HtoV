@@ -6,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 use crate::auth::auth_errors::{is_transient_refresh_failure, AuthError};
 use crate::auth::auth_events::{
@@ -61,13 +61,15 @@ pub struct AuthManager {
     retry_index: Arc<RwLock<usize>>,
     refresh_in_progress: Arc<RwLock<bool>>,
     next_retry_at: Arc<RwLock<Option<DateTime<Utc>>>>,
+    initial_validation_complete: Arc<RwLock<bool>>,
+    initial_validation_notify: Arc<Notify>,
 }
 
 impl AuthManager {
     pub fn new(provider: Arc<dyn LicenseProvider>) -> Self {
         Self {
             provider,
-            auth_status: Arc::new(RwLock::new(AuthStatus::NotActivated)),
+            auth_status: Arc::new(RwLock::new(AuthStatus::Initializing)),
             license_tier: Arc::new(RwLock::new(LicenseTier::default())),
             machine_id: Arc::new(RwLock::new(String::new())),
             jwt_metadata: Arc::new(RwLock::new(None)),
@@ -75,6 +77,8 @@ impl AuthManager {
             retry_index: Arc::new(RwLock::new(0)),
             refresh_in_progress: Arc::new(RwLock::new(false)),
             next_retry_at: Arc::new(RwLock::new(None)),
+            initial_validation_complete: Arc::new(RwLock::new(false)),
+            initial_validation_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -115,10 +119,16 @@ impl AuthManager {
         }
     }
 
+    pub async fn get_authoritative_auth_state(&self) -> AuthState {
+        self.wait_for_initial_validation().await;
+        self.get_auth_state().await
+    }
+
     pub async fn run_launch_validation(&self, app: &AppHandle) {
         info!("AuthManager: starting launch validation");
 
-        self.set_status(AuthStatus::Activating).await;
+        self.set_initial_validation_complete(false).await;
+        self.set_status(AuthStatus::Initializing).await;
         self.load_auth_metadata(app).await;
 
         match self.ensure_machine_id().await {
@@ -135,10 +145,17 @@ impl AuthManager {
 
         // Keep this in sync with the HTTP request timeout default used by the license provider.
         let validation_timeout = tokio::time::Duration::from_secs(12);
+        self.set_status(AuthStatus::Validating).await;
+        self.emit_current_state(app).await;
         let result = tokio::time::timeout(validation_timeout, run_launch_validation()).await;
 
         match result {
             Ok(res) => {
+                if res.jwt_metadata.is_some() {
+                    info!("AuthManager: launch credentials found and JWT validated");
+                } else if res.status == AuthStatus::NotActivated {
+                    info!("AuthManager: launch credential read complete; no credentials found");
+                }
                 self.apply_validation_result(&res).await;
                 if let Err(e) = self.recover_missing_metadata(&res, app).await {
                     warn!(
@@ -153,14 +170,19 @@ impl AuthManager {
                     validation_timeout.as_secs()
                 );
                 let current_status = self.auth_status.read().await.clone();
-                if current_status == AuthStatus::Activating {
-                    self.set_status(AuthStatus::NotActivated).await;
+                if current_status.is_startup_pending() {
+                    self.set_status(AuthStatus::RecoverableError).await;
                 }
             }
         }
 
         let state = self.get_auth_state().await;
+        info!(
+            "AuthManager: final launch auth state emitted status={:?}",
+            state.status
+        );
         self.emit_state_for_status(app, &state).await;
+        self.set_initial_validation_complete(true).await;
 
         if state.status.needs_refresh() {
             info!(
@@ -321,14 +343,17 @@ impl AuthManager {
     }
 
     pub async fn refresh(&self, app: &AppHandle) -> Result<AuthState, AuthError> {
+        self.wait_for_initial_validation().await;
         self.refresh_internal(app, false).await
     }
 
-    pub async fn check_update_entitlement(
-        &self,
-        app: &AppHandle,
-    ) -> UpdateEntitlementCheckResult {
+    pub async fn check_update_entitlement(&self, app: &AppHandle) -> UpdateEntitlementCheckResult {
+        self.wait_for_initial_validation().await;
         let current_state = self.get_auth_state().await;
+        info!(
+            "AuthManager: update entitlement gated on auth status={:?}",
+            current_state.status
+        );
 
         if matches!(current_state.status, AuthStatus::OfflineValid) {
             return UpdateEntitlementCheckResult::offline();
@@ -338,17 +363,24 @@ impl AuthManager {
             current_state.status,
             AuthStatus::NotActivated
                 | AuthStatus::Activating
+                | AuthStatus::Initializing
+                | AuthStatus::CredentialsFound
+                | AuthStatus::Validating
                 | AuthStatus::Invalid
                 | AuthStatus::Expired
                 | AuthStatus::MachineMismatch
                 | AuthStatus::Corrupted
+                | AuthStatus::RecoverableError
         ) {
             return UpdateEntitlementCheckResult::auth_required();
         }
 
         let mut status = current_state.status.clone();
 
-        if matches!(status, AuthStatus::GracePeriod | AuthStatus::RefreshRequired) {
+        if matches!(
+            status,
+            AuthStatus::GracePeriod | AuthStatus::RefreshRequired
+        ) {
             match self.silent_refresh(app).await {
                 Ok(refreshed_state) => {
                     status = refreshed_state.status;
@@ -496,7 +528,11 @@ impl AuthManager {
         result
     }
 
-    async fn refresh_execution(&self, app: &AppHandle, silent: bool) -> Result<AuthState, AuthError> {
+    async fn refresh_execution(
+        &self,
+        app: &AppHandle,
+        silent: bool,
+    ) -> Result<AuthState, AuthError> {
         info!(
             "AuthManager: refresh execution started mode={}",
             if silent { "silent" } else { "manual" }
@@ -682,7 +718,10 @@ impl AuthManager {
                         )
                         .await
                     {
-                        warn!("AuthManager: failed to save transient failure metadata: {}", save_err);
+                        warn!(
+                            "AuthManager: failed to save transient failure metadata: {}",
+                            save_err
+                        );
                     }
 
                     self.schedule_retry(app).await;
@@ -706,7 +745,10 @@ impl AuthManager {
                     )
                     .await
                 {
-                    warn!("AuthManager: failed to save authoritative failure metadata: {}", save_err);
+                    warn!(
+                        "AuthManager: failed to save authoritative failure metadata: {}",
+                        save_err
+                    );
                 }
                 let state = self.get_auth_state().await;
                 self.emit_state_for_status(app, &state).await;
@@ -758,7 +800,10 @@ impl AuthManager {
                 let next = self.next_retry_at.read().await;
                 if let Some(at) = *next {
                     if Utc::now() < at {
-                        info!("AuthManager: reactive refresh skipped, cooldown active until {}", at);
+                        info!(
+                            "AuthManager: reactive refresh skipped, cooldown active until {}",
+                            at
+                        );
                         return;
                     }
                 }
@@ -935,6 +980,27 @@ impl AuthManager {
         *guard = status;
     }
 
+    async fn set_initial_validation_complete(&self, complete: bool) {
+        {
+            let mut guard = self.initial_validation_complete.write().await;
+            *guard = complete;
+        }
+        if complete {
+            self.initial_validation_notify.notify_waiters();
+        }
+    }
+
+    async fn wait_for_initial_validation(&self) {
+        loop {
+            let notified = self.initial_validation_notify.notified();
+            if *self.initial_validation_complete.read().await {
+                return;
+            }
+            info!("AuthManager: waiting for initial auth hydration to complete");
+            notified.await;
+        }
+    }
+
     async fn ensure_machine_id(&self) -> Result<String, AuthError> {
         let current = self.machine_id.read().await.clone();
         if !current.is_empty() {
@@ -1061,6 +1127,7 @@ impl AuthManager {
 
         match read_auth_metadata_file(&path) {
             Ok(metadata) => {
+                info!("AuthManager: loaded persisted auth metadata");
                 let mut config = self.auth_config.write().await;
                 *config = metadata;
             }

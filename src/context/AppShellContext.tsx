@@ -1,15 +1,11 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { AppDepsState, AuthState, DependencyId } from "../types/backend";
-
-export type LicenseIndicatorStatus =
-  | "active"
-  | "refresh_required"
-  | "unlicensed";
+import type { LicenseIndicatorState } from "../utils/licenseIndicatorMapping";
 
 export interface AppShellContextValue {
   authState: AuthState | null;
   isLicensed: boolean;
-  licenseIndicatorStatus: LicenseIndicatorStatus;
+  licenseIndicatorState: LicenseIndicatorState;
   depsState: AppDepsState | null;
   subtitleCoreReady: boolean;
   missingSubtitleDependencies: DependencyId[];
