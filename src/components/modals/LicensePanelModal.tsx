@@ -1,4 +1,5 @@
 import type { AuthState } from "../../types/backend";
+import { resolveProductEditionFromAuthState } from "../../utils/productEdition";
 import { getLicenseIndicatorState } from "../../utils/licenseIndicatorMapping";
 import {
   PRESENCE_TRANSITION_MS,
@@ -17,12 +18,6 @@ interface LicensePanelModalProps {
   onClear: () => void;
   onClose: () => void;
 }
-
-const TIER_LABELS: Record<string, string> = {
-  community: "Community",
-  pro: "Pro",
-  enterprise: "Enterprise",
-};
 
 const STATUS_COLOR_VAR = {
   green: "var(--success)",
@@ -61,7 +56,7 @@ export function LicensePanelModal({
   const indicatorState = getLicenseIndicatorState(rawStatus);
   const statusColor = STATUS_COLOR_VAR[indicatorState.color];
   const statusBg = STATUS_BG[indicatorState.color];
-  const tier = authState?.tier ?? "community";
+  const edition = resolveProductEditionFromAuthState(authState);
 
   const expiresAt = authState?.jwtExpiresAt
     ? new Date(authState.jwtExpiresAt)
@@ -134,10 +129,16 @@ export function LicensePanelModal({
           <span className="lp-status-label" style={{ color: statusColor }}>
             {indicatorState.badgeText}
           </span>
-          <span className="lp-status-tier">{TIER_LABELS[tier] ?? tier}</span>
+          <span className="lp-status-edition">{edition}</span>
         </div>
 
         <dl className="lp-meta">
+          <div className="lp-meta-row">
+            <dt className="lp-meta-label">Edition</dt>
+            <dd className="lp-meta-value">
+              <span className="lp-meta-edition">{edition}</span>
+            </dd>
+          </div>
           <div className="lp-meta-row">
             <dt className="lp-meta-label">Machine ID</dt>
             <dd className="lp-meta-value">
@@ -334,7 +335,7 @@ export function LicensePanelModal({
           font-weight: 600;
           flex: 1;
         }
-        .lp-status-tier {
+        .lp-status-edition {
           font-size: 10px;
           font-weight: 700;
           letter-spacing: 0.07em;
@@ -375,7 +376,7 @@ export function LicensePanelModal({
           overflow: hidden;
         }
         .lp-meta-code {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           font-weight: 500;
           color: var(--text-secondary);
@@ -383,8 +384,13 @@ export function LicensePanelModal({
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+        .lp-meta-edition {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
         .lp-meta-time {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--text-muted);
           flex-shrink: 0;
@@ -416,7 +422,7 @@ export function LicensePanelModal({
         }
         .lp-key-input {
           flex: 1;
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           letter-spacing: 0.04em;
           padding: 9px 12px;

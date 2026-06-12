@@ -217,7 +217,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       color: "white",
       fontSize: Math.max(12, fontSize),
       fontWeight: "bold",
-      fontFamily: "Arial, sans-serif",
+      fontFamily: "var(--font-ui)",
       zIndex: 20,
       pointerEvents: "none",
       lineHeight: 1.2,
@@ -480,7 +480,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                 color: "white",
                 fontSize: 10,
                 borderRadius: 3,
-                fontFamily: "monospace",
+                fontFamily: "var(--font-mono)",
                 zIndex: 40,
               }}
             >

@@ -1,3 +1,5 @@
+import { formatBuildModeLabel } from "../../utils/buildMetadata";
+import type { ProductEdition } from "../../utils/productEdition";
 import {
   PRESENCE_TRANSITION_MS,
   usePresenceTransition,
@@ -13,24 +15,21 @@ interface AboutDialogProps {
     identifier: string;
     buildMode: string;
   };
+  edition: ProductEdition;
 }
 
-const BUILD_MODE_COLORS: Record<string, string> = {
-  release: "var(--success)",
-  debug: "var(--warning)",
-  dev: "var(--info)",
-};
-
-export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
+export function AboutDialog({
+  open,
+  onClose,
+  metadata,
+  edition,
+}: AboutDialogProps) {
   const { isRendered, isClosing } = usePresenceTransition(
     open,
     PRESENCE_TRANSITION_MS,
   );
 
   if (!isRendered) return null;
-
-  const buildColor =
-    BUILD_MODE_COLORS[metadata.buildMode?.toLowerCase()] ?? "var(--text-muted)";
 
   return (
     <div
@@ -46,7 +45,6 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
         aria-modal="true"
         aria-label="About"
       >
-        {/* ── Header ───────────────────────────────────────── */}
         <div className="abt-header">
           <div className="abt-logo-wrap">
             <img
@@ -60,19 +58,7 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           <div className="abt-identity">
             <p className="abt-eyebrow">About</p>
             <h2 className="abt-name">{metadata.appName}</h2>
-            <div className="abt-version-row">
-              <code className="abt-version">v{metadata.appVersion}</code>
-              <span
-                className="abt-build-pill"
-                style={{
-                  color: buildColor,
-                  borderColor: `color-mix(in srgb, ${buildColor} 30%, transparent)`,
-                  background: `color-mix(in srgb, ${buildColor} 10%, transparent)`,
-                }}
-              >
-                {metadata.buildMode}
-              </span>
-            </div>
+            <code className="abt-version">v{metadata.appVersion}</code>
           </div>
 
           <button
@@ -91,12 +77,16 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           </button>
         </div>
 
-        {/* ── Divider ───────────────────────────────────────── */}
         <div className="abt-rule" />
 
-        {/* ── Meta rows ─────────────────────────────────────── */}
         <dl className="abt-meta">
           {[
+            { label: "Edition", value: edition, mono: false },
+            {
+              label: "Build",
+              value: formatBuildModeLabel(metadata.buildMode),
+              mono: false,
+            },
             {
               label: "Tauri Runtime",
               value: metadata.tauriVersion,
@@ -113,7 +103,6 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           ))}
         </dl>
 
-        {/* ── Footer ────────────────────────────────────────── */}
         <div className="abt-footer">
           <span className="abt-copyright">
             Copyright © 2026 Vishwas Sharma
@@ -128,7 +117,6 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           -webkit-backdrop-filter: blur(var(--glass-backdrop-blur)) saturate(var(--glass-backdrop-saturation));
         }
 
-        /* ── Panel ─────────────────────────────────────────── */
         .abt-panel {
           width: min(400px, 100%);
           padding: 0;
@@ -138,7 +126,6 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           flex-direction: column;
         }
 
-        /* ── Header ────────────────────────────────────────── */
         .abt-header {
           display: flex;
           align-items: flex-start;
@@ -187,26 +174,11 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .abt-version-row {
-          display: flex;
-          align-items: center;
-          gap: 7px;
-        }
         .abt-version {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           font-weight: 600;
           color: var(--text-secondary);
-        }
-        .abt-build-pill {
-          font-size: 9px;
-          font-weight: 700;
-          letter-spacing: 0.07em;
-          text-transform: uppercase;
-          padding: 2px 7px;
-          border-radius: 20px;
-          border: 1px solid;
-          line-height: 1.6;
         }
         .abt-close {
           width: 30px;
@@ -219,14 +191,12 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           margin-top: 0;
         }
 
-        /* ── Rule ──────────────────────────────────────────── */
         .abt-rule {
           height: 1px;
           background: var(--border);
           margin: 0 24px;
         }
 
-        /* ── Meta ──────────────────────────────────────────── */
         .abt-meta {
           display: flex;
           flex-direction: column;
@@ -261,13 +231,12 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
           white-space: nowrap;
         }
         .abt-meta-code {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           font-weight: 500;
           color: var(--text-secondary);
         }
 
-        /* ── Footer ────────────────────────────────────────── */
         .abt-footer {
           padding: 14px 24px;
           border-top: 1px solid var(--border);

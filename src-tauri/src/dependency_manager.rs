@@ -7,9 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{timeout, Duration};
 
 use crate::download_manager::DownloadManager;
 use crate::manifest_service::{ManifestDependencyInfo, ManifestService};
@@ -19,6 +17,7 @@ use crate::video::types::VideoError;
 
 const WEEKLY_SCAN_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 const DEPENDENCY_HEALTH_FILENAME: &str = "dependency-health.json";
+const DEPENDENCY_HEALTH_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +26,13 @@ pub enum DependencyId {
     WhisperModel,
     Ffmpeg,
     Ffprobe,
+}
+
+pub const MANAGED_DEPENDENCY_IDS: &[DependencyId] =
+    &[DependencyId::WhisperBinary, DependencyId::WhisperModel];
+
+pub fn is_managed_dependency(id: &DependencyId) -> bool {
+    matches!(id, DependencyId::WhisperBinary | DependencyId::WhisperModel)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
@@ -110,6 +116,8 @@ pub struct DependencyReport {
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppDepsState {
+    #[serde(default)]
+    pub validation_revision: u32,
     pub scan_status: DependencyScanStatus,
     #[serde(default)]
     pub scan_source: Option<DependencyScanSource>,
@@ -130,6 +138,7 @@ impl Default for AppDepsState {
     fn default() -> Self {
         Self {
             scan_status: DependencyScanStatus::NotScanned,
+            validation_revision: DEPENDENCY_HEALTH_SCHEMA_VERSION,
             scan_source: None,
             health_status: DependencyHealthStatus::Unknown,
             dependencies: HashMap::new(),
@@ -166,7 +175,7 @@ impl DepsManager {
         let app_handle = app.clone();
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager.maybe_run_first_launch_scan(&app_handle).await;
+            manager.maybe_run_startup_scan(&app_handle).await;
         });
 
         let app_handle = app.clone();
@@ -188,20 +197,47 @@ impl DepsManager {
         self.scan_full_health(app, scan_source).await
     }
 
-    async fn maybe_run_first_launch_scan(&self, app: &AppHandle) {
-        if self.has_persisted_state(app) {
+    async fn maybe_run_startup_scan(&self, app: &AppHandle) {
+        let has_state_file = self.has_persisted_state(app);
+        if has_state_file && !self.should_refresh_persisted_state().await {
             return;
         }
-        if let Err(e) = self.scan_full_health(app, DependencyScanSource::FirstLaunch).await {
-            error!("First-launch dependency scan failed: {}", e);
+        let scan_source = if has_state_file {
+            DependencyScanSource::Manual
+        } else {
+            DependencyScanSource::FirstLaunch
+        };
+        if let Err(e) = self.scan_full_health(app, scan_source).await {
+            error!("Startup dependency scan failed: {}", e);
         }
+    }
+
+    async fn should_refresh_persisted_state(&self) -> bool {
+        let state = self.get_state().await;
+        if state.validation_revision < DEPENDENCY_HEALTH_SCHEMA_VERSION {
+            return true;
+        }
+        if state.scan_status != DependencyScanStatus::ScanCompleted {
+            return true;
+        }
+
+        MANAGED_DEPENDENCY_IDS.iter().any(|id| {
+            state
+                .dependencies
+                .get(id)
+                .map(|report| report.status != DependencyStatus::Ready)
+                .unwrap_or(true)
+        })
     }
 
     pub async fn maybe_run_weekly_scan(&self, app: &AppHandle) {
         if !self.should_run_weekly_scan(app).await {
             return;
         }
-        if let Err(e) = self.scan_full_health(app, DependencyScanSource::Weekly).await {
+        if let Err(e) = self
+            .scan_full_health(app, DependencyScanSource::Weekly)
+            .await
+        {
             error!("Weekly dependency scan failed: {}", e);
         }
     }
@@ -249,11 +285,17 @@ impl DepsManager {
         app: &AppHandle,
         scan_source: DependencyScanSource,
     ) -> Result<AppDepsState, VideoError> {
-        let Ok(_scan_guard) = self.scan_gate.try_lock() else {
-            return Ok(self.get_state().await);
+        let is_weekly_scan = matches!(scan_source, DependencyScanSource::Weekly);
+        let _scan_guard = if is_weekly_scan {
+            let Ok(scan_guard) = self.scan_gate.try_lock() else {
+                return Ok(self.get_state().await);
+            };
+            scan_guard
+        } else {
+            self.scan_gate.lock().await
         };
 
-        if matches!(scan_source, DependencyScanSource::Weekly) && self.is_app_busy(app).await {
+        if is_weekly_scan && self.is_app_busy(app).await {
             return Ok(self.get_state().await);
         }
 
@@ -281,32 +323,22 @@ impl DepsManager {
         let manifest = self.manifest_service.get_manifest(app).await;
         let mut deps = HashMap::new();
 
-        let whisper_binary_meta = manifest
-            .as_ref()
-            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_binary"));
+        let whisper_binary_meta = manifest.as_ref().and_then(|m| {
+            self.manifest_service
+                .get_dependency_info(m, "whisper_binary")
+        });
         deps.insert(
             DependencyId::WhisperBinary,
             self.check_whisper_binary(&paths, whisper_binary_meta).await,
         );
 
-        let whisper_model_meta = manifest
-            .as_ref()
-            .and_then(|m| self.manifest_service.get_dependency_info(m, "whisper_model"));
+        let whisper_model_meta = manifest.as_ref().and_then(|m| {
+            self.manifest_service
+                .get_dependency_info(m, "whisper_model")
+        });
         deps.insert(
             DependencyId::WhisperModel,
             self.check_whisper_model(&paths, whisper_model_meta).await,
-        );
-
-        deps.insert(
-            DependencyId::Ffmpeg,
-            self.check_sidecar_executable(app, "ffmpeg", DependencyId::Ffmpeg, None)
-                .await,
-        );
-
-        deps.insert(
-            DependencyId::Ffprobe,
-            self.check_sidecar_executable(app, "ffprobe", DependencyId::Ffprobe, None)
-                .await,
         );
 
         let all_ready = deps.values().all(|d| d.status == DependencyStatus::Ready);
@@ -321,6 +353,7 @@ impl DepsManager {
         let now = Utc::now().to_rfc3339();
         let mut next_state = AppDepsState {
             scan_status: DependencyScanStatus::ScanCompleted,
+            validation_revision: DEPENDENCY_HEALTH_SCHEMA_VERSION,
             scan_source: Some(scan_source.clone()),
             health_status,
             dependencies: deps,
@@ -364,7 +397,9 @@ impl DepsManager {
     }
 
     fn has_persisted_state(&self, app: &AppHandle) -> bool {
-        self.state_file_path(app).map(|path| path.exists()).unwrap_or(false)
+        self.state_file_path(app)
+            .map(|path| path.exists())
+            .unwrap_or(false)
     }
 
     fn state_file_path(&self, app: &AppHandle) -> Result<PathBuf, VideoError> {
@@ -381,11 +416,14 @@ impl DepsManager {
         let content = std::fs::read_to_string(&path)?;
         let mut state: AppDepsState = serde_json::from_str(&content)?;
 
-        if state.last_full_scan_at.is_none() && state.scan_status == DependencyScanStatus::ScanCompleted {
+        if state.last_full_scan_at.is_none()
+            && state.scan_status == DependencyScanStatus::ScanCompleted
+        {
             state.last_full_scan_at = Some(state.last_updated.clone());
         }
 
-        if state.health_status == DependencyHealthStatus::Unknown && !state.dependencies.is_empty() {
+        if state.health_status == DependencyHealthStatus::Unknown && !state.dependencies.is_empty()
+        {
             state.health_status = if state.all_ready {
                 DependencyHealthStatus::Healthy
             } else {
@@ -393,17 +431,32 @@ impl DepsManager {
             };
         }
 
+        if state.validation_revision < DEPENDENCY_HEALTH_SCHEMA_VERSION {
+            info!(
+                "Invalidating persisted dependency health state revision {} -> {}",
+                state.validation_revision, DEPENDENCY_HEALTH_SCHEMA_VERSION
+            );
+            state.validation_revision = DEPENDENCY_HEALTH_SCHEMA_VERSION;
+        }
+        filter_unmanaged_dependencies(&mut state);
+
         let mut guard = self.state.blocking_write();
         *guard = state;
         Ok(())
     }
 
-    fn save_persisted_state(&self, app: &AppHandle, state: &AppDepsState) -> Result<(), VideoError> {
+    fn save_persisted_state(
+        &self,
+        app: &AppHandle,
+        state: &AppDepsState,
+    ) -> Result<(), VideoError> {
         let path = self.state_file_path(app)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let serialized = serde_json::to_string_pretty(state)?;
+        let mut state = state.clone();
+        filter_unmanaged_dependencies(&mut state);
+        let serialized = serde_json::to_string_pretty(&state)?;
         std::fs::write(path, serialized)?;
         Ok(())
     }
@@ -622,111 +675,29 @@ impl DepsManager {
         }
     }
 
-    async fn check_sidecar_executable(
-        &self,
-        app: &AppHandle,
-        name: &str,
-        id: DependencyId,
-        expected: Option<ManifestDependencyInfo>,
-    ) -> DependencyReport {
-        let mut path_str = None;
-        let mut version = None;
-
-        let (display_name, description) = match id {
-            DependencyId::Ffmpeg => (
-                "FFmpeg".to_string(),
-                "Universal media converter for video processing.".to_string(),
-            ),
-            DependencyId::Ffprobe => (
-                "FFprobe".to_string(),
-                "Media analysis tool for detecting video properties.".to_string(),
-            ),
-            _ => (name.to_string(), String::new()),
-        };
-
-        let status = match app.shell().sidecar(name) {
-            Ok(sidecar) => {
-                if let Ok(p) = app
-                    .path()
-                    .resolve(format!("bin/{}", name), tauri::path::BaseDirectory::Resource)
-                {
-                    path_str = Some(p.to_string_lossy().to_string());
-                }
-
-                match timeout(Duration::from_secs(2), async {
-                    let cmd = sidecar.args(["-version"]);
-                    cmd.output().await
-                })
-                .await
-                {
-                    Ok(Ok(output)) => {
-                        if output.status.success() {
-                            let out_str = String::from_utf8_lossy(&output.stdout);
-                            if let Some(first_line) = out_str.lines().next() {
-                                version = Some(first_line.to_string());
-                            }
-                            DependencyStatus::Ready
-                        } else {
-                            let err_msg = String::from_utf8_lossy(&output.stderr);
-                            error!(
-                                "Sidecar {} failed with exit code {:?}: {}",
-                                name, output.status, err_msg
-                            );
-                            DependencyStatus::Corrupted {
-                                message: format!("Executable failed: {}", err_msg),
-                            }
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        error!("Failed to execute sidecar {}: {}", name, e);
-                        DependencyStatus::Invalid {
-                            message: format!("Execution failed: {}", e),
-                        }
-                    }
-                    Err(_) => {
-                        error!("Sidecar {} validation timed out after 2 seconds", name);
-                        DependencyStatus::Invalid {
-                            message: "Validation timed out".to_string(),
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Sidecar {} not found in Tauri resources: {}", name, e);
-                DependencyStatus::Missing
-            }
-        };
-
-        let lifecycle = if matches!(status, DependencyStatus::Missing) {
-            DependencyLifecycleStatus::Missing
-        } else {
-            DependencyLifecycleStatus::Installed
-        };
-
-        DependencyReport {
-            id,
-            name: display_name,
-            status,
-            version,
-            path: path_str,
-            description,
-            last_checked: Utc::now().to_rfc3339(),
-            sha256_verified: None,
-            expected_version: expected.as_ref().map(|m| m.version.clone()),
-            expected_sha256: expected.as_ref().map(|m| m.sha256.clone()),
-            expected_filename: Some(name.to_string()),
-            source_url: expected.as_ref().map(|m| m.url.clone()),
-            update_available: None,
-            installed_version: None,
-            lifecycle,
-            lifecycle_message: None,
-        }
-    }
-
     async fn emit_state(&self, app: &AppHandle) {
         let state = self.get_state().await;
         let _ = app.emit("deps://state", state);
     }
+}
+
+fn filter_unmanaged_dependencies(state: &mut AppDepsState) {
+    state.dependencies.retain(|id, _| is_managed_dependency(id));
+    state.all_ready = !state.dependencies.is_empty()
+        && MANAGED_DEPENDENCY_IDS.iter().all(|id| {
+            state
+                .dependencies
+                .get(id)
+                .map(|report| report.status == DependencyStatus::Ready)
+                .unwrap_or(false)
+        });
+    state.health_status = if state.dependencies.is_empty() {
+        DependencyHealthStatus::Unknown
+    } else if state.all_ready {
+        DependencyHealthStatus::Healthy
+    } else {
+        DependencyHealthStatus::Degraded
+    };
 }
 
 fn calculate_sha256_hex(path: &std::path::Path) -> Result<String, std::io::Error> {

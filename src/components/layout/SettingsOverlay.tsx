@@ -1,11 +1,23 @@
 import { useState } from "react";
 import type { AppDepsState, DependencyId } from "../../types/backend";
-import { getDependencyHealthSummary } from "../../services/dependencyManager";
+import {
+  getDependencyHealthSummary,
+  getManagedDependencyReports,
+} from "../../services/dependencyManager";
+import { formatBuildModeLabel } from "../../utils/buildMetadata";
+import type { ProductEdition } from "../../utils/productEdition";
 
 interface SettingsOverlayProps {
   open: boolean;
   depsState: AppDepsState | null;
-  depsInstalling: boolean;
+  dependencyOperation:
+    | "idle"
+    | "downloading"
+    | "redownloading"
+    | "checking"
+    | "verifying"
+    | "completed"
+    | "failed";
   depsInstallMessage: string | null;
   aboutMetadata: {
     appName: string;
@@ -14,6 +26,7 @@ interface SettingsOverlayProps {
     identifier: string;
     buildMode: string;
   };
+  edition: ProductEdition;
   onClose: () => void;
   onInstallMissing: () => void;
   onForceReinstall: () => void;
@@ -23,12 +36,6 @@ interface SettingsOverlayProps {
 
 type SettingsTab = "dependencies" | "about";
 
-const BUILD_MODE_COLORS: Record<string, string> = {
-  release: "var(--success)",
-  debug: "var(--warning)",
-  dev: "var(--info)",
-};
-
 const NAV_ITEMS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "dependencies", label: "Dependencies", icon: "⬡" },
   { id: "about", label: "About", icon: "◎" },
@@ -37,9 +44,10 @@ const NAV_ITEMS: { id: SettingsTab; label: string; icon: string }[] = [
 export function SettingsOverlay({
   open,
   depsState,
-  depsInstalling,
+  dependencyOperation,
   depsInstallMessage,
   aboutMetadata,
+  edition,
   onClose,
   onInstallMissing,
   onForceReinstall,
@@ -47,17 +55,26 @@ export function SettingsOverlay({
   missingSubtitleDependencies,
 }: SettingsOverlayProps) {
   const health = getDependencyHealthSummary(depsState);
+  const managedDependencies = getManagedDependencyReports(depsState);
   const [activeTab, setActiveTab] = useState<SettingsTab>("dependencies");
 
   const allReady = missingSubtitleDependencies.length === 0;
   const isScanning = health.scanStatus === "scanning";
+  const operationActive =
+    dependencyOperation === "downloading" ||
+    dependencyOperation === "redownloading" ||
+    dependencyOperation === "checking" ||
+    dependencyOperation === "verifying" ||
+    isScanning;
+  const isDownloading =
+    dependencyOperation === "downloading" ||
+    dependencyOperation === "verifying";
+  const isRedownloading = dependencyOperation === "redownloading";
+  const isChecking = dependencyOperation === "checking" || isScanning;
   const healthPct =
     health.totalCount > 0
       ? Math.round((health.readyCount / health.totalCount) * 100)
       : 0;
-  const buildColor =
-    BUILD_MODE_COLORS[aboutMetadata.buildMode?.toLowerCase()] ??
-    "var(--text-muted)";
 
   return (
     <div className={`view-overlay${open ? " open" : ""}`} aria-hidden={!open}>
@@ -183,7 +200,7 @@ export function SettingsOverlay({
                     {health.readyCount}
                     <span className="so-stat-total">
                       {" "}
-                      / {health.totalCount || 4}
+                      / {health.totalCount || 2}
                     </span>
                   </span>
                 </div>
@@ -218,7 +235,7 @@ export function SettingsOverlay({
               {/* Dependency list */}
               <div className="so-section-label">Version Specs</div>
               <div className="so-dep-list">
-                {Object.values(depsState?.dependencies ?? {}).map((dep, i) => {
+                {managedDependencies.map((dep, i) => {
                   const isReady = dep.status.status === "ready";
                   return (
                     <div
@@ -268,7 +285,7 @@ export function SettingsOverlay({
                   );
                 })}
 
-                {Object.values(depsState?.dependencies ?? {}).length === 0 && (
+                {managedDependencies.length === 0 && (
                   <div className="so-dep-empty">
                     <span>No dependencies found</span>
                   </div>
@@ -283,9 +300,9 @@ export function SettingsOverlay({
                 <button
                   className="so-action-btn so-action-btn--primary"
                   onClick={onInstallMissing}
-                  disabled={depsInstalling}
+                  disabled={operationActive || allReady}
                 >
-                  {depsInstalling ? (
+                  {isDownloading ? (
                     <span className="so-spinner" />
                   ) : (
                     <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -304,36 +321,42 @@ export function SettingsOverlay({
                       />
                     </svg>
                   )}
-                  Install Missing
+                  {isDownloading
+                    ? "Downloading Dependencies..."
+                    : "Download Missing Dependencies"}
                 </button>
 
                 <button
                   className="so-action-btn"
                   onClick={onForceReinstall}
-                  disabled={depsInstalling}
+                  disabled={operationActive}
                 >
-                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                    <path
-                      d="M11 2.5A5.5 5.5 0 1 0 12 6.5"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    />
-                    <path
-                      d="M11 2.5V0M11 2.5H8.5"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  Force Reinstall
+                  {isRedownloading ? (
+                    <span className="so-spinner so-spinner--dark" />
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                      <path
+                        d="M11 2.5A5.5 5.5 0 1 0 12 6.5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d="M11 2.5V0M11 2.5H8.5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                  {isRedownloading ? "Repairing Dependencies..." : "Repair"}
                 </button>
 
                 <button
                   className="so-action-btn so-action-btn--ghost"
                   onClick={onRescan}
-                  disabled={depsInstalling || isScanning}
+                  disabled={operationActive}
                 >
                   <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
                     <circle
@@ -351,7 +374,7 @@ export function SettingsOverlay({
                       strokeLinejoin="round"
                     />
                   </svg>
-                  {isScanning ? "Scanning..." : "Health Check"}
+                  {isChecking ? "Checking Health..." : "Check Health"}
                 </button>
               </div>
 
@@ -386,21 +409,9 @@ export function SettingsOverlay({
                   <div className="so-about-identity">
                     <p className="so-about-eyebrow">About</p>
                     <h3 className="so-about-name">{aboutMetadata.appName}</h3>
-                    <div className="so-about-version-row">
-                      <code className="so-about-version">
-                        v{aboutMetadata.appVersion}
-                      </code>
-                      <span
-                        className="so-about-build-pill"
-                        style={{
-                          color: buildColor,
-                          borderColor: `color-mix(in srgb, ${buildColor} 30%, transparent)`,
-                          background: `color-mix(in srgb, ${buildColor} 10%, transparent)`,
-                        }}
-                      >
-                        {aboutMetadata.buildMode}
-                      </span>
-                    </div>
+                    <code className="so-about-version">
+                      v{aboutMetadata.appVersion}
+                    </code>
                   </div>
                 </div>
 
@@ -408,6 +419,16 @@ export function SettingsOverlay({
 
                 <dl className="so-about-meta">
                   {[
+                    {
+                      label: "Edition",
+                      value: edition,
+                      mono: false,
+                    },
+                    {
+                      label: "Build",
+                      value: formatBuildModeLabel(aboutMetadata.buildMode),
+                      mono: false,
+                    },
                     {
                       label: "Tauri Runtime",
                       value: aboutMetadata.tauriVersion,
@@ -636,7 +657,7 @@ export function SettingsOverlay({
           justify-content: center;
           font-size: 10px;
           font-weight: 700;
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           line-height: 1;
         }
 
@@ -677,7 +698,7 @@ export function SettingsOverlay({
           font-size: 12px;
           font-weight: 600;
           color: var(--text-primary);
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
         }
         .so-stat-total {
           color: var(--text-muted);
@@ -768,7 +789,7 @@ export function SettingsOverlay({
           font-weight: 600;
         }
         .so-dep-version-val {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           font-weight: 500;
           color: var(--text-secondary);
@@ -847,6 +868,10 @@ export function SettingsOverlay({
           animation: soSpin 0.65s linear infinite;
           flex-shrink: 0;
         }
+        .so-spinner--dark {
+          border-color: color-mix(in srgb, currentColor 25%, transparent);
+          border-top-color: currentColor;
+        }
         @keyframes soSpin {
           to { transform: rotate(360deg); }
         }
@@ -859,7 +884,7 @@ export function SettingsOverlay({
           gap: 8px;
           font-size: 11px;
           color: var(--text-muted);
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           padding: 10px 14px;
           border-radius: 8px;
           background: var(--bg-input);
@@ -954,26 +979,11 @@ export function SettingsOverlay({
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .so-about-version-row {
-          display: flex;
-          align-items: center;
-          gap: 7px;
-        }
         .so-about-version {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           font-weight: 600;
           color: var(--text-secondary);
-        }
-        .so-about-build-pill {
-          font-size: 9px;
-          font-weight: 700;
-          letter-spacing: 0.07em;
-          text-transform: uppercase;
-          padding: 2px 7px;
-          border-radius: 20px;
-          border: 1px solid;
-          line-height: 1.6;
         }
         .so-about-rule {
           height: 1px;
@@ -1014,7 +1024,7 @@ export function SettingsOverlay({
           white-space: nowrap;
         }
         .so-about-meta-code {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           font-weight: 500;
           color: var(--text-secondary);

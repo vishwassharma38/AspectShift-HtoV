@@ -57,14 +57,14 @@ import {
   type UpdateFlowStage,
 } from "./components/modals/UpdateModal";
 import { SettingsOverlay } from "./components/layout/SettingsOverlay";
-import {
-  AppShellProvider,
-} from "./context/AppShellContext";
+import { AppShellProvider } from "./context/AppShellContext";
 import { getLicenseIndicatorState } from "./utils/licenseIndicatorMapping";
+import { resolveProductEditionFromAuthState } from "./utils/productEdition";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
   formatDependencyProgressPercent,
+  normalizeDependencyProgress,
   SUBTITLE_CORE_DEPENDENCY_IDS,
   type DependencyPromptMode,
 } from "./services/dependencyManager";
@@ -108,6 +108,15 @@ interface DependencyInstallEvent {
   progressPercent: number | null;
   message: string | null;
 }
+
+type DependencyOperation =
+  | "idle"
+  | "downloading"
+  | "redownloading"
+  | "checking"
+  | "verifying"
+  | "completed"
+  | "failed";
 
 type UpdateNoticeTone = "success" | "warning" | "error" | "info";
 
@@ -536,13 +545,20 @@ export default function App() {
   );
   const [depsState, setDepsState] = useState<AppDepsState | null>(null);
   const [depsStateLoaded, setDepsStateLoaded] = useState(false);
-  const [depsInstalling, setDepsInstalling] = useState(false);
+  const [dependencyOperation, setDependencyOperation] =
+    useState<DependencyOperation>("idle");
   const [depsInstallMessage, setDepsInstallMessage] = useState<string | null>(
     null,
   );
   const [depsProgressById, setDepsProgressById] = useState<
     Partial<Record<DependencyId, number>>
   >({});
+  const dependencyOperationRef = useRef<DependencyOperation>("idle");
+  const dependencyRescanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const activeDependencyTargetsRef = useRef<DependencyId[]>([]);
+  const depsProgressByIdRef = useRef<Partial<Record<DependencyId, number>>>({});
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
   const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
@@ -573,7 +589,10 @@ export default function App() {
   });
   const [onboardingSuccess, setOnboardingSuccess] = useState(false);
   const [firstRunPanel, setFirstRunPanel] = useState<FirstRunPanel | null>(
-    () => (localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true" ? null : "license"),
+    () =>
+      localStorage.getItem(ONBOARDING_STORAGE_KEY) === "true"
+        ? null
+        : "license",
   );
   const [firstRunPanelOpen, setFirstRunPanelOpen] = useState(() => {
     return localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "true";
@@ -633,10 +652,15 @@ export default function App() {
     isAuthHydrating ? "loading" : authState?.status,
   );
   const isLicensed = licenseIndicatorState.isAccessAllowed;
+  const productEdition = resolveProductEditionFromAuthState(authState);
   const missingSubtitleDependencies = getMissingDependencies(
     depsState,
     SUBTITLE_CORE_DEPENDENCY_IDS,
   );
+  const depsInstalling =
+    dependencyOperation === "downloading" ||
+    dependencyOperation === "redownloading" ||
+    dependencyOperation === "verifying";
   const missingSubtitleDependencyKey = missingSubtitleDependencies.join("|");
   const subtitleCoreReady = hasRequiredDependencies(
     depsState,
@@ -850,7 +874,11 @@ export default function App() {
         : "finish";
     setOnboardingSuccess(false);
     beginFirstRunPanelClose(nextStep);
-  }, [beginFirstRunPanelClose, depsStateLoaded, shouldShowFirstRunDependencyStep]);
+  }, [
+    beginFirstRunPanelClose,
+    depsStateLoaded,
+    shouldShowFirstRunDependencyStep,
+  ]);
 
   const handleRefreshLicense = useCallback(async () => {
     try {
@@ -935,8 +963,7 @@ export default function App() {
         message: next.message,
         progressPercent: next.progressPercent ?? null,
         progressLabel: next.progressLabel ?? null,
-        persistent:
-          options?.persistent ?? next.tone === "error",
+        persistent: options?.persistent ?? next.tone === "error",
       };
       notificationIdRef.current = queuedNotification.id;
       setNotificationQueue((queue) => [...queue, queuedNotification]);
@@ -1013,8 +1040,21 @@ export default function App() {
     window.location.reload();
   }, []);
 
+  const updateDependencyOperation = useCallback(
+    (nextOperation: DependencyOperation) => {
+      dependencyOperationRef.current = nextOperation;
+      setDependencyOperation(nextOperation);
+    },
+    [],
+  );
+
   const handleInstallDependencies = useCallback(
     async (forceAll = false): Promise<boolean> => {
+      if (dependencyOperationRef.current !== "idle") {
+        setDepsInstallMessage("A dependency operation is already in progress.");
+        return false;
+      }
+
       const targetIds = forceAll
         ? SUBTITLE_CORE_DEPENDENCY_IDS
         : missingSubtitleDependencies;
@@ -1025,30 +1065,66 @@ export default function App() {
       }
 
       try {
-        setDepsInstalling(true);
-        setDepsInstallMessage("Starting install...");
-        for (const dependencyId of targetIds) {
-          await invoke("install_dependency", { id: dependencyId });
+        updateDependencyOperation(forceAll ? "redownloading" : "downloading");
+        activeDependencyTargetsRef.current = [...targetIds];
+        depsProgressByIdRef.current = {};
+        setDepsProgressById({});
+        setDepsInstallMessage(
+          forceAll
+            ? "Preparing to Repair dependencies..."
+            : "Starting dependency download...",
+        );
+
+        if (forceAll) {
+          const refreshed = await invoke<AppDepsState>(
+            "reinstall_dependencies",
+          );
+          setDepsState(refreshed);
+        } else {
+          for (const dependencyId of targetIds) {
+            const refreshed = await invoke<AppDepsState>("install_dependency", {
+              id: dependencyId,
+            });
+            setDepsState(refreshed);
+          }
         }
+
+        updateDependencyOperation("verifying");
         const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
           scan_source: "post_download",
         });
         setDepsState(refreshed);
-        setDepsInstallMessage("Dependency installation complete.");
+        updateDependencyOperation("completed");
+        activeDependencyTargetsRef.current = [];
+        setDepsInstallMessage("Dependency download complete.");
         return true;
       } catch (error) {
-        setDepsInstallMessage(`Install failed: ${errorMessage(error)}`);
+        updateDependencyOperation("failed");
+        activeDependencyTargetsRef.current = [];
+        setDepsInstallMessage(
+          `Dependency download failed: ${errorMessage(error)}`,
+        );
         return false;
       } finally {
-        setDepsInstalling(false);
+        window.setTimeout(() => {
+          if (
+            dependencyOperationRef.current === "completed" ||
+            dependencyOperationRef.current === "failed"
+          ) {
+            updateDependencyOperation("idle");
+          }
+        }, 1200);
       }
     },
-    [missingSubtitleDependencies],
+    [missingSubtitleDependencies, updateDependencyOperation],
   );
 
   useEffect(() => {
     return () => {
       clearFirstRunTimers();
+      if (dependencyRescanTimerRef.current) {
+        clearTimeout(dependencyRescanTimerRef.current);
+      }
     };
   }, [clearFirstRunTimers]);
 
@@ -1060,13 +1136,39 @@ export default function App() {
     setFirstRunGapReady(false);
   }, [handleInstallDependencies]);
 
-  const handleRescanDependencies = useCallback(() => {
-    invoke<AppDepsState>("rescan_dependencies", { scan_source: "manual" })
-      .then(setDepsState)
-      .catch((error) => {
-        setDepsInstallMessage(`Rescan failed: ${errorMessage(error)}`);
+  const handleRescanDependencies = useCallback(async () => {
+    if (dependencyOperationRef.current !== "idle") {
+      setDepsInstallMessage("A dependency operation is already in progress.");
+      return;
+    }
+
+    try {
+      updateDependencyOperation("checking");
+      setDepsInstallMessage("Checking dependency health...");
+      const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
+        scan_source: "manual",
       });
-  }, []);
+      setDepsState(refreshed);
+      updateDependencyOperation("completed");
+      setDepsInstallMessage(
+        refreshed.allReady
+          ? "Dependency health check complete. All dependencies are ready."
+          : "Dependency health check complete. Some dependencies need attention.",
+      );
+    } catch (error) {
+      updateDependencyOperation("failed");
+      setDepsInstallMessage(`Health check failed: ${errorMessage(error)}`);
+    } finally {
+      window.setTimeout(() => {
+        if (
+          dependencyOperationRef.current === "completed" ||
+          dependencyOperationRef.current === "failed"
+        ) {
+          updateDependencyOperation("idle");
+        }
+      }, 1200);
+    }
+  }, [updateDependencyOperation]);
 
   const openDependencyPrompt = useCallback(
     (
@@ -2031,27 +2133,113 @@ export default function App() {
         (e) => {
           const lifecycle = e.payload.lifecycle;
           if (lifecycle === "downloading") {
-            setDepsInstalling(true);
-            const progress = e.payload.progressPercent ?? 0;
-            setDepsProgressById((prev) => ({
-              ...prev,
+            if (dependencyOperationRef.current === "idle") {
+              updateDependencyOperation("downloading");
+            }
+            const progress = normalizeDependencyProgress(
+              e.payload.progressPercent,
+            );
+            depsProgressByIdRef.current = {
+              ...depsProgressByIdRef.current,
               [e.payload.id]: progress,
-            }));
+            };
+            setDepsProgressById(depsProgressByIdRef.current);
             setDepsInstallMessage(
               `Downloading ${e.payload.id}... ${formatDependencyProgressPercent(progress)}%`,
             );
           } else if (lifecycle === "verifying") {
-            setDepsInstallMessage(`Verifying ${e.payload.id}...`);
-          } else if (lifecycle === "extracting") {
-            setDepsInstallMessage(`Extracting ${e.payload.id}...`);
-          } else if (lifecycle === "installed") {
-            setDepsInstallMessage("Ready");
-            setDepsInstalling(false);
-          } else if (lifecycle === "failed") {
-            setDepsInstallMessage(
-              e.payload.message ?? "Dependency install failed",
+            depsProgressByIdRef.current = {
+              ...depsProgressByIdRef.current,
+              [e.payload.id]: 100,
+            };
+            setDepsProgressById(depsProgressByIdRef.current);
+            const activeTargets =
+              activeDependencyTargetsRef.current.length > 0
+                ? activeDependencyTargetsRef.current
+                : SUBTITLE_CORE_DEPENDENCY_IDS;
+            const allDownloadsComplete = activeTargets.every(
+              (dependencyId) =>
+                normalizeDependencyProgress(
+                  depsProgressByIdRef.current[dependencyId],
+                ) >= 100,
             );
-            setDepsInstalling(false);
+
+            if (allDownloadsComplete) {
+              updateDependencyOperation("verifying");
+              setDepsInstallMessage(`Verifying ${e.payload.id}...`);
+            } else {
+              setDepsInstallMessage("Downloading dependency files...");
+            }
+          } else if (lifecycle === "extracting") {
+            const activeTargets =
+              activeDependencyTargetsRef.current.length > 0
+                ? activeDependencyTargetsRef.current
+                : SUBTITLE_CORE_DEPENDENCY_IDS;
+            const allDownloadsComplete = activeTargets.every(
+              (dependencyId) =>
+                normalizeDependencyProgress(
+                  depsProgressByIdRef.current[dependencyId],
+                ) >= 100,
+            );
+            setDepsInstallMessage(
+              allDownloadsComplete
+                ? `Extracting ${e.payload.id}...`
+                : "Downloading dependency files...",
+            );
+          } else if (lifecycle === "installed") {
+            depsProgressByIdRef.current = {
+              ...depsProgressByIdRef.current,
+              [e.payload.id]: 100,
+            };
+            setDepsProgressById(depsProgressByIdRef.current);
+            const activeTargets =
+              activeDependencyTargetsRef.current.length > 0
+                ? activeDependencyTargetsRef.current
+                : SUBTITLE_CORE_DEPENDENCY_IDS;
+            const allDownloadsComplete = activeTargets.every(
+              (dependencyId) =>
+                normalizeDependencyProgress(
+                  depsProgressByIdRef.current[dependencyId],
+                ) >= 100,
+            );
+            setDepsInstallMessage(
+              allDownloadsComplete
+                ? (e.payload.message ?? `${e.payload.id} ready`)
+                : "Downloading dependency files...",
+            );
+            if (dependencyRescanTimerRef.current) {
+              clearTimeout(dependencyRescanTimerRef.current);
+            }
+            dependencyRescanTimerRef.current = setTimeout(() => {
+              invoke<AppDepsState>("rescan_dependencies", {
+                scan_source: "post_download",
+              })
+                .then((state) => {
+                  setDepsState(state);
+                  if (state.allReady) {
+                    updateDependencyOperation("completed");
+                    activeDependencyTargetsRef.current = [];
+                    setDepsInstallMessage("Dependency download complete.");
+                    window.setTimeout(() => {
+                      if (dependencyOperationRef.current === "completed") {
+                        updateDependencyOperation("idle");
+                      }
+                    }, 1200);
+                  }
+                })
+                .catch((error) => {
+                  updateDependencyOperation("failed");
+                  setDepsInstallMessage(
+                    `Dependency verification failed: ${errorMessage(error)}`,
+                  );
+                });
+            }, 350);
+          } else if (lifecycle === "failed") {
+            updateDependencyOperation("failed");
+            activeDependencyTargetsRef.current = [];
+            setDepsInstallMessage(
+              e.payload.message ?? "Dependency download failed",
+            );
           }
         },
       );
@@ -2064,7 +2252,7 @@ export default function App() {
       disposed = true;
       unsubscribers.forEach((u) => u());
     };
-  }, []);
+  }, [updateDependencyOperation]);
 
   // ── Orientation detect on file change ─────────────────────
   useEffect(() => {
@@ -2638,32 +2826,31 @@ export default function App() {
       : batchProgress && batchProgress.status === "failed"
         ? { tone: "error" as const, label: "Errors" }
         : null;
-  const updateBanner =
-    hasUpdateBanner
-      ? {
-          source: "update" as const,
-          tone: updateFlow.tone,
-          message: updateFlow.progressLabel ?? updateFlow.message,
-          progressPercent: updateFlow.progressPercent,
-          progressStage:
-            updateFlow.stage === "downloading" ||
-            updateFlow.stage === "installing",
-          exiting: isUpdateBannerExiting,
-        }
-      : null;
+  const updateBanner = hasUpdateBanner
+    ? {
+        source: "update" as const,
+        tone: updateFlow.tone,
+        message: updateFlow.progressLabel ?? updateFlow.message,
+        progressPercent: updateFlow.progressPercent,
+        progressStage:
+          updateFlow.stage === "downloading" ||
+          updateFlow.stage === "installing",
+        exiting: isUpdateBannerExiting,
+      }
+    : null;
   const activeBanner =
     updateBanner ??
     (activeNotification
-        ? {
-            source: "notification" as const,
-            tone: activeNotification.tone,
-            message:
-              activeNotification.progressLabel ?? activeNotification.message,
-            progressPercent: activeNotification.progressPercent,
-            progressStage: activeNotification.progressPercent !== null,
-            exiting: isNotificationExiting,
-          }
-        : null);
+      ? {
+          source: "notification" as const,
+          tone: activeNotification.tone,
+          message:
+            activeNotification.progressLabel ?? activeNotification.message,
+          progressPercent: activeNotification.progressPercent,
+          progressStage: activeNotification.progressPercent !== null,
+          exiting: isNotificationExiting,
+        }
+      : null);
 
   return (
     <AppShellProvider
@@ -3831,9 +4018,10 @@ export default function App() {
           <SettingsOverlay
             open={settingsOverlayOpen}
             depsState={depsState}
-            depsInstalling={depsInstalling}
+            dependencyOperation={dependencyOperation}
             depsInstallMessage={depsInstallMessage}
             aboutMetadata={aboutMetadata}
+            edition={productEdition}
             onClose={() => setSettingsOverlayOpen(false)}
             onInstallMissing={() => handleInstallDependencies(false)}
             onForceReinstall={() => handleInstallDependencies(true)}
@@ -3869,6 +4057,8 @@ export default function App() {
               missingDependencies={missingSubtitleDependencies}
               progressById={depsProgressById}
               isInstalling={depsInstalling}
+              dependencyOperation={dependencyOperation}
+              operationMessage={depsInstallMessage}
               onInstall={handleFirstRunDependencyInstall}
               onClose={() => {
                 setFirstRunPanelOpen(false);
@@ -3886,6 +4076,8 @@ export default function App() {
           missingDependencies={missingSubtitleDependencies}
           progressById={depsProgressById}
           isInstalling={depsInstalling}
+          dependencyOperation={dependencyOperation}
+          operationMessage={depsInstallMessage}
           onInstall={() => {
             void handleInstallDependencies(false);
           }}
@@ -3909,6 +4101,7 @@ export default function App() {
           open={aboutDialogOpen}
           onClose={() => setAboutDialogOpen(false)}
           metadata={aboutMetadata}
+          edition={productEdition}
         />
       </div>
     </AppShellProvider>

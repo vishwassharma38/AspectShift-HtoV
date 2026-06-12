@@ -23,7 +23,7 @@ Current state:
 - `src-tauri/tauri.conf.json` already defines an `updater` block with endpoints, dialog behavior, and a public key.
 - `src/App.tsx` already imports `check` from `@tauri-apps/plugin-updater`.
 - `src/App.tsx` already gates updater probing behind `check_update_entitlement`.
-- `src/components/AuthPanel.tsx` already exposes a separate update entitlement check UI based on `check_update_entitlement`.
+- The current license/update UI flow in `src/App.tsx` exposes update checks through the reachable app shell and modal flow.
 
 ### 2. Gaps found
 
@@ -49,7 +49,6 @@ Current state:
 - `src-tauri/src/main.rs`
 - `src-tauri/capabilities/default.json`
 - `src/App.tsx`
-- `src/components/AuthPanel.tsx`
 - `src/types/backend.ts`
 - `src-tauri/src/auth/auth_commands.rs`
 - `src-tauri/src/auth/manager/auth_manager.rs`

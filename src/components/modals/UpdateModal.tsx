@@ -489,7 +489,7 @@ export function UpdateModal({
             color: var(--text-primary);
             font-size: 12px;
             font-weight: 600;
-            font-family: "JetBrains Mono", monospace;
+            font-family: var(--font-mono);
           }
 
           .up-progress-card {
@@ -518,7 +518,7 @@ export function UpdateModal({
             color: var(--text-primary);
             font-size: 12px;
             font-weight: 700;
-            font-family: "JetBrains Mono", monospace;
+            font-family: var(--font-mono);
           }
 
           .up-progress-track {

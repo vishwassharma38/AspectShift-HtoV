@@ -9,12 +9,29 @@ export type DependencyPromptMode =
   | "subtitle_export"
   | "subtitle_burn";
 
-export const SUBTITLE_CORE_DEPENDENCY_IDS: DependencyId[] = [
+export type ManagedDependencyId = Extract<
+  DependencyId,
+  "whisper_binary" | "whisper_model"
+>;
+
+export const MANAGED_DEPENDENCY_IDS: ManagedDependencyId[] = [
   "whisper_binary",
   "whisper_model",
-  "ffmpeg",
-  "ffprobe",
 ];
+
+export const SUBTITLE_CORE_DEPENDENCY_IDS = MANAGED_DEPENDENCY_IDS;
+
+export function isManagedDependencyId(
+  dependencyId: DependencyId,
+): dependencyId is ManagedDependencyId {
+  return (MANAGED_DEPENDENCY_IDS as DependencyId[]).includes(dependencyId);
+}
+
+export function getManagedDependencyReports(depsState: AppDepsState | null) {
+  return MANAGED_DEPENDENCY_IDS.map(
+    (dependencyId) => depsState?.dependencies[dependencyId] ?? null,
+  ).filter((report): report is DependencyReport => !!report);
+}
 
 export function getDependencyStatusLabel(report?: DependencyReport | null) {
   if (!report) return "missing";
@@ -27,7 +44,7 @@ export function isDependencyReady(report?: DependencyReport | null) {
 
 export function getMissingDependencies(
   depsState: AppDepsState | null,
-  dependencyIds: DependencyId[] = SUBTITLE_CORE_DEPENDENCY_IDS,
+  dependencyIds: ManagedDependencyId[] = MANAGED_DEPENDENCY_IDS,
 ) {
   if (!depsState) return dependencyIds;
   return dependencyIds.filter(
@@ -37,7 +54,7 @@ export function getMissingDependencies(
 
 export function getMissingDependencyReports(
   depsState: AppDepsState | null,
-  dependencyIds: DependencyId[] = SUBTITLE_CORE_DEPENDENCY_IDS,
+  dependencyIds: ManagedDependencyId[] = MANAGED_DEPENDENCY_IDS,
 ) {
   if (!depsState) return [];
   return dependencyIds
@@ -48,13 +65,13 @@ export function getMissingDependencyReports(
 
 export function hasRequiredDependencies(
   depsState: AppDepsState | null,
-  dependencyIds: DependencyId[] = SUBTITLE_CORE_DEPENDENCY_IDS,
+  dependencyIds: ManagedDependencyId[] = MANAGED_DEPENDENCY_IDS,
 ) {
   return getMissingDependencies(depsState, dependencyIds).length === 0;
 }
 
 export function getDependencyHealthSummary(depsState: AppDepsState | null) {
-  const reports = Object.values(depsState?.dependencies ?? {});
+  const reports = getManagedDependencyReports(depsState);
   const readyCount = reports.filter((report) => report.status.status === "ready");
   const issueCount = reports.filter((report) => report.status.status !== "ready");
 
@@ -78,8 +95,8 @@ export function getDependencyPromptCopy(mode: DependencyPromptMode) {
       eyebrow: "Subtitle Export",
       title: "Subtitle export needs external subtitle tools",
       description:
-        "This export path relies on the subtitle runtime modules. Install them once to unlock subtitle extraction and future subtitle workflows.",
-      ctaLabel: "Download and Install Instantly",
+        "This export path relies on the subtitle runtime modules. Download them once to unlock subtitle extraction and future subtitle workflows.",
+      ctaLabel: "Download Dependencies",
     };
   }
 
@@ -88,25 +105,36 @@ export function getDependencyPromptCopy(mode: DependencyPromptMode) {
       eyebrow: "Subtitle Burn-In",
       title: "Subtitle burn-in needs the subtitle runtime modules",
       description:
-        "Burning subtitles into video requires the desktop subtitle toolchain to be present. Install the missing modules to continue immediately.",
-      ctaLabel: "Download and Install Instantly",
+        "Burning subtitles into video requires the desktop subtitle toolchain to be present. Download the missing modules to continue immediately.",
+      ctaLabel: "Download Dependencies",
     };
   }
 
   return {
     eyebrow: "Dependency Setup",
-    title: "Subtitle tools are not installed yet",
+    title: "Subtitle tools are not downloaded yet",
     description:
-      "AspectShift can install the subtitle runtime modules in the background so subtitle export and burn-in are ready when you need them.",
+      "AspectShift can download the subtitle runtime modules in the background so subtitle export and burn-in are ready when you need them.",
     ctaLabel: "Download Now",
   };
 }
 
 export function formatDependencyProgressPercent(progress: number) {
-  if (!Number.isFinite(progress)) return "0.00";
+  const clamped = normalizeDependencyProgress(progress);
 
-  const clamped = Math.max(0, Math.min(100, progress));
   const truncated = Math.floor(clamped * 100) / 100;
 
   return truncated.toFixed(2);
+}
+
+export function normalizeDependencyProgress(progress: unknown) {
+  const value =
+    typeof progress === "number"
+      ? progress
+      : typeof progress === "string"
+        ? Number(progress)
+        : 0;
+
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
 }

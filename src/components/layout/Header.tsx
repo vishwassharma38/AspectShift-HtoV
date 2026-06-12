@@ -249,7 +249,7 @@ export function Header({
           color: var(--text-secondary);
           letter-spacing: 0.01em;
           line-height: 1;
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
         }
 
         /* ── Divider ──────────────────────────────────────── */
@@ -316,7 +316,7 @@ export function Header({
           font-weight: 500;
         }
         .hdr-flyout-kbd {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--text-muted);
           background: var(--bg-input);

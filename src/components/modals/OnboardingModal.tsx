@@ -370,7 +370,7 @@ export function OnboardingModal({
         }
 
         .ob-frame-label {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           font-weight: 600;
           color: var(--accent);
@@ -428,7 +428,7 @@ export function OnboardingModal({
         }
 
         .ob-wordmark-sub {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           font-weight: 500;
           color: var(--text-muted);
@@ -513,7 +513,7 @@ export function OnboardingModal({
           border: 1px solid var(--border-strong);
           background: var(--bg-input);
           color: var(--text-primary);
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           font-weight: 500;
           letter-spacing: 0.05em;

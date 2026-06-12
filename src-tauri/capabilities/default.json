@@ -44,6 +44,7 @@
       "get_dependency_state",
       "rescan_dependencies",
       "install_dependency",
+      "reinstall_dependencies",
       "get_auth_state",
       "activate_license",
       "refresh_license",

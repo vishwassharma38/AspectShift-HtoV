@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Emitter};
 
-use crate::dependency_manager::{DependencyId, DependencyLifecycleStatus};
+use crate::dependency_manager::{is_managed_dependency, DependencyId, DependencyLifecycleStatus};
 use crate::manifest_service::{ManifestDependencyInfo, ManifestService};
 use crate::runtime_paths::RuntimePaths;
 use crate::video::types::VideoError;
@@ -48,7 +48,52 @@ impl DownloadManager {
         app: &AppHandle,
         id: DependencyId,
     ) -> Result<(), VideoError> {
-        let _guard = ActiveInstallGuard::new(self.active_installs.clone());
+        if !is_managed_dependency(&id) {
+            return Err(VideoError::InvalidInput(
+                "Dependency is bundled with the application and is not user-installable"
+                    .to_string(),
+            ));
+        }
+
+        let _guard = ActiveInstallGuard::try_new(self.active_installs.clone())?;
+        let result = self.install_dependency_inner(app, id.clone()).await;
+        if let Err(error) = &result {
+            self.emit(
+                app,
+                id,
+                DependencyLifecycleStatus::Failed,
+                None,
+                Some(error.to_string()),
+            );
+        }
+        result
+    }
+
+    pub async fn reinstall_managed_dependencies(&self, app: &AppHandle) -> Result<(), VideoError> {
+        let _guard = ActiveInstallGuard::try_new(self.active_installs.clone())?;
+        self.cleanup_managed_dependencies(app)?;
+
+        for id in [DependencyId::WhisperBinary, DependencyId::WhisperModel] {
+            if let Err(error) = self.install_dependency_inner(app, id.clone()).await {
+                self.emit(
+                    app,
+                    id,
+                    DependencyLifecycleStatus::Failed,
+                    None,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn install_dependency_inner(
+        &self,
+        app: &AppHandle,
+        id: DependencyId,
+    ) -> Result<(), VideoError> {
         self.emit(
             app,
             id.clone(),
@@ -100,7 +145,7 @@ impl DownloadManager {
             None,
             None,
         );
-        let install_target_path = self.install_target_path(&runtime, &id, &info.filename);
+        let install_target_path = install_target_path(&runtime, &id, &info.filename)?;
         if let Some(parent) = install_target_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -117,6 +162,27 @@ impl DownloadManager {
             Some(100.0),
             Some("Install complete".to_string()),
         );
+        Ok(())
+    }
+
+    fn cleanup_managed_dependencies(&self, app: &AppHandle) -> Result<(), VideoError> {
+        let runtime = RuntimePaths::from_app(app)?;
+        let targets = [
+            runtime.whisper_binary_path(),
+            runtime.whisper_model_path(),
+            runtime.whisper_binary_path().with_extension("bak"),
+            runtime.whisper_model_path().with_extension("bak"),
+        ];
+
+        for target in targets {
+            remove_file_if_exists(&target)?;
+        }
+
+        let staging_root = runtime.temp_dir().join("dependency-installs");
+        for dependency_key in ["whisper_binary", "whisper_model"] {
+            remove_dir_if_exists(&staging_root.join(dependency_key))?;
+        }
+
         Ok(())
     }
 
@@ -204,21 +270,6 @@ impl DownloadManager {
         Ok(())
     }
 
-    fn install_target_path(
-        &self,
-        runtime: &RuntimePaths,
-        id: &DependencyId,
-        filename: &str,
-    ) -> PathBuf {
-        match id {
-            DependencyId::WhisperBinary => runtime.dependency_current_dir("whisper").join(filename),
-            DependencyId::WhisperModel => runtime.model_current_dir("whisper").join(filename),
-            DependencyId::Ffmpeg | DependencyId::Ffprobe => {
-                runtime.dependency_current_dir("sidecars").join(filename)
-            }
-        }
-    }
-
     fn cleanup_staging(&self, staging_root: &Path) {
         if staging_root.exists() {
             let _ = std::fs::remove_dir_all(staging_root);
@@ -248,9 +299,13 @@ struct ActiveInstallGuard {
 }
 
 impl ActiveInstallGuard {
-    fn new(counter: Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Self { counter }
+    fn try_new(counter: Arc<AtomicUsize>) -> Result<Self, VideoError> {
+        counter
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| Self { counter })
+            .map_err(|_| {
+                VideoError::InvalidInput("A dependency download is already in progress".to_string())
+            })
     }
 }
 
@@ -260,11 +315,40 @@ impl Drop for ActiveInstallGuard {
     }
 }
 
+fn install_target_path(
+    runtime: &RuntimePaths,
+    id: &DependencyId,
+    filename: &str,
+) -> Result<PathBuf, VideoError> {
+    match id {
+        DependencyId::WhisperBinary => Ok(runtime.dependency_current_dir("whisper").join(filename)),
+        DependencyId::WhisperModel => Ok(runtime.model_current_dir("whisper").join(filename)),
+        DependencyId::Ffmpeg | DependencyId::Ffprobe => Err(VideoError::InvalidInput(
+            "Bundled sidecars are not managed dependencies".to_string(),
+        )),
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), VideoError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(VideoError::IoError(error)),
+    }
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<(), VideoError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(VideoError::IoError(error)),
+    }
+}
+
 fn dependency_id_key(id: &DependencyId) -> &'static str {
     match id {
         DependencyId::WhisperBinary => "whisper_binary",
         DependencyId::WhisperModel => "whisper_model",
-        DependencyId::Ffmpeg => "ffmpeg",
-        DependencyId::Ffprobe => "ffprobe",
+        DependencyId::Ffmpeg | DependencyId::Ffprobe => "unmanaged_sidecar",
     }
 }

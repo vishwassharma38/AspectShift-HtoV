@@ -2,6 +2,7 @@ import type { DependencyId } from "../../types/backend";
 import {
   getDependencyPromptCopy,
   formatDependencyProgressPercent,
+  normalizeDependencyProgress,
   type DependencyPromptMode,
 } from "../../services/dependencyManager";
 import {
@@ -19,6 +20,15 @@ interface DependencyModalProps {
   missingDependencies: DependencyId[];
   progressById: Partial<Record<DependencyId, number>>;
   isInstalling: boolean;
+  dependencyOperation:
+    | "idle"
+    | "downloading"
+    | "redownloading"
+    | "checking"
+    | "verifying"
+    | "completed"
+    | "failed";
+  operationMessage: string | null;
   onInstall: () => void;
   onClose: () => void;
   embedded?: boolean;
@@ -27,26 +37,6 @@ interface DependencyModalProps {
 
 function DepIcon({ id }: { id: string }) {
   const lower = id.toLowerCase();
-  if (lower.includes("ffmpeg"))
-    return (
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-        <rect
-          x="1"
-          y="3"
-          width="7"
-          height="7"
-          rx="1.5"
-          stroke="currentColor"
-          strokeWidth="1.3"
-        />
-        <path
-          d="M8 5.5l4-2v6l-4-2V5.5z"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
   if (lower.includes("python") || lower.includes("py"))
     return (
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -101,6 +91,8 @@ export function DependencyModal({
   missingDependencies,
   progressById,
   isInstalling,
+  dependencyOperation,
+  operationMessage,
   onInstall,
   onClose,
   embedded = false,
@@ -116,6 +108,32 @@ export function DependencyModal({
 
   const copy = getDependencyPromptCopy(mode);
   const isModeWarn = mode !== "startup";
+  const isDownloading =
+    dependencyOperation === "downloading" ||
+    dependencyOperation === "redownloading";
+  const isVerifying =
+    dependencyOperation === "verifying" || dependencyOperation === "checking";
+  const isCompleted = dependencyOperation === "completed";
+  const isFailed = dependencyOperation === "failed";
+  const operationActive = isDownloading || isVerifying || isInstalling;
+  const actionLabel = isDownloading
+    ? "Downloading..."
+    : isVerifying
+      ? "Verifying Files..."
+      : isCompleted
+        ? "Ready"
+        : isFailed
+          ? "Try Again"
+          : copy.ctaLabel;
+  const statusMessage =
+    operationMessage ??
+    (isDownloading
+      ? "Downloading dependency files..."
+      : isVerifying
+        ? "Verifying file integrity..."
+        : isCompleted
+          ? "Dependencies are ready."
+          : null);
 
   const panel = (
     <div
@@ -176,7 +194,8 @@ export function DependencyModal({
 
       <div className="dm-dep-list">
         {missingDependencies.map((id, i) => {
-          const pct = progressById[id] ?? null;
+          const rawPct = progressById[id] ?? null;
+          const pct = rawPct === null ? null : normalizeDependencyProgress(rawPct);
           const started = pct !== null;
           const done = pct === 100;
 
@@ -230,20 +249,27 @@ export function DependencyModal({
         })}
       </div>
 
+      {statusMessage && (
+        <div className="dm-status-message" data-state={dependencyOperation}>
+          <span className="dm-status-dot" />
+          {statusMessage}
+        </div>
+      )}
+
       <div className="dm-actions">
         <button
           className="dm-btn-primary"
           onClick={onInstall}
-          disabled={isInstalling}
+          disabled={operationActive}
         >
-          {isInstalling ? (
+          {operationActive ? (
             <>
               <span className="dm-spinner" />
-              Downloading...
+              {actionLabel}
             </>
           ) : (
             <>
-              {copy.ctaLabel}
+              {actionLabel}
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                 <path
                   d="M6 1v7M3 5.5L6 8.5l3-3"
@@ -431,14 +457,14 @@ export function DependencyModal({
           gap: 8px;
         }
         .dm-dep-name {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           font-weight: 600;
           color: var(--text-primary);
           letter-spacing: 0.01em;
         }
         .dm-dep-pct {
-          font-family: "JetBrains Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           font-weight: 600;
           color: var(--accent);
@@ -470,6 +496,35 @@ export function DependencyModal({
           align-items: center;
           gap: 8px;
           padding: 20px 24px 22px;
+        }
+        .dm-status-message {
+          margin: 12px 24px 0;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 12px;
+          border-radius: 8px;
+          border: 1px solid var(--border);
+          background: var(--bg-input);
+          color: var(--text-secondary);
+          font-family: var(--font-mono);
+          font-size: 10px;
+          line-height: 1.35;
+        }
+        .dm-status-message[data-state="failed"] {
+          color: var(--danger);
+          border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+        }
+        .dm-status-message[data-state="completed"] {
+          color: var(--success);
+          border-color: color-mix(in srgb, var(--success) 35%, transparent);
+        }
+        .dm-status-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          flex-shrink: 0;
         }
         .dm-btn-primary {
           flex: 1;

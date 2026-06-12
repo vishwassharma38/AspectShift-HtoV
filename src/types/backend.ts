@@ -48,6 +48,7 @@ export type AppConfig = {
 };
 
 export type AppDepsState = {
+	validationRevision?: number,
 	scanStatus: DependencyScanStatus,
 	scanSource?: DependencyScanSource | null,
 	healthStatus?: DependencyHealthStatus,

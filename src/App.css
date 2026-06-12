@@ -8,10 +8,7 @@
 
 @font-face {
   font-family: "Space Grotesk";
-  src:
-    url("./assets/fonts/SpaceGrotesk-VariableFont_wght.woff2")
-      format("woff2-variations"),
-    url("./assets/fonts/SpaceGrotesk-VariableFont_wght.woff2") format("woff2");
+  src: url("./assets/fonts/SpaceGrotesk[wght].woff2") format("woff2");
   font-weight: 300 700;
   font-style: normal;
   font-display: block;
@@ -20,13 +17,16 @@
 
 @font-face {
   font-family: "JetBrains Mono";
-  src:
-    url("./assets/fonts/JetBrainsMono[wght].woff2") format("woff2-variations"),
-    url("./assets/fonts/JetBrainsMono[wght].woff2") format("woff2");
+  src: url("./assets/fonts/JetBrainsMono[wght].woff2") format("woff2");
   font-weight: 100 800;
   font-style: normal;
   font-display: block;
   font-synthesis: none;
+}
+
+:root {
+  --font-ui: "Space Grotesk";
+  --font-mono: "JetBrains Mono";
 }
 
 /* ── Theme Variables ─────────────────────────────────────── */
@@ -194,13 +194,23 @@ html {
   text-rendering: optimizeLegibility;
 }
 
-body {
-  font-family:
-    "Space Grotesk",
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+html,
+body,
+#root,
+button,
+input,
+textarea,
+select,
+dialog {
+  font-family: var(--font-ui);
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-mono {
+  font-family: var(--font-mono);
 }
 
 /* ── Theme Transition ─────────────────────────────────────────
@@ -976,7 +986,7 @@ html.theme-transitioning *::after {
   background: var(--bg-secondary);
   border-radius: 4px;
   padding: 1px 5px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
   color: var(--text-secondary);
@@ -989,7 +999,7 @@ html.theme-transitioning *::after {
   text-transform: uppercase;
   font-size: 9px;
   letter-spacing: 0.05em;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .queue-item-progress {
@@ -1102,7 +1112,7 @@ html.theme-transitioning *::after {
 .preset-card-ratio {
   font-size: 10px;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-weight: 500;
 }
 
@@ -1328,7 +1338,7 @@ html.theme-transitioning *::after {
 .preview-meta {
   font-size: 10px;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1367,7 +1377,7 @@ html.theme-transitioning *::after {
   cursor: pointer;
   font-size: 11px;
   font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--text-secondary);
   transition: all 0.18s ease;
   user-select: none;
@@ -1400,7 +1410,7 @@ html.theme-transitioning *::after {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-md);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.7;
   /* Fix flickering by promoting to its own layer */
@@ -1461,7 +1471,7 @@ html.theme-transitioning *::after {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-secondary);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .eta-badge.active {
@@ -1499,7 +1509,7 @@ html.theme-transitioning *::after {
 .batch-stats-nums {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   display: flex;
   gap: var(--space-xs);
   margin-top: var(--space-2xs);
@@ -1510,7 +1520,7 @@ html.theme-transitioning *::after {
   border-radius: 12px;
   font-size: 10px;
   font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .stat-completed {
@@ -1637,7 +1647,7 @@ html.theme-transitioning *::after {
 }
 
 .slider-value {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
@@ -1775,7 +1785,7 @@ html.theme-transitioning *::after {
   background: var(--bg-input);
   color: var(--text-secondary);
   font-size: 11px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

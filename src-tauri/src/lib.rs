@@ -54,7 +54,26 @@ async fn install_dependency(
         .install_dependency(&app, id)
         .await
         .map_err(StructuredError::from)?;
-    Ok(deps_manager.get_state().await)
+    deps_manager
+        .refresh(&app, DependencyScanSource::PostDownload)
+        .await
+        .map_err(StructuredError::from)
+}
+
+#[tauri::command]
+async fn reinstall_dependencies(
+    app: AppHandle,
+    deps_manager: State<'_, DepsManager>,
+    download_manager: State<'_, DownloadManager>,
+) -> Result<AppDepsState, StructuredError> {
+    download_manager
+        .reinstall_managed_dependencies(&app)
+        .await
+        .map_err(StructuredError::from)?;
+    deps_manager
+        .refresh(&app, DependencyScanSource::PostDownload)
+        .await
+        .map_err(StructuredError::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -126,6 +145,7 @@ pub fn run() {
             get_dependency_state,
             rescan_dependencies,
             install_dependency,
+            reinstall_dependencies,
             get_auth_state,
             activate_license,
             refresh_license,
