@@ -1,5 +1,10 @@
 # AspectShift-HtoV
 
+Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows.
+
+Publisher: Software From Vish  
+Repository: https://github.com/vishwassharma38/AspectShift-HtoV
+
 This repo now includes an updater-signing readiness audit for Phase E1:
 
 - [E1_UPDATER_SIGNING_AUDIT.md](./E1_UPDATER_SIGNING_AUDIT.md)

@@ -116,7 +116,7 @@ export function AboutDialog({ open, onClose, metadata }: AboutDialogProps) {
         {/* ── Footer ────────────────────────────────────────── */}
         <div className="abt-footer">
           <span className="abt-copyright">
-            © {new Date().getFullYear()} SoftwareFromVish — All rights reserved.
+            Copyright © 2026 Vishwas Sharma
           </span>
         </div>
       </div>

@@ -1,0 +1,91 @@
+# THIRD-PARTY SOFTWARE NOTICES
+
+AspectShift-HtoV includes, utilizes, or may download software, libraries, models, and other components developed and maintained by third parties.
+
+This document provides attribution and licensing information for third-party components used by the application.
+
+---
+
+## FFmpeg / FFprobe
+
+Copyright © 2000–2026 The FFmpeg Developers
+
+Project Website:
+
+https://ffmpeg.org
+
+AspectShift-HtoV bundles FFmpeg and FFprobe as external executables for media processing, video conversion, encoding, subtitle rendering, metadata analysis, and related functionality.
+
+The FFmpeg binaries distributed with AspectShift-HtoV are built with GPL-enabled components and are licensed under the GNU General Public License (GPL).
+
+Source code for FFmpeg is available from:
+
+https://ffmpeg.org/download.html
+
+Windows builds used by this project may originate from:
+
+https://www.gyan.dev/ffmpeg/builds/
+
+Copyright for FFmpeg and FFprobe remains with their respective authors and contributors.
+
+FFmpeg and FFprobe are independent third-party projects and are not affiliated with, endorsed by, or maintained by the developers of AspectShift-HtoV.
+
+---
+
+## Optional Subtitle Components
+
+AspectShift-HtoV provides optional subtitle generation and subtitle export functionality.
+
+When subtitle-related features are used, the application may download additional third-party speech recognition components and machine learning models.
+
+These components are not bundled with the default installer and are only downloaded when explicitly requested by the user.
+
+### whisper.cpp
+
+Project:
+
+https://github.com/ggerganov/whisper.cpp
+
+whisper.cpp provides local speech-to-text functionality used for subtitle generation.
+
+License information is available through the official project repository.
+
+### OpenAI Whisper
+
+Project:
+
+https://github.com/openai/whisper
+
+AspectShift-HtoV may utilize Whisper-compatible speech recognition models for local subtitle generation workflows.
+
+License information is available through the official project repository.
+
+### GGML Whisper Models
+
+AspectShift-HtoV may download GGML-based Whisper model files, including but not limited to English-language models, when subtitle generation functionality is enabled.
+
+Model files remain the property of their respective authors and contributors and are governed by their applicable upstream licensing terms.
+
+---
+
+## Third-Party Ownership
+
+AspectShift-HtoV does not claim ownership of FFmpeg, FFprobe, whisper.cpp, OpenAI Whisper, Whisper model files, or any other third-party software, libraries, models, trademarks, copyrights, patents, logos, or intellectual property.
+
+All rights remain the property of their respective owners.
+
+---
+
+## Source Code Availability
+
+Source code, licensing information, and project documentation for third-party components referenced in this document are available through their respective upstream projects.
+
+Users should consult the official project websites and repositories for the most current licensing terms, source code availability, notices, and attribution requirements.
+
+---
+
+## Disclaimer
+
+Third-party software is provided subject to the terms and conditions of its respective license agreements.
+
+Nothing in this document modifies, replaces, or supersedes the licensing terms established by the original authors and copyright holders of the referenced third-party software.

@@ -1,0 +1,17 @@
+ADDITIONAL THIRD-PARTY LICENSE INFORMATION
+
+AspectShift-HtoV may include or interact with third-party software components, libraries, codecs, fonts, or services.
+
+Where required, license notices and attributions will be provided in future releases as additional bundled dependencies are introduced.
+
+Current bundled third-party software:
+
+* FFmpeg
+* FFprobe
+
+For FFmpeg licensing information, refer to:
+
+* FFMPEG-GPL.txt
+* THIRD-PARTY-NOTICES.txt
+
+For complete and current license information, consult the project's GitHub repository and release documentation.

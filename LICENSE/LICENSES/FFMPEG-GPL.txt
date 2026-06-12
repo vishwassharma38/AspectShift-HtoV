@@ -1,0 +1,6 @@
+FFmpeg is distributed under the GNU General Public License Version 3.
+
+For the full license text, see GPL-3.0.txt in this directory.
+
+FFmpeg Project:
+https://ffmpeg.org

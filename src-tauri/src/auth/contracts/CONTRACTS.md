@@ -1,4 +1,4 @@
-# AspectShift-HTOV Licensing Backend — Frozen Contract
+# AspectShift-HtoV Licensing Backend — Frozen Contract
 
 - **Frozen on**: June 4, 2026
 - **Supersedes**: Contract frozen June 1, 2026

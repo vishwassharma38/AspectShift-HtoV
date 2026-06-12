@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AspectShift-HtoV",
+  "mainBinaryName": "AspectShift-HtoV",
   "version": "0.1.1",
   "identifier": "com.softwarefromvish.aspectshift-htov",
   "build": {
@@ -33,7 +34,19 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
+
+    "publisher": "Software From Vish",
+    "homepage": "https://github.com/vishwassharma38/AspectShift-HtoV",
+    "copyright": "Copyright © 2026 Vishwas Sharma",
+
+    "shortDescription": "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows.",
+
+    "longDescription": "AspectShift-HtoV is a powerful batch video conversion tool designed for creators. Convert videos between horizontal and vertical formats, rotate and flip orientation, apply effects such as blur, subtitles, logo overlays, subtitle export, and audio muting, and export to multiple aspect ratios or platform-specific presets in a single workflow. Supports MP4, MOV, and WEBM output formats, custom presets, batch processing, and automatic organization of converted videos into target-specific folders.",
+
+    "category": "Video",
+
     "externalBin": ["bin/ffmpeg", "bin/ffprobe"],
+
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

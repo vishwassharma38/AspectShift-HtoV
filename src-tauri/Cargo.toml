@@ -1,10 +1,28 @@
 [package]
 name = "aspectshift-htov"
 version = "0.1.1"
-description = "A Tauri App"
+description = "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows."
 edition = "2021"
-authors = ["you"]
+authors = ["Vishwas Sharma"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/vishwassharma38/AspectShift-HtoV"
+homepage = "https://github.com/vishwassharma38/AspectShift-HtoV"
 default-run = "aspectshift-htov"
+
+[package.metadata.tauri-winres]
+CompanyName = "Software From Vish"
+ProductName = "AspectShift-HtoV"
+FileDescription = "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows."
+InternalName = "AspectShift-HtoV"
+OriginalFilename = "AspectShift-HtoV.exe"
+LegalCopyright = "Copyright © 2026 Vishwas Sharma"
+
+ProductVersion = "0.1.1"
+FileVersion = "0.1.1"
+
+Comments = "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows."
+
+LegalTrademarks = "AspectShift-HtoV is a trademark of Software From Vish"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

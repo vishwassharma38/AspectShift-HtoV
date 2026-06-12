@@ -434,8 +434,7 @@ export function SettingsOverlay({
 
                 <div className="so-about-footer">
                   <span className="so-about-copyright">
-                    Copyright {new Date().getFullYear()} SoftwareFromVish - All
-                    rights reserved.
+                    Copyright © 2026 Vishwas Sharma
                   </span>
                 </div>
               </div>
