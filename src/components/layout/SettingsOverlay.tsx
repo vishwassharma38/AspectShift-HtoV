@@ -6,6 +6,7 @@ import {
 } from "../../services/dependencyManager";
 import { formatBuildModeLabel } from "../../utils/buildMetadata";
 import type { ProductEdition } from "../../utils/productEdition";
+import { LicenseSettingsPanel } from "./LicenseSettingsPanel";
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -34,7 +35,7 @@ interface SettingsOverlayProps {
   missingSubtitleDependencies: DependencyId[];
 }
 
-type SettingsTab = "dependencies" | "about";
+type SettingsTab = "dependencies" | "about" | "license";
 
 const NAV_ITEMS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "dependencies", label: "Dependencies", icon: "⬡" },
@@ -104,6 +105,13 @@ export function SettingsOverlay({
                 )}
               </button>
             ))}
+            <button
+              className={`so-nav-item${activeTab === "license" ? " active" : ""}`}
+              onClick={() => setActiveTab("license")}
+            >
+              <span className="so-nav-icon">§</span>
+              <span className="so-nav-text">License</span>
+            </button>
           </nav>
 
           <div className="so-rail-bottom">
@@ -460,6 +468,16 @@ export function SettingsOverlay({
                 </div>
               </div>
             </div>
+          )}
+
+          {activeTab === "license" && (
+            <LicenseSettingsPanel
+              appName={aboutMetadata.appName}
+              appVersion={aboutMetadata.appVersion}
+              edition={edition}
+              buildModeLabel={formatBuildModeLabel(aboutMetadata.buildMode)}
+              appIdentifier={aboutMetadata.identifier}
+            />
           )}
         </div>
       </section>

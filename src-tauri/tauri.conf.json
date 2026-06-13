@@ -34,6 +34,13 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
+    "resources": {
+      "../LICENSE/README.md": "LICENSE/README.md",
+      "../LICENSE/LICENSES/GPL-3.0.txt": "LICENSE/GPL-3.0.txt",
+      "../LICENSE/LICENSES/FFMPEG-GPL.txt": "LICENSE/FFMPEG-GPL.txt",
+      "../LICENSE/LICENSES/OTHER-LICENSES.txt": "LICENSE/OTHER-LICENSES.txt",
+      "../LICENSE/THIRD-PARTY-NOTICES.txt": "LICENSE/THIRD-PARTY-NOTICES.txt"
+    },
 
     "publisher": "Software From Vish",
     "homepage": "https://github.com/vishwassharma38/AspectShift-HtoV",

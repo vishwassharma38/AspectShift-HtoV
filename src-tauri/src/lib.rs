@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod dependency_manager;
 pub mod download_manager;
+pub mod license_documents;
 pub mod manifest_service;
 pub mod os_utils;
 pub mod runtime_paths;
@@ -151,6 +152,7 @@ pub fn run() {
             refresh_license,
             check_update_entitlement,
             clear_license,
+            license_documents::open_license_document,
             video::allow_path_scope,
             video::get_first_video_in_folder,
             video::get_videos_in_folder,
