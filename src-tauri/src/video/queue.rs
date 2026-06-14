@@ -28,6 +28,13 @@ pub struct BatchManager {
     pub state: Arc<Mutex<BatchState>>,
 }
 
+pub(crate) fn clear_terminal_progress_fields(state: &mut BatchState) {
+    state.current_stage_id = None;
+    state.current_stage_message = None;
+    state.current_job_id = None;
+    state.current_job_lifecycle_progress = 0.0;
+}
+
 impl BatchManager {
     pub fn new() -> Self {
         Self {
@@ -92,6 +99,7 @@ impl BatchManager {
         let token = {
             let mut state = self.state.lock().await;
             state.status = BatchStatus::Cancelled;
+            clear_terminal_progress_fields(&mut state);
             // Mark all non-terminal jobs as cancelled in the progress map
             for progress in state.job_progress.values_mut() {
                 match progress.status {

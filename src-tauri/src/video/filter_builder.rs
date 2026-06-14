@@ -46,7 +46,8 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
 
     let mut filter_stages = Vec::new();
     let has_transform = !transform_filter.is_empty();
-    let uses_complex_graph = plan.effects.blur_enabled() || plan.logo.is_some() || has_transform;
+    let uses_complex_graph =
+        plan.effects.background_effect_enabled() || plan.logo.is_some() || has_transform;
 
     // Determine foreground scaling strategy
     let fg_filter = match layout.foreground_fit {
@@ -77,6 +78,17 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
                 sigma = plan.effects.blur_sigma_value(),
                 fg_filter = fg_filter
             ));
+        } else if plan.effects.white_background_enabled() {
+            filter_stages.push(format!(
+                "[0:v]{transform}[v_transformed];\
+                 color=c=white:s={tw}x{th}[bg_white];\
+                 [v_transformed]{fg_filter}[fg_scaled];\
+                 [bg_white][fg_scaled]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:shortest=1[v]",
+                transform = transform_filter,
+                tw = tw,
+                th = th,
+                fg_filter = fg_filter
+            ));
         } else if uses_complex_graph {
             filter_stages.push(format!(
                 "[0:v]{transform},scale=w={tw}:h={th}:force_original_aspect_ratio=increase,crop={tw}:{th}[v]",
@@ -98,6 +110,15 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
             tw = tw,
             th = th,
             sigma = plan.effects.blur_sigma_value(),
+            fg_filter = fg_filter
+        ));
+    } else if plan.effects.white_background_enabled() {
+        filter_stages.push(format!(
+            "color=c=white:s={tw}x{th}[bg_white];\
+             [0:v]{fg_filter}[fg_scaled];\
+             [bg_white][fg_scaled]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:shortest=1[v]",
+            tw = tw,
+            th = th,
             fg_filter = fg_filter
         ));
     } else if uses_complex_graph {

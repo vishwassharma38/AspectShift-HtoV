@@ -42,6 +42,72 @@ const NAV_ITEMS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "about", label: "About", icon: "◎" },
 ];
 
+function LicenseTabIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v18" />
+      <path d="m19 8 3 8a5 5 0 0 1-6 0zV7" />
+      <path d="M3 7h1a17 17 0 0 0 8-2 17 17 0 0 0 8 2h1" />
+      <path d="m5 8 3 8a5 5 0 0 1-6 0zV7" />
+      <path d="M7 21h10" />
+    </svg>
+  );
+}
+
+function AboutTabIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function DependenciesTabIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 19a1 1 0 0 1-1-1v-2a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2a1 1 0 0 1-1 1z" />
+      <path d="M17 21v-2" />
+      <path d="M19 14V6.5a1 1 0 0 0-7 0v11a1 1 0 0 1-7 0V10" />
+      <path d="M21 21v-2" />
+      <path d="M3 5V3" />
+      <path d="M4 10a2 2 0 0 1-2-2V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2z" />
+      <path d="M7 5V3" />
+    </svg>
+  );
+}
+
 export function SettingsOverlay({
   open,
   depsState,
@@ -98,7 +164,15 @@ export function SettingsOverlay({
                 className={`so-nav-item${activeTab === item.id ? " active" : ""}`}
                 onClick={() => setActiveTab(item.id)}
               >
-                <span className="so-nav-icon">{item.icon}</span>
+                <span className="so-nav-icon">
+                  {item.id === "dependencies" ? (
+                    <DependenciesTabIcon />
+                  ) : item.id === "about" ? (
+                    <AboutTabIcon />
+                  ) : (
+                    item.icon
+                  )}
+                </span>
                 <span className="so-nav-text">{item.label}</span>
                 {item.id === "dependencies" && !allReady && (
                   <span className="so-nav-dot" />
@@ -109,7 +183,9 @@ export function SettingsOverlay({
               className={`so-nav-item${activeTab === "license" ? " active" : ""}`}
               onClick={() => setActiveTab("license")}
             >
-              <span className="so-nav-icon">§</span>
+              <span className="so-nav-icon">
+                <LicenseTabIcon />
+              </span>
               <span className="so-nav-text">License</span>
             </button>
           </nav>

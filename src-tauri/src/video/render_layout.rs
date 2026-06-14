@@ -64,36 +64,36 @@ pub fn calculate_render_layout(
     target_height = (target_height as f32 / 2.0).round() as u32 * 2;
 
     let is_target_vertical_9x16 = (resolved_target_ratio - (9.0 / 16.0)).abs() < 0.01;
-    let blur_enabled = plan.effects.blur_enabled();
-    let use_portrait_foreground_crop = blur_enabled
+    let background_effect_enabled = plan.effects.background_effect_enabled();
+    let use_portrait_foreground_crop = background_effect_enabled
         && is_target_vertical_9x16
         && effective_display_width > effective_display_height;
 
-    let (foreground_fit, foreground_frame_width, foreground_frame_height) = if blur_enabled
-        && use_portrait_foreground_crop
-    {
-        let fg_w = target_width;
-        let fg_h = ((fg_w as f32 * 1.25 / 2.0).round() as u32) * 2;
-        (PreviewFitMode::Cover, fg_w, fg_h)
-    } else if blur_enabled {
-        let source_aspect_ratio = effective_display_width as f32 / effective_display_height as f32;
-        let target_aspect_ratio = target_width as f32 / target_height as f32;
+    let (foreground_fit, foreground_frame_width, foreground_frame_height) =
+        if background_effect_enabled && use_portrait_foreground_crop {
+            let fg_w = target_width;
+            let fg_h = ((fg_w as f32 * 1.25 / 2.0).round() as u32) * 2;
+            (PreviewFitMode::Cover, fg_w, fg_h)
+        } else if background_effect_enabled {
+            let source_aspect_ratio =
+                effective_display_width as f32 / effective_display_height as f32;
+            let target_aspect_ratio = target_width as f32 / target_height as f32;
 
-        let (fw, fh) = if source_aspect_ratio > target_aspect_ratio {
-            // Source is wider than target (e.g. 16:9 in 1:1) -> width limited
-            let fw = target_width;
-            let fh = ((target_width as f32 / source_aspect_ratio / 2.0).round() as u32) * 2;
-            (fw, fh)
+            let (fw, fh) = if source_aspect_ratio > target_aspect_ratio {
+                // Source is wider than target (e.g. 16:9 in 1:1) -> width limited
+                let fw = target_width;
+                let fh = ((target_width as f32 / source_aspect_ratio / 2.0).round() as u32) * 2;
+                (fw, fh)
+            } else {
+                // Source is taller than target (e.g. 9:16 in 1:1) -> height limited
+                let fh = target_height;
+                let fw = ((target_height as f32 * source_aspect_ratio / 2.0).round() as u32) * 2;
+                (fw, fh)
+            };
+            (PreviewFitMode::Contain, fw, fh)
         } else {
-            // Source is taller than target (e.g. 9:16 in 1:1) -> height limited
-            let fh = target_height;
-            let fw = ((target_height as f32 * source_aspect_ratio / 2.0).round() as u32) * 2;
-            (fw, fh)
+            (PreviewFitMode::Cover, target_width, target_height)
         };
-        (PreviewFitMode::Contain, fw, fh)
-    } else {
-        (PreviewFitMode::Cover, target_width, target_height)
-    };
 
     let logo_width = plan
         .logo
@@ -104,7 +104,7 @@ pub fn calculate_render_layout(
         target_width,
         target_height,
         foreground_frame_height,
-        blur_enabled,
+        background_effect_enabled,
     );
 
     PreviewRenderLayout {

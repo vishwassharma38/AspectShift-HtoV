@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LicenseStatusDot } from "../ui/LicenseStatusDot";
+import {
+  APP_MENU_ITEMS,
+  type AppMenuAction,
+} from "../../utils/appShortcuts";
 
 interface HeaderProps {
   theme: "day" | "night";
@@ -69,15 +73,6 @@ function ChevronDownIcon() {
   );
 }
 
-const MENU_ITEMS = [
-  { id: "updates", label: "Check for Updates", meta: "Ctrl+U" },
-  { id: "settings", label: "Settings", meta: "Ctrl+," },
-  { id: "license", label: "License", meta: null },
-  { id: "refresh", label: "Refresh", meta: "Ctrl+R" },
-  { id: "divider", label: "", meta: null },
-  { id: "about", label: "About", meta: null },
-] as const;
-
 export function Header({
   theme,
   onToggleTheme,
@@ -109,7 +104,7 @@ export function Header({
     };
   }, [menuOpen]);
 
-  const handlers: Record<string, () => void> = useMemo(
+  const handlers: Record<AppMenuAction, () => void> = useMemo(
     () => ({
       updates: onCheckForUpdates,
       settings: onOpenSettings,
@@ -166,7 +161,7 @@ export function Header({
             role="menu"
             aria-hidden={!menuOpen}
           >
-            {MENU_ITEMS.map((item) => {
+            {APP_MENU_ITEMS.map((item) => {
               if (item.id === "divider") {
                 return <div key="divider" className="hdr-flyout-divider" />;
               }
@@ -181,7 +176,7 @@ export function Header({
                   onClick={() => {
                     if (disabled) return;
                     setMenuOpen(false);
-                    handlers[item.id]?.();
+                    handlers[item.id]();
                   }}
                 >
                   <span className="hdr-flyout-label">
@@ -189,8 +184,10 @@ export function Header({
                       ? "Checking…"
                       : item.label}
                   </span>
-                  {item.meta && (
-                    <kbd className="hdr-flyout-kbd">{item.meta}</kbd>
+                  {item.shortcut && (
+                    <kbd className="hdr-flyout-kbd">
+                      {item.shortcut.meta}
+                    </kbd>
                   )}
                 </button>
               );

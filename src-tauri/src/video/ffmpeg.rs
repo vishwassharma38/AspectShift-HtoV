@@ -96,7 +96,7 @@ pub async fn run_ffmpeg(
                     let time_ms = l.replace("out_time_ms=", "").parse::<f64>().unwrap_or(0.0);
                     let current_secs = time_ms / 1_000_000.0;
                     if duration_secs > 0.0 {
-                        let percent = (current_secs / duration_secs) * 100.0;
+                        let percent = ((current_secs / duration_secs) * 100.0).clamp(0.0, 100.0);
                         let percent_f32 = percent as f32;
                         let _ = app_handle.emit(
                             "video://progress",

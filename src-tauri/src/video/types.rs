@@ -157,6 +157,7 @@ impl OutputFormat {
 #[serde(rename_all = "camelCase")]
 pub struct VideoEffectsSettings {
     pub blur: Option<bool>,
+    pub white_background: Option<bool>,
     pub overlays: Option<Vec<String>>,
     pub subtitles: Option<String>,
     pub color_filter: Option<String>,
@@ -172,7 +173,15 @@ pub struct VideoEffectsSettings {
 
 impl VideoEffectsSettings {
     pub fn blur_enabled(&self) -> bool {
-        self.blur.unwrap_or(false)
+        self.blur.unwrap_or(false) && !self.white_background_enabled()
+    }
+
+    pub fn white_background_enabled(&self) -> bool {
+        self.white_background.unwrap_or(false)
+    }
+
+    pub fn background_effect_enabled(&self) -> bool {
+        self.blur_enabled() || self.white_background_enabled()
     }
 
     pub fn blur_sigma_value(&self) -> f32 {
@@ -212,6 +221,7 @@ pub struct AppConfig {
     pub logo_opacity: Option<f32>,
     pub logo_position: Option<LogoPosition>,
     pub blur: Option<bool>,
+    pub white_background: Option<bool>,
     pub blur_sigma: Option<f32>,
     pub enable_subfolders: Option<bool>,
     pub preview_volume: Option<u8>,
@@ -355,6 +365,7 @@ pub struct OutputTags {
     pub ratio: String,
     pub platform: Option<String>,
     pub blur: bool,
+    pub white_background: bool,
     pub logo: bool,
     pub subtitles: bool,
     pub no_audio: bool,
@@ -369,6 +380,9 @@ impl OutputTags {
         }
         if self.blur {
             tags.push("blur".to_string());
+        }
+        if self.white_background {
+            tags.push("white_bg".to_string());
         }
         if self.logo {
             tags.push("logo".to_string());

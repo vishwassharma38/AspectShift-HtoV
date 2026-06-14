@@ -1,4 +1,5 @@
 use aspectshift_htov_lib::auth::{
+    auth_events::{AuthActivationFailedPayload, AuthStatusChangedPayload},
     auth_models::ActivationResult,
     state::auth_state::{AuthState, AuthStatus},
     state::license_tier::LicenseTier,
@@ -15,7 +16,7 @@ use aspectshift_htov_lib::video::{
         ConversionRequestDTO, CustomPreset, EncodingProfile, FileProgress, FileReadiness,
         JobStatus, LogoOptions, LogoPosition, OrientationInfo, OutputFormat, OutputJob,
         PlatformConfig, PlatformPreset, PreviewLayoutRequest, StructuredError,
-        VideoEffectsSettings, VideoTransform,
+        VideoEffectsSettings, VideoPresetDTO, VideoTransform,
     },
 };
 use specta::TypeCollection;
@@ -37,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<AspectRatioTarget>()
         .register::<PlatformPreset>()
         .register::<CustomPreset>()
+        .register::<VideoPresetDTO>()
         .register::<ConversionRequestDTO>()
         .register::<BatchJobSettings>()
         .register::<JobStatus>()
@@ -54,10 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<DependencyScanStatus>()
         .register::<DependencyStatus>()
         .register::<DependencyReport>()
+        .register::<aspectshift_htov_lib::download_manager::DependencyInstallEvent>()
         .register::<AppDepsState>()
         .register::<AuthStatus>()
         .register::<LicenseTier>()
         .register::<AuthState>()
+        .register::<AuthStatusChangedPayload>()
+        .register::<AuthActivationFailedPayload>()
         .register::<ActivationResult>()
         .register::<aspectshift_htov_lib::auth::contracts::ActivateRequest>()
         .register::<aspectshift_htov_lib::auth::contracts::ActivateResponse>()

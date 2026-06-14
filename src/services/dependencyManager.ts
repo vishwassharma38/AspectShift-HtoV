@@ -72,8 +72,12 @@ export function hasRequiredDependencies(
 
 export function getDependencyHealthSummary(depsState: AppDepsState | null) {
   const reports = getManagedDependencyReports(depsState);
-  const readyCount = reports.filter((report) => report.status.status === "ready");
-  const issueCount = reports.filter((report) => report.status.status !== "ready");
+  const readyCount = reports.filter(
+    (report) => report.status.status === "ready",
+  );
+  const issueCount = reports.filter(
+    (report) => report.status.status !== "ready",
+  );
 
   return {
     totalCount: reports.length,
@@ -93,9 +97,9 @@ export function getDependencyPromptCopy(mode: DependencyPromptMode) {
   if (mode === "subtitle_export") {
     return {
       eyebrow: "Subtitle Export",
-      title: "Subtitle export needs external subtitle tools",
+      title: "Subtitle export needs the subtitle runtime modules",
       description:
-        "This export path relies on the subtitle runtime modules. Download them once to unlock subtitle extraction and future subtitle workflows.",
+        "Exporting subtitles file requires the desktop subtitle toolchain to be present. Download the missing modules to continue immediately.",
       ctaLabel: "Download Dependencies",
     };
   }

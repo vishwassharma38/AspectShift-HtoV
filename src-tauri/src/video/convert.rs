@@ -217,7 +217,7 @@ pub async fn render_single(
 
     if orientation.is_vertical
         && ratio_diff < 0.02
-        && !job.effects.blur_enabled()
+        && !job.effects.background_effect_enabled()
         && !job.effects.remove_audio_enabled()
         && !job.effects.burn_subtitles_enabled()
         && plan.logo.is_none()

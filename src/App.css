@@ -183,15 +183,45 @@ html[data-theme="night"] {
 *::before,
 *::after {
   box-sizing: border-box;
+  font-family: inherit;
   margin: 0;
   padding: 0;
 }
 
 html {
+  font-family: var(--font-ui);
   font-size: 14px;
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+html,
+body,
+#root {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+[contenteditable="true"] * {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not(
+    [type="range"]
+  ):not([type="submit"]):not([type="reset"]),
+textarea,
+[contenteditable="true"] {
+  cursor: text;
 }
 
 html,
@@ -201,7 +231,10 @@ button,
 input,
 textarea,
 select,
-dialog {
+option,
+optgroup,
+dialog,
+::file-selector-button {
   font-family: var(--font-ui);
 }
 
@@ -288,6 +321,9 @@ html.theme-transitioning *::after {
 }
 
 .update-notice {
+  --update-notice-tone: var(--info);
+  --notification-animation-duration: 370ms;
+
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -295,37 +331,38 @@ html.theme-transitioning *::after {
   min-height: 36px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
+  box-shadow: inset 3px 0 0 var(--update-notice-tone);
+  background-color: var(--bg-card);
+  color: var(--text-primary);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0;
   transform-origin: top center;
-  animation: update-notice-enter 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: update-notice-enter var(--notification-animation-duration)
+    cubic-bezier(0.22, 1, 0.36, 1) both;
   will-change: opacity, transform;
 }
 
 .update-notice--exiting {
   pointer-events: none;
-  animation: update-notice-exit 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation: update-notice-exit var(--notification-animation-duration)
+    cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 .update-notice-success {
-  background: color-mix(in srgb, var(--success) 10%, var(--bg-card));
-  color: var(--text-primary);
+  --update-notice-tone: var(--success);
 }
 
 .update-notice-warning {
-  background: color-mix(in srgb, var(--warning) 12%, var(--bg-card));
-  color: var(--text-primary);
+  --update-notice-tone: var(--warning);
 }
 
 .update-notice-error {
-  background: color-mix(in srgb, var(--error) 10%, var(--bg-card));
-  color: var(--text-primary);
+  --update-notice-tone: var(--error);
 }
 
 .update-notice-info {
-  background: color-mix(in srgb, var(--info) 10%, var(--bg-card));
-  color: var(--text-primary);
+  --update-notice-tone: var(--info);
 }
 
 .update-notice-dot {
@@ -333,24 +370,8 @@ html.theme-transitioning *::after {
   height: 8px;
   border-radius: 999px;
   flex-shrink: 0;
-  background: currentColor;
+  background: var(--update-notice-tone);
   opacity: 0.9;
-}
-
-.update-notice-success .update-notice-dot {
-  color: var(--success);
-}
-
-.update-notice-warning .update-notice-dot {
-  color: var(--warning);
-}
-
-.update-notice-error .update-notice-dot {
-  color: var(--error);
-}
-
-.update-notice-info .update-notice-dot {
-  color: var(--info);
 }
 
 .update-notice-text {
@@ -380,7 +401,7 @@ html.theme-transitioning *::after {
 }
 
 .update-notice-dismiss:hover {
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
@@ -392,22 +413,22 @@ html.theme-transitioning *::after {
 @keyframes update-notice-enter {
   from {
     opacity: 0;
-    transform: translateY(-14px);
+    transform: translateY(-12px) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
 @keyframes update-notice-exit {
   from {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
   to {
     opacity: 0;
-    transform: translateY(-14px);
+    transform: translateY(-10px) scale(0.985);
   }
 }
 

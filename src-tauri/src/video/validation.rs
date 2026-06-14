@@ -59,6 +59,12 @@ pub fn validate_preset(preset: &PlatformPreset) -> Result<(), VideoError> {
 }
 
 pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError> {
+    if effects.blur.unwrap_or(false) && effects.white_background.unwrap_or(false) {
+        return Err(VideoError::InvalidInput(
+            "effects.blur and effects.whiteBackground cannot both be enabled".to_string(),
+        ));
+    }
+
     if let Some(blur_sigma) = effects.blur_sigma {
         if !blur_sigma.is_finite() || !(0.0..=100.0).contains(&blur_sigma) {
             return Err(VideoError::InvalidInput(

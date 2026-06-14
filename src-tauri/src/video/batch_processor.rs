@@ -1,6 +1,6 @@
 use crate::os_utils::OsUtils;
 use crate::video::convert::{prepare_subtitles, render_single};
-use crate::video::queue::{BatchManager, BatchState};
+use crate::video::queue::{clear_terminal_progress_fields, BatchManager, BatchState};
 use crate::video::targets::normalize_targets;
 use crate::video::types::{
     BatchJob, BatchJobSettings, BatchProgress, BatchStatus, FileProgress, JobStatus,
@@ -54,6 +54,15 @@ fn set_stage(
     state.current_stage_message = Some(stage_message);
     state.current_job_lifecycle_progress =
         state.current_job_lifecycle_progress.max(lifecycle_progress);
+}
+
+fn sanitize_terminal_state(state: &mut BatchState) {
+    if matches!(
+        state.status,
+        BatchStatus::Completed | BatchStatus::Failed | BatchStatus::Cancelled
+    ) {
+        clear_terminal_progress_fields(state);
+    }
 }
 
 async fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
@@ -273,6 +282,7 @@ pub async fn start_batch(
 
                 if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
                     s.status = BatchStatus::Cancelled;
+                    sanitize_terminal_state(&mut s);
                     break;
                 }
 
@@ -283,7 +293,7 @@ pub async fn start_batch(
                     } else {
                         BatchStatus::Completed
                     };
-                    s.current_job_id = None;
+                    sanitize_terminal_state(&mut s);
                     break;
                 }
 
@@ -332,6 +342,7 @@ pub async fn start_batch(
                         s.completed_jobs += 1;
                         s.processed_duration_secs += duration;
                         s.current_job_lifecycle_progress = 100.0;
+                        s.current_job_id = None;
                         set_stage(
                             &mut s,
                             "skipping_existing_output",
@@ -450,7 +461,7 @@ pub async fn start_batch(
                     subtitle_layout.target_width,
                     subtitle_layout.target_height,
                     subtitle_layout.foreground_frame_height,
-                    job.output.effects.blur_enabled(),
+                    job.output.effects.background_effect_enabled(),
                     job.output.effects.burn_subtitles_enabled(),
                     job.output.effects.export_subtitles_enabled()
                 );
@@ -497,7 +508,7 @@ pub async fn start_batch(
                         subtitle_layout.target_width,
                         subtitle_layout.target_height,
                         subtitle_layout.foreground_frame_height,
-                        job.output.effects.blur_enabled(),
+                        job.output.effects.background_effect_enabled(),
                         Some(token.clone()),
                         Some(Box::new({
                             let state = state_clone.clone();
@@ -555,6 +566,7 @@ pub async fn start_batch(
                             if token.is_cancelled() {
                                 let mut s = state_clone.lock().await;
                                 s.status = BatchStatus::Cancelled;
+                                sanitize_terminal_state(&mut s);
                                 break;
                             }
                             let failure = e.to_string();
@@ -588,6 +600,7 @@ pub async fn start_batch(
             if token.is_cancelled() {
                 let mut s = state_clone.lock().await;
                 s.status = BatchStatus::Cancelled;
+                sanitize_terminal_state(&mut s);
                 break;
             }
 
@@ -609,6 +622,7 @@ pub async fn start_batch(
             emit_batch_progress(&app_clone, &state_clone).await;
 
             let on_progress = Box::new(move |percent: f32| {
+                let percent = percent.clamp(0.0, 100.0);
                 let state = state_c.clone();
                 let jid = jid_c.clone();
                 let app = app_c.clone();
@@ -654,6 +668,7 @@ pub async fn start_batch(
             if token.is_cancelled() {
                 let mut s = state_clone.lock().await;
                 s.status = BatchStatus::Cancelled;
+                sanitize_terminal_state(&mut s);
                 break;
             }
 
@@ -676,6 +691,7 @@ pub async fn start_batch(
                     s.completed_jobs += 1;
                     s.processed_duration_secs += duration;
                     s.current_job_lifecycle_progress = 100.0;
+                    s.current_job_id = None;
                 }
                 Err(e) => {
                     let mut s = state_clone.lock().await;
@@ -688,6 +704,7 @@ pub async fn start_batch(
                     s.failed_jobs += 1;
                     s.processed_duration_secs += duration;
                     s.current_job_lifecycle_progress = 100.0;
+                    s.current_job_id = None;
                 }
             }
 
@@ -697,10 +714,13 @@ pub async fn start_batch(
         {
             let mut s = state_clone.lock().await;
             if s.status == BatchStatus::Processing {
-                s.status = BatchStatus::Completed;
+                s.status = if s.failed_jobs > 0 {
+                    BatchStatus::Failed
+                } else {
+                    BatchStatus::Completed
+                };
             }
-            s.current_stage_id = Some("batch_finalizing".to_string());
-            s.current_stage_message = Some("Finalizing batch...".to_string());
+            sanitize_terminal_state(&mut s);
         }
 
         // Cleanup temporary SRT files
@@ -722,15 +742,18 @@ fn calculate_stats(state: &BatchState) -> (f32, f32, Option<f64>, f64) {
     let mut processed_secs = state.processed_duration_secs;
     if let Some(current_id) = &state.current_job_id {
         if let Some(p) = state.job_progress.get(current_id) {
-            processed_secs +=
-                (state.current_job_lifecycle_progress as f64 / 100.0) * p.duration_secs;
+            if matches!(p.status, JobStatus::Processing) {
+                let lifecycle = state.current_job_lifecycle_progress.clamp(0.0, 100.0);
+                processed_secs += (lifecycle as f64 / 100.0) * p.duration_secs;
+            }
         }
     }
+    processed_secs = processed_secs.clamp(0.0, state.total_duration_secs.max(0.0));
 
     let percentage = if state.total_duration_secs > 0.0 {
-        ((processed_secs / state.total_duration_secs) * 100.0) as f32
+        (((processed_secs / state.total_duration_secs) * 100.0) as f32).clamp(0.0, 100.0)
     } else if total > 0 {
-        ((completed + failed) as f32 / total as f32) * 100.0
+        (((completed + failed) as f32 / total as f32) * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
@@ -739,7 +762,7 @@ fn calculate_stats(state: &BatchState) -> (f32, f32, Option<f64>, f64) {
         let elapsed = start.elapsed().as_secs_f32();
         if elapsed > 0.1 && processed_secs > 0.1 {
             let speed = processed_secs as f32 / elapsed;
-            let remaining_duration = state.total_duration_secs - processed_secs;
+            let remaining_duration = (state.total_duration_secs - processed_secs).max(0.0);
             let eta = if speed > 0.01 {
                 Some(remaining_duration / speed as f64)
             } else {
@@ -762,7 +785,8 @@ pub async fn cancel_batch(manager: State<'_, BatchManager>) -> Result<(), String
 }
 
 pub async fn get_batch_status(manager: State<'_, BatchManager>) -> Result<BatchProgress, String> {
-    let state = manager.state.lock().await;
+    let mut state = manager.state.lock().await;
+    sanitize_terminal_state(&mut state);
     let (percentage, speed, eta_seconds, processed_secs) = calculate_stats(&state);
 
     let mut queue = Vec::new();
@@ -796,7 +820,8 @@ pub async fn clear_batch(manager: State<'_, BatchManager>) -> Result<(), String>
 }
 
 async fn emit_batch_progress(app: &AppHandle, state_mutex: &Arc<Mutex<BatchState>>) {
-    let state = state_mutex.lock().await;
+    let mut state = state_mutex.lock().await;
+    sanitize_terminal_state(&mut state);
     let (percentage, speed, eta_seconds, processed_secs) = calculate_stats(&state);
 
     let mut queue = Vec::new();

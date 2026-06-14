@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useState } from "react";
+import React, { useMemo, useRef, useEffect, useState, useCallback } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type {
   OrientationInfo,
@@ -44,14 +44,17 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // until canplay fires, preventing a flash of the first frame at the
   // wrong size.
   const [videoReady, setVideoReady] = useState(false);
-  const showBlur = !!effects.blur;
+  const showWhiteBackground = !!effects.whiteBackground;
+  const showBlur = !!effects.blur && !showWhiteBackground;
+  const showBackgroundEffect = showBlur || showWhiteBackground;
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
+  const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
   const foregroundVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Reset readiness every time the source changes.
+  // Reset readiness every time the source or preview media mode changes.
   useEffect(() => {
     setVideoReady(false);
-  }, [videoSrc]);
+  }, [videoSrc, showBlur, showWhiteBackground]);
 
   useEffect(() => {
     const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
@@ -62,8 +65,30 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       el.muted = isMuted;
     };
     syncElement(mainVideoRef.current);
+    syncElement(backgroundVideoRef.current);
     syncElement(foregroundVideoRef.current);
-  }, [previewVolume, videoSrc, showBlur]);
+  }, [previewVolume, videoSrc, showBackgroundEffect]);
+
+  const syncBlurBackgroundToForeground = useCallback(() => {
+    if (!showBlur) return;
+    const bg = backgroundVideoRef.current;
+    const fg = foregroundVideoRef.current;
+    if (!bg || !fg || !Number.isFinite(fg.currentTime)) return;
+
+    bg.playbackRate = fg.playbackRate;
+    if (Math.abs(bg.currentTime - fg.currentTime) > 0.05) {
+      bg.currentTime = fg.currentTime;
+    }
+    if (fg.paused && !bg.paused) {
+      bg.pause();
+    } else if (!fg.paused && bg.paused) {
+      void bg.play().catch(() => {});
+    }
+  }, [showBlur]);
+
+  useEffect(() => {
+    syncBlurBackgroundToForeground();
+  }, [syncBlurBackgroundToForeground, videoSrc, showBlur]);
 
   // Update container dims on resize
   useEffect(() => {
@@ -261,7 +286,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
               height: canvasSize.height,
               position: "relative",
               overflow: "hidden",
-              backgroundColor: "#000",
+              backgroundColor: showWhiteBackground ? "#fff" : "#000",
               borderRadius: "10px",
               // Only animate width/height after the video is ready to avoid
               // the layout-shift frame being visible during ratio transitions.
@@ -275,31 +300,38 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             }}
           >
             {/* Main Video Layer */}
-            {showBlur ? (
+            {showBackgroundEffect ? (
               <>
+                {showBlur && (
+                  <video
+                    key={`blur-bg-${videoSrc}`}
+                    src={convertFileSrc(videoSrc)}
+                    className="canvas-video-blur"
+                    ref={backgroundVideoRef}
+                    style={{
+                      position: "absolute",
+                      left: "50%",
+                      top: "50%",
+                      width:
+                        resolvedCoverGeometry.sourceWidth *
+                        resolvedCoverGeometry.scale,
+                      height:
+                        resolvedCoverGeometry.sourceHeight *
+                        resolvedCoverGeometry.scale,
+                      objectFit: "fill",
+                      filter: `blur(${previewLayout.blurSigma}px)`,
+                      ...transformStyle,
+                    }}
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    onLoadedMetadata={syncBlurBackgroundToForeground}
+                    onCanPlay={syncBlurBackgroundToForeground}
+                  />
+                )}
                 <video
-                  src={convertFileSrc(videoSrc)}
-                  className="canvas-video-blur"
-                  style={{
-                    position: "absolute",
-                    left: "50%",
-                    top: "50%",
-                    width:
-                      resolvedCoverGeometry.sourceWidth *
-                      resolvedCoverGeometry.scale,
-                    height:
-                      resolvedCoverGeometry.sourceHeight *
-                      resolvedCoverGeometry.scale,
-                    objectFit: "fill",
-                    filter: `blur(${previewLayout.blurSigma}px)`,
-                    ...transformStyle,
-                  }}
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                />
-                <video
+                  key={`${showBlur ? "blur" : "white"}-fg-${videoSrc}`}
                   src={convertFileSrc(videoSrc)}
                   className="canvas-video-fg"
                   ref={foregroundVideoRef}
@@ -322,12 +354,19 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   autoPlay
                   loop
                   playsInline
+                  onPlay={syncBlurBackgroundToForeground}
+                  onPause={syncBlurBackgroundToForeground}
+                  onSeeking={syncBlurBackgroundToForeground}
+                  onSeeked={syncBlurBackgroundToForeground}
+                  onRateChange={syncBlurBackgroundToForeground}
+                  onTimeUpdate={syncBlurBackgroundToForeground}
                   onCanPlay={(e) => {
                     const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
                     const isMuted = normalized <= 0;
                     e.currentTarget.volume = normalized;
                     e.currentTarget.muted = isMuted;
                     setVideoReady(true);
+                    syncBlurBackgroundToForeground();
                   }}
                 />
               </>

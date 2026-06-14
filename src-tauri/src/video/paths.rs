@@ -29,6 +29,7 @@ pub fn resolve_output_path(
         ratio: format_ratio_tag(target.job.ratio.get_tag()),
         platform: platform_tag,
         blur: target.job.effects.blur_enabled(),
+        white_background: target.job.effects.white_background_enabled(),
         logo: target
             .job
             .effects

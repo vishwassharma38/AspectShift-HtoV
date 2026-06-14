@@ -16,7 +16,9 @@ import {
 import { relaunch } from "@tauri-apps/plugin-process";
 import type {
   ActivationResult,
+  AuthActivationFailedPayload,
   AuthState,
+  AuthStatusChangedPayload,
   AppConfig,
   AppDepsState,
   AspectRatio,
@@ -24,6 +26,7 @@ import type {
   BatchProgress,
   CustomPreset,
   DependencyId,
+  DependencyInstallEvent,
   EncodingProfile,
   FileProgress,
   FileReadiness,
@@ -39,6 +42,7 @@ import type {
   TargetType,
   UpdateEntitlementCheckResult,
   VideoEffectsSettings,
+  VideoPresetDTO,
   VideoProgress,
   VideoTransform,
 } from "./types/backend";
@@ -56,10 +60,16 @@ import {
   UpdateModal,
   type UpdateFlowStage,
 } from "./components/modals/UpdateModal";
+import { RefreshConfirmDialog } from "./components/modals/RefreshConfirmDialog";
 import { SettingsOverlay } from "./components/layout/SettingsOverlay";
 import { AppShellProvider } from "./context/AppShellContext";
 import { getLicenseIndicatorState } from "./utils/licenseIndicatorMapping";
 import { resolveProductEditionFromAuthState } from "./utils/productEdition";
+import {
+  APP_SHORTCUTS,
+  isBrowserOnlyShortcut,
+  isEditableShortcutTarget,
+} from "./utils/appShortcuts";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
@@ -70,14 +80,6 @@ import {
 } from "./services/dependencyManager";
 
 // ── Types ─────────────────────────────────────────────────────
-
-/**
- * The tagged-union shape that `get_all_presets` actually returns from Rust.
- * Matches VideoPresetDTO in Rust: #[serde(tag = "kind", rename_all = "camelCase")]
- */
-type VideoPresetDTO =
-  | ({ kind: "platform" } & PlatformPreset)
-  | ({ kind: "custom" } & CustomPreset);
 
 type SelectionItem =
   | { type: "aspectRatio"; id: AspectRatio }
@@ -92,21 +94,6 @@ interface LogEntry {
 interface BackendError {
   code?: string;
   message?: string;
-}
-
-interface DependencyInstallEvent {
-  id: DependencyId;
-  lifecycle:
-    | "idle"
-    | "checking"
-    | "missing"
-    | "downloading"
-    | "verifying"
-    | "extracting"
-    | "installed"
-    | "failed";
-  progressPercent: number | null;
-  message: string | null;
 }
 
 type DependencyOperation =
@@ -151,6 +138,7 @@ const DEFAULT_ENCODING: EncodingProfile = {
 
 const DEFAULT_EFFECTS: VideoEffectsSettings = {
   blur: false,
+  whiteBackground: false,
   overlays: null,
   subtitles: null,
   colorFilter: null,
@@ -164,7 +152,7 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   transform: { rotate: 0, flip_h: false, flip_v: false },
 };
 
-const NOTIFICATION_EXIT_MS = 320;
+const NOTIFICATION_ANIMATION_MS = 370;
 const NOTIFICATION_DURATIONS: Record<UpdateNoticeTone, number> = {
   info: 3600,
   success: 4600,
@@ -332,8 +320,11 @@ function generateId(): string {
 }
 
 function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
+  const whiteBackground = !!effects.whiteBackground;
   return {
     ...effects,
+    blur: whiteBackground ? false : !!effects.blur,
+    whiteBackground,
     logo: normalizeLogo(effects.logo ?? null),
     transform: normalizeTransform(effects.transform),
   };
@@ -392,6 +383,62 @@ function getJobStatusError(status: FileProgress["status"]): string | null {
     return status.error;
   }
   return null;
+}
+
+function countActiveProcessingJobs(progress: BatchProgress | null): number {
+  if (!progress || progress.status !== "processing") return 0;
+
+  const activeJobIds = new Set(
+    progress.queue
+      .filter((job) => resolveJobStatusKey(job.status) === "processing")
+      .map((job) => job.jobId),
+  );
+
+  if (progress.currentJobId) {
+    activeJobIds.add(progress.currentJobId);
+  }
+
+  return activeJobIds.size || 1;
+}
+
+function isTerminalBatchStatus(status: BatchProgress["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function sanitizeBatchProgress(
+  progress: BatchProgress | null,
+): BatchProgress | null {
+  if (!progress) return null;
+  const percentage = normalizeDependencyProgress(progress.percentage);
+  const queue = progress.queue.map((job) => ({
+    ...job,
+    progress: normalizeDependencyProgress(job.progress),
+  }));
+  const sanitized = {
+    ...progress,
+    percentage,
+    queue,
+  };
+  if (!isTerminalBatchStatus(sanitized.status)) return sanitized;
+  if (
+    sanitized.currentStageId === null &&
+    sanitized.currentStageMessage === null
+  ) {
+    return sanitized;
+  }
+  return {
+    ...sanitized,
+    currentStageId: null,
+    currentStageMessage: null,
+  };
+}
+
+function getBatchStageMessage(progress: BatchProgress | null): string {
+  if (!progress) return "Idle";
+  if (progress.status === "completed") return "Batch completed";
+  if (progress.status === "failed") return "Batch finished with errors";
+  if (progress.status === "cancelled") return "Batch cancelled by user";
+  return progress.currentStageMessage ?? "Preparing pipeline...";
 }
 
 /**
@@ -622,6 +669,8 @@ export default function App() {
   const [settingsOverlayOpen, setSettingsOverlayOpen] = useState(false);
   const [licensePanelOpen, setLicensePanelOpen] = useState(false);
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false);
+  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
+  const [refreshConfirmActiveCount, setRefreshConfirmActiveCount] = useState(0);
   const [aboutMetadata, setAboutMetadata] = useState({
     appName: "AspectShift-HtoV",
     appVersion: "0.1.1",
@@ -682,6 +731,9 @@ export default function App() {
   const updateBannerExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const refreshConfirmOpenRef = useRef(false);
+  const refreshCheckInFlightRef = useRef(false);
+  const refreshExecutingRef = useRef(false);
   const isUpdateFlowBusy =
     updateFlow.stage === "checking_entitlement" ||
     updateFlow.stage === "checking_updater" ||
@@ -917,7 +969,7 @@ export default function App() {
       setActiveNotification(null);
       setIsNotificationExiting(false);
       notificationExitTimerRef.current = null;
-    }, NOTIFICATION_EXIT_MS);
+    }, NOTIFICATION_ANIMATION_MS);
   }, [activeNotification, isNotificationExiting]);
 
   useEffect(() => {
@@ -1001,7 +1053,7 @@ export default function App() {
       setIsUpdateBannerDismissed(true);
       setIsUpdateBannerExiting(false);
       updateBannerExitTimerRef.current = null;
-    }, NOTIFICATION_EXIT_MS);
+    }, NOTIFICATION_ANIMATION_MS);
   }, [isUpdateBannerDismissed, isUpdateBannerExiting, updateFlow.stage]);
 
   useEffect(() => {
@@ -1036,9 +1088,84 @@ export default function App() {
     };
   }, []);
 
-  const handleRefreshApp = useCallback(() => {
-    window.location.reload();
+  const executeRefreshApp = useCallback(async () => {
+    if (refreshExecutingRef.current) return;
+    refreshExecutingRef.current = true;
+
+    try {
+      await invoke("clear_batch");
+      startRequestedRef.current = false;
+      setBatchProgress(null);
+      setVideoProgresses({});
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
+      window.location.reload();
+    } catch (error) {
+      refreshExecutingRef.current = false;
+      const message = `Refresh failed while clearing queue: ${errorMessage(error)}`;
+      showNotification({ message, tone: "error" });
+      addLog(message, "error");
+    }
+  }, [addLog, showNotification]);
+
+  const handleRefreshApp = useCallback(async () => {
+    if (
+      refreshConfirmOpenRef.current ||
+      refreshCheckInFlightRef.current ||
+      refreshExecutingRef.current
+    ) {
+      return;
+    }
+
+    refreshCheckInFlightRef.current = true;
+    try {
+      const status = await invoke<BatchProgress>("get_batch_status");
+      const activeProcessingCount = countActiveProcessingJobs(status);
+
+      if (activeProcessingCount > 0) {
+        setRefreshConfirmActiveCount(activeProcessingCount);
+        refreshConfirmOpenRef.current = true;
+        setRefreshConfirmOpen(true);
+        return;
+      }
+
+      await executeRefreshApp();
+    } catch (error) {
+      const message = `Refresh check failed: ${errorMessage(error)}`;
+      showNotification({ message, tone: "error" });
+      addLog(message, "error");
+    } finally {
+      refreshCheckInFlightRef.current = false;
+    }
+  }, [addLog, executeRefreshApp, showNotification]);
+
+  const handleCancelRefreshConfirm = useCallback(() => {
+    refreshConfirmOpenRef.current = false;
+    setRefreshConfirmOpen(false);
   }, []);
+
+  const handleConfirmRefresh = useCallback(() => {
+    refreshConfirmOpenRef.current = false;
+    setRefreshConfirmOpen(false);
+    void executeRefreshApp();
+  }, [executeRefreshApp]);
+
+  const handleOpenSettings = useCallback(() => {
+    setSettingsOverlayOpen(true);
+  }, []);
+
+  const handleCloseSettings = useCallback(() => {
+    setSettingsOverlayOpen(false);
+  }, []);
+
+  const handleToggleSettings = useCallback(() => {
+    if (settingsOverlayOpen) {
+      handleCloseSettings();
+      return;
+    }
+
+    handleOpenSettings();
+  }, [handleCloseSettings, handleOpenSettings, settingsOverlayOpen]);
 
   const updateDependencyOperation = useCallback(
     (nextOperation: DependencyOperation) => {
@@ -1668,7 +1795,7 @@ export default function App() {
       ] as const;
 
       for (const channel of channels) {
-        const unsub = await listen<{ authState: AuthState }>(
+        const unsub = await listen<AuthStatusChangedPayload>(
           channel,
           (event) => {
             if (!disposed) handleAuthState(event.payload.authState);
@@ -1678,7 +1805,7 @@ export default function App() {
         else unsubs.push(unsub);
       }
 
-      const failureUnsub = await listen<{ reason: string }>(
+      const failureUnsub = await listen<AuthActivationFailedPayload>(
         "auth://activation-failed",
         (event) => {
           if (disposed) return;
@@ -1701,15 +1828,48 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.key.toLowerCase() === "r") {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      const shortcut =
+        !isEditableShortcutTarget(event.target) &&
+        !event.altKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        event.ctrlKey
+          ? APP_SHORTCUTS.find(
+              (item) => item.shortcut.key === event.key.toLowerCase(),
+            )
+          : null;
+
+      if (shortcut) {
         event.preventDefault();
-        handleRefreshApp();
+
+        if (shortcut.id === "refresh") {
+          handleRefreshApp();
+          return;
+        }
+
+        if (shortcut.id === "updates") {
+          void handleCheckForUpdates();
+          return;
+        }
+
+        handleToggleSettings();
+        return;
+      }
+
+      if (import.meta.env.PROD && isBrowserOnlyShortcut(event)) {
+        // Production builds should not expose Chromium/WebView browser UI.
+        event.preventDefault();
+        event.stopPropagation();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleRefreshApp]);
+  }, [handleCheckForUpdates, handleRefreshApp, handleToggleSettings]);
 
   useEffect(() => {
     if (!firstRunGapReady || !firstRunPendingNext) return;
@@ -1902,7 +2062,7 @@ export default function App() {
     invoke<BatchProgress>("get_batch_status")
       .then((status) => {
         if (!status.sessionId) return;
-        setBatchProgress(status);
+        setBatchProgress(sanitizeBatchProgress(status));
         setActiveSessionId(status.sessionId);
         activeSessionIdRef.current = status.sessionId;
         startRequestedRef.current = false;
@@ -1926,7 +2086,13 @@ export default function App() {
         ),
       );
 
-      if (config.logoPath || config.logoOpacity !== null) {
+      if (
+        config.logoPath ||
+        config.logoOpacity !== null ||
+        config.blur !== null ||
+        config.whiteBackground !== null ||
+        config.blurSigma !== null
+      ) {
         setEffectsState((prev) => ({
           ...prev,
           logo: config.logoPath
@@ -1940,7 +2106,8 @@ export default function App() {
                 scale: prev.logo?.scale ?? 0.15,
               }
             : null,
-          blur: config.blur ?? prev.blur,
+          blur: config.whiteBackground ? false : (config.blur ?? prev.blur),
+          whiteBackground: config.whiteBackground ?? prev.whiteBackground,
           blurSigma: config.blurSigma ?? prev.blurSigma,
         }));
       }
@@ -2007,6 +2174,7 @@ export default function App() {
         logoOpacity: effectsState.logo?.opacity ?? null,
         logoPosition: effectsState.logo?.position ?? null,
         blur: effectsState.blur ?? null,
+        whiteBackground: effectsState.whiteBackground ?? null,
         blurSigma: effectsState.blurSigma ?? null,
         enableSubfolders: enableSubfolders,
         previewVolume: previewVolume,
@@ -2025,6 +2193,7 @@ export default function App() {
     selectedPresetIds,
     effectsState.logo,
     effectsState.blur,
+    effectsState.whiteBackground,
     effectsState.blurSigma,
     enableSubfolders,
     lastInputDir,
@@ -2074,7 +2243,7 @@ export default function App() {
         }
 
         if (activeSessionIdRef.current !== sessionId) return;
-        setBatchProgress(e.payload);
+        setBatchProgress(sanitizeBatchProgress(e.payload));
 
         if (e.payload.status === "completed") {
           addLog("Batch complete ✓", "success");
@@ -2114,9 +2283,10 @@ export default function App() {
       const u3 = await listen<VideoProgress>("video://progress", (e) => {
         if (!activeSessionIdRef.current) return;
         if (e.payload.sessionId !== activeSessionIdRef.current) return;
+        const percent = normalizeDependencyProgress(e.payload.percent);
         setVideoProgresses((prev) => ({
           ...prev,
-          [e.payload.jobId]: e.payload.percent,
+          [e.payload.jobId]: percent,
         }));
       });
       if (disposed) u3();
@@ -2754,9 +2924,7 @@ export default function App() {
 
   // ETA from backend (more accurate than client-side calc)
   const etaSeconds = batchProgress?.etaSeconds ?? null;
-  const stageMessage =
-    batchProgress?.currentStageMessage ??
-    (isRunning ? "Preparing pipeline..." : "Idle");
+  const stageMessage = getBatchStageMessage(batchProgress);
   const importSelectionLabel =
     batchFiles.length > 1
       ? `${batchFiles.length} files selected`
@@ -2872,7 +3040,7 @@ export default function App() {
           onToggleTheme={() =>
             setTheme((current) => (current === "day" ? "night" : "day"))
           }
-          onOpenSettings={() => setSettingsOverlayOpen(true)}
+          onOpenSettings={handleOpenSettings}
           onOpenLicensePanel={() => setLicensePanelOpen(true)}
           onOpenAbout={() => setAboutDialogOpen(true)}
           onRefresh={handleRefreshApp}
@@ -2886,6 +3054,11 @@ export default function App() {
             className={`update-notice update-notice-${activeBanner.tone}${
               activeBanner.exiting ? " update-notice--exiting" : ""
             }`}
+            style={
+              {
+                "--notification-animation-duration": `${NOTIFICATION_ANIMATION_MS}ms`,
+              } as React.CSSProperties
+            }
           >
             <span className="update-notice-dot" aria-hidden="true" />
             <span className="update-notice-text">
@@ -3038,9 +3211,18 @@ export default function App() {
                       <div className="toggle-row">
                         <span className="toggle-label">Blur Background</span>
                         <Toggle
-                          checked={!!effectsState.blur}
+                          checked={
+                            !!effectsState.blur &&
+                            !effectsState.whiteBackground
+                          }
                           onChange={(v) =>
-                            setEffectsState({ ...effectsState, blur: v })
+                            setEffectsState({
+                              ...effectsState,
+                              blur: v,
+                              whiteBackground: v
+                                ? false
+                                : effectsState.whiteBackground,
+                            })
                           }
                         />
                       </div>
@@ -3065,6 +3247,19 @@ export default function App() {
                           </span>
                         </div>
                       )}
+                      <div className="toggle-row">
+                        <span className="toggle-label">White Background</span>
+                        <Toggle
+                          checked={!!effectsState.whiteBackground}
+                          onChange={(v) =>
+                            setEffectsState({
+                              ...effectsState,
+                              whiteBackground: v,
+                              blur: v ? false : effectsState.blur,
+                            })
+                          }
+                        />
+                      </div>
                     </div>
 
                     <div className="settings-group">
@@ -3202,7 +3397,7 @@ export default function App() {
                     </div>
 
                     <div className="settings-group">
-                      <div className="settings-group-title">Logo</div>
+                      <div className="settings-group-title">Overlay</div>
                       <div className="toggle-row mb-2">
                         <span className="toggle-label">Enable Logo</span>
                         <Toggle
@@ -4022,7 +4217,7 @@ export default function App() {
             depsInstallMessage={depsInstallMessage}
             aboutMetadata={aboutMetadata}
             edition={productEdition}
-            onClose={() => setSettingsOverlayOpen(false)}
+            onClose={handleCloseSettings}
             onInstallMissing={() => handleInstallDependencies(false)}
             onForceReinstall={() => handleInstallDependencies(true)}
             onRescan={handleRescanDependencies}
@@ -4102,6 +4297,13 @@ export default function App() {
           onClose={() => setAboutDialogOpen(false)}
           metadata={aboutMetadata}
           edition={productEdition}
+        />
+
+        <RefreshConfirmDialog
+          open={refreshConfirmOpen}
+          activeProcessingCount={refreshConfirmActiveCount}
+          onConfirm={handleConfirmRefresh}
+          onCancel={handleCancelRefreshConfirm}
         />
       </div>
     </AppShellProvider>

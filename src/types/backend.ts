@@ -42,6 +42,7 @@ export type AppConfig = {
 	logoOpacity: number | null,
 	logoPosition: LogoPosition | null,
 	blur: boolean | null,
+	whiteBackground: boolean | null,
 	blurSigma: number | null,
 	enableSubfolders: boolean | null,
 	previewVolume: number | null,
@@ -68,6 +69,11 @@ export type AspectRatioTarget = {
 	encoding: EncodingProfile,
 };
 
+export type AuthActivationFailedPayload = {
+	reason: string,
+	errorCode: string,
+};
+
 export type AuthState = {
 	status: AuthStatus,
 	tier: LicenseTier,
@@ -79,6 +85,10 @@ export type AuthState = {
 };
 
 export type AuthStatus = "initializing" | "credentials_found" | "validating" | "not_activated" | "activating" | "valid" | "grace_period" | "refresh_required" | "invalid" | "expired" | "offline_valid" | "machine_mismatch" | "corrupted" | "recoverable_error";
+
+export type AuthStatusChangedPayload = {
+	authState: AuthState,
+};
 
 export type BatchJobSettings = {
 	targets: OutputJob[],
@@ -123,6 +133,13 @@ export type CustomPreset = {
 export type DependencyHealthStatus = "unknown" | "healthy" | "degraded";
 
 export type DependencyId = "whisper_binary" | "whisper_model" | "ffmpeg" | "ffprobe";
+
+export type DependencyInstallEvent = {
+	id: DependencyId,
+	lifecycle: DependencyLifecycleStatus,
+	progressPercent: number | null,
+	message: string | null,
+};
 
 export type DependencyLifecycleStatus = "idle" | "checking" | "missing" | "downloading" | "verifying" | "extracting" | "installed" | "failed";
 
@@ -331,6 +348,7 @@ export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "n
 
 export type VideoEffectsSettings = {
 	blur: boolean | null,
+	whiteBackground: boolean | null,
 	overlays: string[] | null,
 	subtitles: string | null,
 	colorFilter: string | null,
@@ -343,6 +361,8 @@ export type VideoEffectsSettings = {
 	logo: LogoOptions | null,
 	transform: VideoTransform | null,
 };
+
+export type VideoPresetDTO = { kind: "platform" } & PlatformPreset | { kind: "custom" } & CustomPreset;
 
 export type VideoProgress = {
 	sessionId: string,
