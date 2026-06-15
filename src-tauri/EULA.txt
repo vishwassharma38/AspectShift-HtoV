@@ -1,0 +1,827 @@
+=====================================================
+ASPECTSHIFT-HTOV INSTALLER LICENSE AGREEMENT
+=====================================================
+  Effective Date  :  2026
+  Product         :  AspectShift-HtoV
+  Publisher       :  Software From Vish
+  Copyright Holder:  Vishwas Sharma
+  Website         :  https://aspectshift-htov.com
+  Support Contact :  support@aspectshift-htov.com
+
+=====================================================
+
+SECTION 1 — INTRODUCTION
+-----------------------------------------------------
+
+  This Installer License Agreement ("Agreement")
+  governs
+  the installation,
+  activation, update access, official distribution,
+  and
+  use of the official
+  compiled builds of AspectShift-HtoV provided by
+  Software
+  From Vish.
+
+  By installing, activating, accessing, or using
+  AspectShift-HtoV, you agree
+  to be bound by this Agreement. If you do not agree
+  to
+  this Agreement, do not
+  install, activate, or use the official compiled
+  software
+  package.
+
+  AspectShift-HtoV is a video repurposing and batch
+  conversion application
+  designed to help users convert, transform,
+  subtitle, and
+  process videos for
+  platforms such as Shorts, Reels, Reddit, Instagram,
+  and
+  custom aspect ratios.
+
+
+SECTION 2 — OPEN-SOURCE LICENSE NOTICE
+-----------------------------------------------------
+
+  AspectShift-HtoV is made available as open-source
+  software under the GNU
+  General Public License version 3.0 or later
+  ("GPL-3.0-or-later").
+
+  The source code for AspectShift-HtoV is available
+  at:
+
+  https://github.com/vishwassharma38/AspectShift-HtoV
+
+  Nothing in this Agreement is intended to limit,
+  remove,
+  or override any
+  rights granted to you under the GPL-3.0-or-later
+  license
+  for the open-source
+  portions of AspectShift-HtoV.
+
+  Where this Agreement conflicts with the
+  GPL-3.0-or-later
+  license, the
+  GPL-3.0-or-later license controls with respect to
+  the
+  GPL-licensed source
+  code and software rights.
+
+  This Agreement primarily governs the official
+  installer,
+  official compiled
+  builds, license keys, update access, support
+  access,
+  trademarks, branding,
+  paid distribution, and related services provided by
+  Software From Vish.
+
+
+SECTION 3 — LICENSE GRANT
+-----------------------------------------------------
+
+  Subject to your compliance with this Agreement and
+  the
+  applicable open-source
+  license terms, Software From Vish grants you a
+  limited,
+  non-exclusive,
+  non-transferable license to install and use the
+  official
+  compiled version of
+  AspectShift-HtoV.
+
+  A paid license may be activated on up to two (2)
+  personal or business
+  computers owned or controlled by the license
+  holder.
+
+  This license permits use of AspectShift-HtoV for
+  both
+  personal and commercial
+  video processing purposes, including monetized
+  content
+  creation, client work,
+  social media publishing, and business workflows.
+
+
+SECTION 4 — COMMUNITY AND PRO EDITIONS
+-----------------------------------------------------
+
+  AspectShift-HtoV may operate in different license
+  states:
+
+  COMMUNITY EDITION
+  -----------------
+  The Community Edition is available when no paid
+  license
+  is registered. It
+  provides access to the core software features but
+  may
+  not receive official
+  update access or licensed update services.
+
+  PRO EDITION
+  -----------
+  The Pro Edition is available when a valid paid
+  license
+  is registered and
+  activated. Pro users receive access to official
+  updates
+  for as long as the
+  project is supported by Vishwas Sharma / Software
+  From
+  Vish.
+
+  Both Community and Pro editions may provide access
+  to
+  the core application
+  features. Paid licensing is primarily used for
+  official
+  update access, license
+  validation, and continued project support.
+
+  Future optional subscription services may be
+  introduced.
+  Any such subscription
+  will be optional unless separately stated at the
+  point
+  of purchase and will not
+  automatically remove access to the core features
+  already
+  provided under the
+  applicable license terms.
+
+
+SECTION 5 — OWNERSHIP AND INTELLECTUAL PROPERTY
+-----------------------------------------------------
+
+  AspectShift-HtoV is licensed, not sold.
+
+  All rights, title, and interest in the
+  AspectShift-HtoV
+  name, official
+  branding, official compiled builds, installer
+  packaging,
+  website materials,
+  product identity, logos, trademarks, documentation,
+  and
+  related commercial
+  materials remain owned by Vishwas Sharma and/or
+  Software
+  From Vish, except
+  for third-party components and open-source
+  materials
+  owned by their respective
+  authors.
+
+  AspectShift-HtoV is a trademark of Software From
+  Vish.
+
+  Purchasing a license does not transfer ownership of
+  the
+  software, trademarks,
+  brand identity, official distribution channels,
+  update
+  infrastructure, support
+  systems, or commercial rights.
+
+
+SECTION 6 — PERMITTED USE
+-----------------------------------------------------
+
+  You may use AspectShift-HtoV to process, convert,
+  transform, subtitle,
+  batch-process, export, and organize video content.
+
+  Permitted use includes:
+
+    - Personal video projects.
+    - Commercial content creation.
+    - YouTube, TikTok, Instagram, Reddit, Shorts,
+    Reels,
+    and other
+      platform-ready exports.
+    - Client work and business video workflows.
+    - Use by individuals, creators, freelancers, and
+    businesses.
+    - Use on up to two (2) computers per paid license
+    holder.
+
+  You are responsible for ensuring that you have the
+  necessary rights to process
+  any videos, audio, subtitles, images, logos, or
+  other
+  materials used with the
+  software.
+
+
+SECTION 7 — RESTRICTIONS
+-----------------------------------------------------
+
+  Except where expressly permitted by the
+  GPL-3.0-or-later
+  license or
+  applicable law, you may not:
+
+    - Share, sell, rent, lease, sublicense, or
+    transfer
+    your paid license key.
+    - Use one paid license key on more than two (2)
+    computers.
+    - Circumvent, bypass, disable, tamper with, or
+    interfere with license
+      validation, activation, update checks, or
+      access-control systems.
+    - Misrepresent unofficial builds as official
+    builds
+    from Software From Vish.
+    - Use the AspectShift-HtoV name, trademark,
+    branding, or product identity
+      in a way that suggests endorsement,
+      sponsorship,
+      or official distribution
+      without permission.
+    - Sell unofficial compiled copies as official
+    AspectShift-HtoV products.
+    - Remove or obscure copyright, license,
+    attribution,
+    or third-party notices
+      from official builds.
+    - Use the software for unlawful purposes or to
+    violate the rights of others.
+
+  Because AspectShift-HtoV is open-source software
+  under
+  GPL-3.0-or-later,
+  this Agreement does not prohibit users from
+  exercising
+  rights granted by the
+  GPL, including viewing, studying, modifying, or
+  redistributing GPL-licensed
+  source code in accordance with the GPL.
+
+  However, license keys, paid update access, official
+  branding, official support
+  channels, trademarks, and commercial services are
+  not
+  transferred by
+  redistribution of the source code or unofficial
+  builds.
+
+
+SECTION 8 — REDISTRIBUTION OF OFFICIAL BUILDS AND
+SOURCE
+CODE
+-----------------------------------------------------
+
+  The AspectShift-HtoV source code may be used,
+  copied,
+  modified, and
+  redistributed only in accordance with the
+  GPL-3.0-or-later license.
+
+  Official compiled installers, official paid builds,
+  license keys, update
+  credentials, and branded release packages provided
+  by
+  Software From Vish may
+  not be resold, misrepresented, or redistributed as
+  official commercial
+  products without permission.
+
+  If you distribute modified versions or unofficial
+  builds, you must comply with
+  the GPL-3.0-or-later license and must not imply
+  that
+  your version is an
+  official release by Software From Vish unless
+  written
+  permission is granted.
+
+  Attribution to the original project and
+  preservation of
+  applicable copyright
+  and license notices are required where applicable.
+
+
+SECTION 9 — LICENSE KEY USE AND ACTIVATION
+-----------------------------------------------------
+
+  Paid license keys are personal to the purchaser and
+  may
+  not be shared
+  publicly or privately with other users.
+
+  A paid license key may be used on up to two (2)
+  computers owned or controlled
+  by the license holder.
+
+  AspectShift-HtoV may connect to the internet for
+  license
+  activation, license
+  refresh, update checks, and related validation
+  services.
+
+  License keys may be implemented using token-based
+  validation systems,
+  including JWT-based license tokens. These tokens
+  may
+  have limited validity
+  periods and may require periodic refresh.
+
+  Users should connect the application to the
+  internet at
+  least once per month
+  to refresh license status. If license refresh does
+  not
+  occur, the application
+  may enter a grace period. If the license remains
+  unrefreshed beyond the grace
+  period, update access and Pro license status may
+  expire
+  or become inactive.
+
+  License duration, refresh behavior, grace periods,
+  token
+  lifetime, and
+  validation rules may be changed by Software From
+  Vish as
+  needed for security,
+  abuse prevention, or service maintenance.
+
+  If a license expires, fails validation, is revoked,
+  or
+  is associated with a
+  refunded purchase, the user may lose access to Pro
+  status and official update
+  access.
+
+
+SECTION 10 — UPDATES
+-----------------------------------------------------
+
+  Software From Vish may provide updates, patches,
+  improvements, bug fixes,
+  security fixes, or feature changes for
+  AspectShift-HtoV.
+
+  Updates may be provided through automatic update
+  prompts, manual update
+  checks, direct downloads, or other official
+  distribution
+  methods.
+
+  The application may periodically and automatically
+  check
+  for available updates
+  approximately once every seven (7) days. Users may
+  also
+  manually check for
+  updates at any time through the application's
+  update
+  functionality. Automatic
+  update checks are intended solely to determine
+  update
+  availability and do not
+  automatically install updates without user approval
+  unless explicitly stated
+  by a future version of the software.
+
+  Paid Pro users are intended to receive free
+  official
+  updates for as long as
+  Vishwas Sharma / Software From Vish continues to
+  support
+  AspectShift-HtoV.
+
+  Software From Vish does not guarantee that updates
+  will
+  be provided forever,
+  on a fixed schedule, or for every operating system
+  version.
+
+  Updates may add, modify, or remove features,
+  improve
+  performance, change user
+  interface behavior, update dependencies, or alter
+  compatibility.
+
+
+SECTION 11 — SUPPORT
+-----------------------------------------------------
+
+  Support may be provided through official contact
+  channels, including:
+
+    Email      :  support@aspectshift-htov.com
+    Instagram :
+    https://www.instagram.com/aspectshift_htov/
+
+  Support may include help with activation,
+  installation,
+  update issues, license
+  refresh issues, and general usage questions.
+
+  Support is provided on a best-effort basis and is
+  not
+  guaranteed to be
+  available at all times. Response times are not
+  guaranteed unless separately
+  stated in writing.
+
+
+SECTION 12 — REFUND POLICY
+-----------------------------------------------------
+
+  Purchases made through Gumroad or other authorized
+  sales
+  platforms are
+  eligible for refund consideration within 7 days of
+  purchase.
+
+  Refund requests may be denied in cases of abuse,
+  fraud,
+  excessive use,
+  license sharing, chargeback misuse, violation of
+  this
+  Agreement, or other
+  circumstances determined by Software From Vish.
+
+  If a refund is issued, the associated paid license
+  key
+  may be revoked, and the
+  user may lose Pro status, official update access,
+  and
+  paid-license benefits.
+
+  Future sales through platforms such as Lemon
+  Squeezy,
+  the official website, or
+  other channels may be subject to the refund terms
+  displayed at the point of
+  sale.
+
+
+SECTION 13 — PRIVACY AND DATA COLLECTION
+-----------------------------------------------------
+
+  AspectShift-HtoV does not upload user videos, user
+  media
+  files, exported
+  files, subtitles, projects, or local processing
+  data to
+  Software From Vish
+  servers.
+
+  The application may connect to online services for:
+
+    1. License activation.
+    2. License refresh.
+    3. License validation.
+    4. Manual update checks initiated by the user.
+    5. Automatic periodic update checks performed
+    approximately once every
+       seven (7) days.
+    6. Update downloads or update availability
+    information.
+
+  Software From Vish does not intentionally collect
+  usage
+  analytics, crash
+  reports, video files, project files, or personal
+  media
+  through the
+  application.
+
+  Server logs may be generated when activation,
+  refresh,
+  update checks, or
+  related online requests occur. Such logs may
+  include
+  technical information
+  normally transmitted during internet requests, such
+  as
+  IP address, timestamp,
+  request metadata, license validation request data,
+  and
+  server response
+  information.
+
+  Users are responsible for the content they process
+  locally using
+  AspectShift-HtoV.
+
+
+SECTION 14 — THIRD-PARTY COMPONENTS
+-----------------------------------------------------
+
+  AspectShift-HtoV includes or may interact with
+  third-party software
+  components.
+
+  Known third-party components include, but may not
+  be
+  limited to:
+
+    - FFmpeg.
+    - FFprobe.
+    - Whisper-related binaries.
+    - Whisper models.
+    - Tauri and related dependencies.
+    - Other open-source libraries used by the
+    application.
+
+  FFmpeg and FFprobe may be bundled with the official
+  application package and
+  are used for video and media processing.
+
+  Whisper binaries and models may be optional
+  downloadable
+  components used for
+  subtitle-related features. These components may be
+  required for certain
+  subtitle, transcription, or caption workflows.
+
+  Third-party components are licensed by their
+  respective
+  copyright holders and
+  are subject to their own license terms. Third-party
+  notices, acknowledgements,
+  and license information may be provided in the
+  application, documentation,
+  repository, or accompanying notices.
+
+  Software From Vish does not claim ownership of
+  third-party components.
+
+
+SECTION 15 — AI AND MEDIA PROCESSING FEATURES
+-----------------------------------------------------
+
+  AspectShift-HtoV may include or support AI-assisted
+  features, including
+  transcription, subtitle generation, caption
+  workflows,
+  video enhancement, or
+  other creator-focused automation features.
+
+  AI-related features may depend on optional
+  third-party
+  components, models,
+  binaries, or future services.
+
+  AI-generated or automatically generated results may
+  contain errors,
+  inaccuracies, formatting issues, timing errors,
+  transcription mistakes, or
+  incomplete outputs. Users are responsible for
+  reviewing
+  and verifying generated
+  subtitles, captions, exports, and processed media
+  before
+  publication or
+  commercial use.
+
+
+SECTION 16 — NO CLOUD UPLOADS CURRENTLY
+-----------------------------------------------------
+
+  AspectShift-HtoV currently performs video
+  processing
+  locally and does not
+  upload user videos or media files to Software From
+  Vish
+  servers.
+
+  Cloud services are not currently available.
+
+  If cloud-based features are introduced in the
+  future,
+  additional terms,
+  privacy disclosures, or service-specific policies
+  may
+  apply.
+
+
+SECTION 17 — NO WARRANTY
+-----------------------------------------------------
+
+  AspectShift-HtoV is provided on an "as is" and "as
+  available" basis.
+
+  To the maximum extent permitted by law, Software
+  From
+  Vish and Vishwas Sharma
+  disclaim all warranties, whether express, implied,
+  statutory, or otherwise,
+  including but not limited to warranties of
+  merchantability, fitness for a
+  particular purpose, non-infringement, accuracy,
+  reliability, uninterrupted
+  operation, and error-free performance.
+
+  Software From Vish does not guarantee that:
+
+    - The software will be free from bugs or errors.
+    - Video processing will always complete
+    successfully.
+    - Outputs will always meet platform requirements.
+    - Subtitles, captions, or AI-assisted results
+    will
+    always be accurate.
+    - The software will be compatible with all files,
+    codecs, devices, drivers,
+      or operating system configurations.
+    - Updates will always be available.
+    - Third-party components will always remain
+    available or functional.
+
+
+SECTION 18 — LIMITATION OF LIABILITY
+-----------------------------------------------------
+
+  To the maximum extent permitted by law, Software
+  From
+  Vish, Vishwas Sharma,
+  contributors, licensors, and third-party component
+  providers shall not be
+  liable for any direct, indirect, incidental,
+  consequential, special,
+  exemplary, or punitive damages arising out of or
+  related
+  to the installation,
+  activation, use, misuse, inability to use, or
+  performance of AspectShift-HtoV.
+
+  This includes, but is not limited to:
+
+    - Lost, corrupted, damaged, overwritten, or
+    unusable
+    videos.
+    - Lost projects or lost output files.
+    - Failed processing jobs.
+    - Incorrect subtitles or captions.
+    - Business interruption.
+    - Lost revenue, lost profits, or lost
+    opportunities.
+    - Platform rejection of exported videos.
+    - Hardware, software, driver, or operating system
+    issues.
+    - Problems caused by FFmpeg, FFprobe, Whisper,
+    models, codecs, or other
+      third-party components.
+    - Any damages resulting from user error,
+    unsupported
+    files,
+      misconfiguration, or incompatible environments.
+
+  AspectShift-HtoV uses FFmpeg and other open-source
+  components for media
+  processing. Users accept that media processing
+  carries
+  inherent risks and
+  should keep backups of original files before
+  processing.
+
+  Where liability cannot be fully excluded under
+  applicable law, liability shall
+  be limited to the lowest amount permitted by law.
+
+
+SECTION 19 — USER RESPONSIBILITY AND BACKUPS
+-----------------------------------------------------
+
+  You are responsible for maintaining backups of your
+  original files, videos,
+  audio, images, subtitles, presets, projects, and
+  exported content.
+
+  You should not rely on AspectShift-HtoV as the only
+  storage location for
+  important media or production assets.
+
+  Before processing important files, you should
+  ensure
+  that backup copies exist.
+
+
+SECTION 20 — TERMINATION
+-----------------------------------------------------
+
+  This Agreement and any paid license benefits may
+  terminate automatically if
+  you violate its terms.
+
+  Grounds for termination or license revocation may
+  include:
+
+    - Sharing license keys.
+    - Using a license key on more than two (2)
+    computers.
+    - Refunding the purchase after activation.
+    - Attempting to bypass activation or license
+    validation.
+    - Misusing update services.
+    - Selling or misrepresenting unofficial copies as
+    official builds.
+    - Violating applicable law.
+    - Violating the terms of this Agreement.
+
+  Upon termination, Pro status, update access,
+  support
+  access, and license
+  validation may be revoked.
+
+  Termination of paid license benefits does not
+  remove any
+  rights you may
+  independently have under the GPL-3.0-or-later
+  license
+  for GPL-licensed source
+  code.
+
+
+SECTION 21 — GOVERNING LAW AND JURISDICTION
+-----------------------------------------------------
+
+  This Agreement shall be governed by the laws of
+  India,
+  without regard to
+  conflict-of-law principles.
+
+  Subject to applicable law, disputes arising out of
+  or
+  relating to this
+  Agreement, the official installer, paid license
+  keys,
+  update access, or
+  official services shall be subject to the
+  jurisdiction
+  of the courts located
+  in Bhopal, Madhya Pradesh, India.
+
+
+SECTION 22 — CHANGES TO THIS AGREEMENT
+-----------------------------------------------------
+
+  Software From Vish may update this Agreement from
+  time
+  to time.
+
+  Updated terms may apply to future versions, future
+  downloads, future
+  purchases, future activations, update services,
+  optional
+  subscription
+  services, or newly introduced features.
+
+  Continued use of official builds, license services,
+  update services, or paid
+  services after changes become effective may
+  constitute
+  acceptance of the
+  updated Agreement.
+
+
+SECTION 23 — CONTACT INFORMATION
+-----------------------------------------------------
+
+  For support, licensing, refund, or legal questions,
+  contact:
+
+    Publisher      :  Software From Vish
+    Creator        :  Vishwas Sharma
+    Product        :  AspectShift-HtoV
+    Website        :  https://aspectshift-htov.com
+    Support Email  :  support@aspectshift-htov.com
+    Instagram :
+    https://www.instagram.com/aspectshift_htov/
+
+
+SECTION 24 — ACCEPTANCE
+-----------------------------------------------------
+
+  By clicking "I Agree," "Accept," "Install," or by
+  installing, activating,
+  accessing, or using AspectShift-HtoV, you
+  acknowledge
+  that you have read,
+  understood, and agree to be bound by this
+  Agreement.
+
+  If you do not agree, do not install, activate, or
+  use
+  the official compiled
+  software package.
+
+=====================================================
+Copyright (c) 2026 Vishwas Sharma /
+         Software From Vish.
+                         All rights reserved.
+=====================================================
+

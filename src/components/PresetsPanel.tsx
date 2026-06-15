@@ -1,5 +1,15 @@
 import type { PlatformPreset, CustomPreset } from "../types/backend";
-import type { JSX } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type WheelEvent,
+} from "react";
+
+const PRESETS_PER_PAGE = 10;
+const WHEEL_PAGE_COOLDOWN_MS = 320;
 
 // Normalised view of any preset for display purposes
 export interface DisplayPreset {
@@ -141,6 +151,43 @@ const PLATFORM_ICONS: Record<string, JSX.Element> = {
   ),
 };
 
+const CUSTOM_PRESET_ICON = (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className="lucide lucide-save-icon lucide-save"
+  >
+    <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+    <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+    <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+  </svg>
+);
+
+function getPresetIcon(preset: DisplayPreset): JSX.Element | undefined {
+  if (preset.isCustom) return CUSTOM_PRESET_ICON;
+
+  const iconKey =
+    Object.keys(PLATFORM_ICONS).find(
+      (k) =>
+        preset.id.toLowerCase().includes(k) ||
+        preset.name.toLowerCase().includes(k),
+    ) ?? "";
+
+  return PLATFORM_ICONS[iconKey];
+}
+
+function getPresetTitle(preset: DisplayPreset): string {
+  if (preset.isCustom) return `${preset.name} (Custom preset)`;
+  return (preset.source as PlatformPreset).description ?? preset.name;
+}
+
 interface Props {
   presets: DisplayPreset[];
   selectedPresetIds: string[];
@@ -148,37 +195,84 @@ interface Props {
 }
 
 export function PresetsPanel({ presets, selectedPresetIds, onToggle }: Props) {
-  const builtinPresets = presets.filter((p) => p.isBuiltin);
-  const customPresets = presets.filter((p) => p.isCustom);
+  const [pageIndex, setPageIndex] = useState(0);
+  const previousPresetCountRef = useRef(presets.length);
+  const wheelLockUntilRef = useRef(0);
+
+  const totalPages = Math.max(1, Math.ceil(presets.length / PRESETS_PER_PAGE));
+  const clampedPageIndex = Math.min(pageIndex, totalPages - 1);
+  const visiblePresets = useMemo(() => {
+    const start = clampedPageIndex * PRESETS_PER_PAGE;
+    return presets.slice(start, start + PRESETS_PER_PAGE);
+  }, [clampedPageIndex, presets]);
+
+  useEffect(() => {
+    setPageIndex((currentPage) => {
+      const previousPresetCount = previousPresetCountRef.current;
+      const lastPage = totalPages - 1;
+
+      previousPresetCountRef.current = presets.length;
+
+      if (
+        presets.length > previousPresetCount &&
+        presets.length > PRESETS_PER_PAGE
+      ) {
+        return lastPage;
+      }
+
+      return Math.min(currentPage, lastPage);
+    });
+  }, [presets.length, totalPages]);
+
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (totalPages <= 1 || event.deltaY === 0) return;
+
+    event.preventDefault();
+
+    const now = Date.now();
+    if (now < wheelLockUntilRef.current) return;
+
+    const direction = event.deltaY > 0 ? 1 : -1;
+    const nextPage = Math.max(
+      0,
+      Math.min(totalPages - 1, clampedPageIndex + direction),
+    );
+
+    if (nextPage === clampedPageIndex) return;
+
+    wheelLockUntilRef.current = now + WHEEL_PAGE_COOLDOWN_MS;
+    setPageIndex(nextPage);
+  };
 
   return (
-    <div className="presets-panel">
+    <div className="presets-panel" onWheel={handleWheel}>
       <div className="presets-header">
-        <span className="section-title">Platform Presets</span>
-        <span className="text-xs text-muted">Select up to 5</span>
+        <span className="section-title">Presets</span>
+        <span className="text-xs text-muted">
+          Select up to 5
+          {totalPages > 1 && (
+            <span className="presets-page-indicator">
+              {clampedPageIndex + 1} / {totalPages}
+            </span>
+          )}
+        </span>
       </div>
 
-      {builtinPresets.length > 0 && (
+      {presets.length > 0 && (
         <div className="presets-grid">
-          {builtinPresets.map((p) => {
+          {visiblePresets.map((p) => {
             const isSelected = selectedPresetIds.includes(p.id);
-            // Icon lookup: try exact id, then lowercase, then first word lowercase
-            const iconKey =
-              Object.keys(PLATFORM_ICONS).find(
-                (k) =>
-                  p.id.toLowerCase().includes(k) ||
-                  p.name.toLowerCase().includes(k),
-              ) ?? "";
+            const icon = getPresetIcon(p);
+
             return (
               <div
                 key={p.id}
                 className={`preset-card${isSelected ? " selected" : ""}`}
                 onClick={() => onToggle(p.id)}
-                title={(p.source as PlatformPreset).description ?? p.name}
+                title={getPresetTitle(p)}
               >
                 <div className="preset-card-name">
-                  <span className="preset-icon">{PLATFORM_ICONS[iconKey]}</span>{" "}
-                  {p.name}
+                  <span className="preset-icon">{icon}</span> {p.name}
                 </div>
                 <div className="preset-card-ratio">
                   {p.ratioLabel}{" "}
@@ -188,42 +282,8 @@ export function PresetsPanel({ presets, selectedPresetIds, onToggle }: Props) {
                 </div>
               </div>
             );
-          })}{" "}
+          })}
         </div>
-      )}
-
-      {customPresets.length > 0 && (
-        <>
-          <div
-            className="settings-group-title"
-            style={{
-              marginTop: "var(--space-md)",
-              marginBottom: "var(--space-2xs)",
-            }}
-          >
-            Custom
-          </div>
-          <div className="presets-grid">
-            {customPresets.map((p) => {
-              const isSelected = selectedPresetIds.includes(p.id);
-              return (
-                <div
-                  key={p.id}
-                  className={`preset-card${isSelected ? " selected" : ""}`}
-                  onClick={() => onToggle(p.id)}
-                >
-                  <div className="preset-card-name">✦ {p.name}</div>
-                  <div className="preset-card-ratio">
-                    {p.ratioLabel}{" "}
-                    {p.resolution && (
-                      <span className="text-muted">({p.resolution})</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
       )}
 
       {presets.length === 0 && (

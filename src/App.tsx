@@ -69,6 +69,8 @@ import {
   APP_SHORTCUTS,
   isBrowserOnlyShortcut,
   isEditableShortcutTarget,
+  isAppRefreshShortcut,
+  normalizeShortcutKey,
 } from "./utils/appShortcuts";
 import {
   getMissingDependencies,
@@ -106,6 +108,7 @@ type DependencyOperation =
   | "failed";
 
 type UpdateNoticeTone = "success" | "warning" | "error" | "info";
+type UpdateCheckMode = "manual" | "automatic";
 
 interface UpdateFlowState {
   stage: UpdateFlowStage;
@@ -203,6 +206,10 @@ const ONBOARDING_STORAGE_KEY = "aspectshift.hasCompletedOnboarding";
 const SKIPPED_DEPENDENCY_PROMPT_KEY = "aspectshift.skippedDependencyPrompt";
 const FIRST_LAUNCH_DEPENDENCY_PROMPT_KEY =
   "aspectshift.firstLaunchDependencyPromptSeen";
+const WEEKLY_UPDATE_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTOMATIC_UPDATE_BUSY_RETRY_MS = 60 * 1000;
+const LAST_AUTOMATIC_UPDATE_CHECK_KEY =
+  "aspectshift:lastAutomaticUpdateCheckAt";
 
 type SubtitleIntent = "exportSubtitles" | "burnSubtitles";
 type FirstRunPanel = "license" | "dependency";
@@ -211,6 +218,17 @@ type FirstRunPanel = "license" | "dependency";
 
 function formatTime(ts: Date) {
   return ts.toTimeString().slice(0, 8);
+}
+
+function getLastAutomaticUpdateCheckAt(): number | null {
+  const rawValue = localStorage.getItem(LAST_AUTOMATIC_UPDATE_CHECK_KEY);
+  if (!rawValue) return null;
+  const parsedValue = Number(rawValue);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null;
+}
+
+function setLastAutomaticUpdateCheckAt(timestamp: number) {
+  localStorage.setItem(LAST_AUTOMATIC_UPDATE_CHECK_KEY, String(timestamp));
 }
 
 function formatETA(secs: number): string {
@@ -729,6 +747,10 @@ export default function App() {
     null,
   );
   const updateBannerExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const updateCheckInFlightRef = useRef<UpdateCheckMode | null>(null);
+  const automaticUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   const refreshConfirmOpenRef = useRef(false);
@@ -1342,205 +1364,242 @@ export default function App() {
     ],
   );
 
-  const handleCheckForUpdates = useCallback(async () => {
+  const runUpdateCheck = useCallback(async (mode: UpdateCheckMode) => {
+    const isManual = mode === "manual";
     if (isAuthHydrating || !isLicensed) return;
 
     if (
       updateFlow.stage === "update_available" ||
       updateFlow.stage === "installed_restart_required"
     ) {
-      setUpdateDialogOpen(true);
+      if (isManual) {
+        setUpdateDialogOpen(true);
+      }
       return;
     }
 
-    if (isCheckingUpdates || isUpdateFlowBusy) return;
+    if (updateCheckInFlightRef.current || isUpdateFlowBusy) return;
 
+    updateCheckInFlightRef.current = mode;
     await closePendingUpdate();
 
     const currentVersion = aboutMetadata.appVersion;
-    setIsCheckingUpdates(true);
-    setUpdateDialogOpen(false);
-    setUpdateFlow({
-      stage: "checking_entitlement",
-      tone: "info",
-      message: "Checking for updates...",
-      currentVersion,
-      latestVersion: null,
-      releaseNotes: null,
-      progressPercent: null,
-      progressLabel: "Checking for updates...",
-      errorMessage: null,
-    });
-    addLog("[Updater] Entitlement check started", "info");
+    if (isManual) {
+      setIsCheckingUpdates(true);
+      setUpdateDialogOpen(false);
+      setUpdateFlow({
+        stage: "checking_entitlement",
+        tone: "info",
+        message: "Checking for updates...",
+        currentVersion,
+        latestVersion: null,
+        releaseNotes: null,
+        progressPercent: null,
+        progressLabel: "Checking for updates...",
+        errorMessage: null,
+      });
+      addLog("[Updater] Entitlement check started", "info");
+    }
 
     try {
       const entitlement = await invoke<UpdateEntitlementCheckResult>(
         "check_update_entitlement",
       );
 
-      addLog(
-        `Update entitlement response: status=${entitlement.status}${
-          entitlement.data
-            ? `, latestVersion=${entitlement.data.latestVersion}`
-            : ""
-        }`,
-        entitlement.status === "update_available" ? "success" : "info",
-      );
+      if (isManual) {
+        addLog(
+          `Update entitlement response: status=${entitlement.status}${
+            entitlement.data
+              ? `, latestVersion=${entitlement.data.latestVersion}`
+              : ""
+          }`,
+          entitlement.status === "update_available" ? "success" : "info",
+        );
+      }
 
       if (entitlement.status === "no_update") {
-        setUpdateFlow({
-          stage: "already_latest",
-          tone: "success",
-          message: "Already on the latest version.",
-          currentVersion,
-          latestVersion: currentVersion,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: null,
-        });
-        addLog("[Updater] Already on the latest version", "info");
+        if (isManual) {
+          setUpdateFlow({
+            stage: "already_latest",
+            tone: "success",
+            message: "Already on the latest version.",
+            currentVersion,
+            latestVersion: currentVersion,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: null,
+          });
+          addLog("[Updater] Already on the latest version", "info");
+        } else {
+          setLastAutomaticUpdateCheckAt(Date.now());
+        }
         return;
       }
 
       if (entitlement.status === "not_entitled") {
-        setUpdateFlow({
-          stage: "entitlement_denied",
-          tone: "warning",
-          message: "Update entitlement denied.",
-          currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: null,
-        });
-        addLog("[Updater] Update entitlement denied", "warn");
+        if (isManual) {
+          setUpdateFlow({
+            stage: "entitlement_denied",
+            tone: "warning",
+            message: "Update entitlement denied.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: null,
+          });
+          addLog("[Updater] Update entitlement denied", "warn");
+        } else {
+          setLastAutomaticUpdateCheckAt(Date.now());
+        }
         return;
       }
 
       if (entitlement.status === "channel_not_allowed") {
-        setUpdateFlow({
-          stage: "entitlement_denied",
-          tone: "warning",
-          message: "Update entitlement denied for this release channel.",
-          currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: null,
-        });
-        addLog(
-          "[Updater] Update entitlement denied for this release channel",
-          "warn",
-        );
+        if (isManual) {
+          setUpdateFlow({
+            stage: "entitlement_denied",
+            tone: "warning",
+            message: "Update entitlement denied for this release channel.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: null,
+          });
+          addLog(
+            "[Updater] Update entitlement denied for this release channel",
+            "warn",
+          );
+        } else {
+          setLastAutomaticUpdateCheckAt(Date.now());
+        }
         return;
       }
 
       if (entitlement.status === "auth_required") {
-        setUpdateFlow({
-          stage: "entitlement_denied",
-          tone: "error",
-          message: "Please sign in again before checking for updates.",
-          currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: null,
-        });
-        addLog(
-          "[Updater] Update entitlement requires re-authentication",
-          "warn",
-        );
+        if (isManual) {
+          setUpdateFlow({
+            stage: "entitlement_denied",
+            tone: "error",
+            message: "Please sign in again before checking for updates.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: null,
+          });
+          addLog(
+            "[Updater] Update entitlement requires re-authentication",
+            "warn",
+          );
+        } else {
+          setLastAutomaticUpdateCheckAt(Date.now());
+        }
         return;
       }
 
       if (entitlement.status === "offline") {
-        setUpdateFlow({
-          stage: "failed",
-          tone: "warning",
-          message: "Offline: unable to verify update entitlement.",
-          currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: "Offline: unable to verify update entitlement.",
-        });
-        addLog("[Updater] Update entitlement check failed: offline", "warn");
+        if (isManual) {
+          setUpdateFlow({
+            stage: "failed",
+            tone: "warning",
+            message: "Offline: unable to verify update entitlement.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: "Offline: unable to verify update entitlement.",
+          });
+          addLog("[Updater] Update entitlement check failed: offline", "warn");
+        }
         return;
       }
 
       if (entitlement.status === "server_error") {
-        setUpdateFlow({
-          stage: "failed",
-          tone: "error",
-          message: "Update check failed. Please try again later.",
-          currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: "Update check failed. Please try again later.",
-        });
-        addLog(
-          "[Updater] Update entitlement check failed: server error",
-          "error",
-        );
+        if (isManual) {
+          setUpdateFlow({
+            stage: "failed",
+            tone: "error",
+            message: "Update check failed. Please try again later.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: "Update check failed. Please try again later.",
+          });
+          addLog(
+            "[Updater] Update entitlement check failed: server error",
+            "error",
+          );
+        }
         return;
       }
 
       if (entitlement.status !== "update_available") {
+        if (isManual) {
+          setUpdateFlow({
+            stage: "failed",
+            tone: "error",
+            message: "Update check failed.",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: "Update check failed.",
+          });
+          addLog(
+            `[Updater] Unexpected entitlement status: ${entitlement.status}`,
+            "error",
+          );
+        }
+        return;
+      }
+
+      if (isManual) {
+        addLog(
+          "[Updater] Entitlement approved; checking updater manifest",
+          "success",
+        );
         setUpdateFlow({
-          stage: "failed",
-          tone: "error",
-          message: "Update check failed.",
+          stage: "checking_updater",
+          tone: "info",
+          message: "Checking for updates...",
           currentVersion,
           latestVersion: entitlement.data?.latestVersion ?? null,
           releaseNotes: null,
           progressPercent: null,
-          progressLabel: null,
-          errorMessage: "Update check failed.",
-        });
-        addLog(
-          `[Updater] Unexpected entitlement status: ${entitlement.status}`,
-          "error",
-        );
-        return;
-      }
-
-      addLog(
-        "[Updater] Entitlement approved; checking updater manifest",
-        "success",
-      );
-      setUpdateFlow({
-        stage: "checking_updater",
-        tone: "info",
-        message: "Checking for updates...",
-        currentVersion,
-        latestVersion: entitlement.data?.latestVersion ?? null,
-        releaseNotes: null,
-        progressPercent: null,
-        progressLabel: "Checking for updates...",
-        errorMessage: null,
-      });
-
-      const availableUpdate = await check();
-      if (!availableUpdate) {
-        setUpdateFlow({
-          stage: "already_latest",
-          tone: "success",
-          message: "Already on the latest version.",
-          currentVersion,
-          latestVersion: currentVersion,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
+          progressLabel: "Checking for updates...",
           errorMessage: null,
         });
-        addLog("[Updater] Updater reported no available update", "info");
+      }
+
+      const availableUpdate = await check();
+      if (!isManual) {
+        setLastAutomaticUpdateCheckAt(Date.now());
+      }
+      if (!availableUpdate) {
+        if (isManual) {
+          setUpdateFlow({
+            stage: "already_latest",
+            tone: "success",
+            message: "Already on the latest version.",
+            currentVersion,
+            latestVersion: currentVersion,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: null,
+            errorMessage: null,
+          });
+          addLog("[Updater] Updater reported no available update", "info");
+        }
         return;
       }
 
@@ -1562,38 +1621,108 @@ export default function App() {
         errorMessage: null,
       });
       setUpdateDialogOpen(true);
-      addLog(
-        `[Updater] Update detected: current=${updateCurrentVersion ?? "unknown"}, latest=${updateVersion ?? "unknown"}`,
-        "success",
-      );
+      if (isManual) {
+        addLog(
+          `[Updater] Update detected: current=${updateCurrentVersion ?? "unknown"}, latest=${updateVersion ?? "unknown"}`,
+          "success",
+        );
+      }
     } catch (error) {
       await closePendingUpdate();
-      setUpdateFlow({
-        stage: "failed",
-        tone: "error",
-        message: "Updater check failed.",
-        currentVersion,
-        latestVersion: null,
-        releaseNotes: null,
-        progressPercent: null,
-        progressLabel: null,
-        errorMessage: errorMessage(error),
-      });
-      addLog(
-        `[Updater] Update flow failed during check: ${errorMessage(error)}`,
-        "error",
-      );
+      if (isManual) {
+        setUpdateFlow({
+          stage: "failed",
+          tone: "error",
+          message: "Updater check failed.",
+          currentVersion,
+          latestVersion: null,
+          releaseNotes: null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: errorMessage(error),
+        });
+        addLog(
+          `[Updater] Update flow failed during check: ${errorMessage(error)}`,
+          "error",
+        );
+      }
     } finally {
-      setIsCheckingUpdates(false);
+      updateCheckInFlightRef.current = null;
+      if (isManual) {
+        setIsCheckingUpdates(false);
+      }
     }
   }, [
     aboutMetadata.appVersion,
     addLog,
     closePendingUpdate,
-    isCheckingUpdates,
     isAuthHydrating,
     isLicensed,
     isUpdateFlowBusy,
+    updateFlow.stage,
+  ]);
+
+  const handleCheckForUpdates = useCallback(async () => {
+    await runUpdateCheck("manual");
+  }, [runUpdateCheck]);
+
+  useEffect(() => {
+    if (isAuthHydrating || !isLicensed) return;
+
+    let disposed = false;
+
+    const clearAutomaticTimer = () => {
+      if (automaticUpdateTimerRef.current) {
+        clearTimeout(automaticUpdateTimerRef.current);
+        automaticUpdateTimerRef.current = null;
+      }
+    };
+
+    const scheduleNextAutomaticCheck = (delayMs?: number) => {
+      if (disposed) return;
+      clearAutomaticTimer();
+
+      const lastCheckedAt = getLastAutomaticUpdateCheckAt();
+      const elapsedMs =
+        lastCheckedAt === null
+          ? WEEKLY_UPDATE_CHECK_INTERVAL_MS
+          : Math.max(0, Date.now() - lastCheckedAt);
+      const nextDelayMs =
+        delayMs ??
+        Math.max(0, WEEKLY_UPDATE_CHECK_INTERVAL_MS - elapsedMs);
+
+      automaticUpdateTimerRef.current = setTimeout(async () => {
+        automaticUpdateTimerRef.current = null;
+        if (disposed) return;
+
+        const updateAlreadyPending =
+          updateFlow.stage === "update_available" ||
+          updateFlow.stage === "installed_restart_required";
+        if (
+          updateCheckInFlightRef.current ||
+          isUpdateFlowBusy ||
+          updateAlreadyPending
+        ) {
+          scheduleNextAutomaticCheck(AUTOMATIC_UPDATE_BUSY_RETRY_MS);
+          return;
+        }
+
+        await runUpdateCheck("automatic");
+        scheduleNextAutomaticCheck();
+      }, nextDelayMs);
+    };
+
+    scheduleNextAutomaticCheck();
+
+    return () => {
+      disposed = true;
+      clearAutomaticTimer();
+    };
+  }, [
+    isAuthHydrating,
+    isLicensed,
+    isUpdateFlowBusy,
+    runUpdateCheck,
     updateFlow.stage,
   ]);
 
@@ -1828,23 +1957,26 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) {
+      if (isAppRefreshShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRefreshApp();
         return;
       }
 
       const shortcut =
         !isEditableShortcutTarget(event.target) &&
         !event.altKey &&
-        !event.metaKey &&
         !event.shiftKey &&
-        event.ctrlKey
+        (event.ctrlKey || event.metaKey)
           ? APP_SHORTCUTS.find(
-              (item) => item.shortcut.key === event.key.toLowerCase(),
+              (item) => item.shortcut.key === normalizeShortcutKey(event),
             )
           : null;
 
       if (shortcut) {
         event.preventDefault();
+        event.stopPropagation();
 
         if (shortcut.id === "refresh") {
           handleRefreshApp();
@@ -1857,6 +1989,10 @@ export default function App() {
         }
 
         handleToggleSettings();
+        return;
+      }
+
+      if (event.defaultPrevented) {
         return;
       }
 

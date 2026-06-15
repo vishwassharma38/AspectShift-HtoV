@@ -6,6 +6,7 @@ import {
 } from "../../services/dependencyManager";
 import { formatBuildModeLabel } from "../../utils/buildMetadata";
 import type { ProductEdition } from "../../utils/productEdition";
+import { HelpSettingsPanel } from "./HelpSettingsPanel";
 import { LicenseSettingsPanel } from "./LicenseSettingsPanel";
 
 interface SettingsOverlayProps {
@@ -35,7 +36,7 @@ interface SettingsOverlayProps {
   missingSubtitleDependencies: DependencyId[];
 }
 
-type SettingsTab = "dependencies" | "about" | "license";
+type SettingsTab = "dependencies" | "about" | "license" | "help";
 
 const NAV_ITEMS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "dependencies", label: "Dependencies", icon: "⬡" },
@@ -108,6 +109,29 @@ function DependenciesTabIcon() {
   );
 }
 
+function HelpTabIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="m4.93 4.93 4.24 4.24" />
+      <path d="m14.83 9.17 4.24-4.24" />
+      <path d="m14.83 14.83 4.24 4.24" />
+      <path d="m9.17 14.83-4.24 4.24" />
+      <circle cx="12" cy="12" r="4" />
+    </svg>
+  );
+}
+
 export function SettingsOverlay({
   open,
   depsState,
@@ -163,6 +187,8 @@ export function SettingsOverlay({
                 key={item.id}
                 className={`so-nav-item${activeTab === item.id ? " active" : ""}`}
                 onClick={() => setActiveTab(item.id)}
+                type="button"
+                aria-pressed={activeTab === item.id}
               >
                 <span className="so-nav-icon">
                   {item.id === "dependencies" ? (
@@ -182,11 +208,24 @@ export function SettingsOverlay({
             <button
               className={`so-nav-item${activeTab === "license" ? " active" : ""}`}
               onClick={() => setActiveTab("license")}
+              type="button"
+              aria-pressed={activeTab === "license"}
             >
               <span className="so-nav-icon">
                 <LicenseTabIcon />
               </span>
               <span className="so-nav-text">License</span>
+            </button>
+            <button
+              className={`so-nav-item${activeTab === "help" ? " active" : ""}`}
+              onClick={() => setActiveTab("help")}
+              type="button"
+              aria-pressed={activeTab === "help"}
+            >
+              <span className="so-nav-icon">
+                <HelpTabIcon />
+              </span>
+              <span className="so-nav-text">Help</span>
             </button>
           </nav>
 
@@ -195,6 +234,7 @@ export function SettingsOverlay({
               className="so-close-btn"
               onClick={onClose}
               aria-label="Close settings"
+              type="button"
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path
@@ -385,6 +425,7 @@ export function SettingsOverlay({
                   className="so-action-btn so-action-btn--primary"
                   onClick={onInstallMissing}
                   disabled={operationActive || allReady}
+                  type="button"
                 >
                   {isDownloading ? (
                     <span className="so-spinner" />
@@ -414,6 +455,7 @@ export function SettingsOverlay({
                   className="so-action-btn"
                   onClick={onForceReinstall}
                   disabled={operationActive}
+                  type="button"
                 >
                   {isRedownloading ? (
                     <span className="so-spinner so-spinner--dark" />
@@ -441,6 +483,7 @@ export function SettingsOverlay({
                   className="so-action-btn so-action-btn--ghost"
                   onClick={onRescan}
                   disabled={operationActive}
+                  type="button"
                 >
                   <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
                     <circle
@@ -555,6 +598,8 @@ export function SettingsOverlay({
               appIdentifier={aboutMetadata.identifier}
             />
           )}
+
+          {activeTab === "help" && <HelpSettingsPanel />}
         </div>
       </section>
 
@@ -641,17 +686,27 @@ export function SettingsOverlay({
           background: var(--bg-hover);
           color: var(--text-primary);
         }
+        .so-nav-item:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
         .so-nav-item.active {
           background: var(--bg-active);
           color: var(--accent);
           font-weight: 600;
         }
         .so-nav-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
           font-size: 14px;
           line-height: 1;
           width: 16px;
           text-align: center;
           flex-shrink: 0;
+        }
+        .so-nav-icon svg {
+          display: block;
         }
         .so-nav-text {
           flex: 1;
@@ -688,6 +743,10 @@ export function SettingsOverlay({
         .so-close-btn:hover {
           background: var(--bg-hover);
           color: var(--text-primary);
+        }
+        .so-close-btn:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
         }
 
         /* ── Body ─────────────────────────────────────────────── */
@@ -926,6 +985,10 @@ export function SettingsOverlay({
           border-color: var(--border-strong);
         }
         .so-action-btn:active { transform: scale(0.97); }
+        .so-action-btn:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
         .so-action-btn:disabled {
           opacity: 0.4;
           cursor: not-allowed;
