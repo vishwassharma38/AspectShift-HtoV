@@ -9,7 +9,8 @@ import {
 } from "react";
 
 const PRESETS_PER_PAGE = 10;
-const WHEEL_PAGE_COOLDOWN_MS = 320;
+const WHEEL_PAGE_COOLDOWN_MS = 80;
+const PRESET_PANEL_PAGE_INDEX_STORAGE_KEY = "aspectshift:presetPanelPageIndex";
 
 // Normalised view of any preset for display purposes
 export interface DisplayPreset {
@@ -188,6 +189,35 @@ function getPresetTitle(preset: DisplayPreset): string {
   return (preset.source as PlatformPreset).description ?? preset.name;
 }
 
+function clampPageIndex(pageIndex: number, totalPages: number): number {
+  const lastPage = Math.max(0, totalPages - 1);
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) return 0;
+  return Math.min(pageIndex, lastPage);
+}
+
+function readStoredPageIndex(): number {
+  try {
+    const rawValue = localStorage.getItem(PRESET_PANEL_PAGE_INDEX_STORAGE_KEY);
+    if (rawValue === null) return 0;
+
+    const parsedValue = Number(rawValue);
+    return Number.isInteger(parsedValue) && parsedValue >= 0 ? parsedValue : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredPageIndex(pageIndex: number) {
+  try {
+    localStorage.setItem(
+      PRESET_PANEL_PAGE_INDEX_STORAGE_KEY,
+      String(pageIndex),
+    );
+  } catch {
+    // Ignore storage failures; preset paging should remain usable in-memory.
+  }
+}
+
 interface Props {
   presets: DisplayPreset[];
   selectedPresetIds: string[];
@@ -195,34 +225,48 @@ interface Props {
 }
 
 export function PresetsPanel({ presets, selectedPresetIds, onToggle }: Props) {
-  const [pageIndex, setPageIndex] = useState(0);
+  const [pageIndex, setPageIndex] = useState(readStoredPageIndex);
   const previousPresetCountRef = useRef(presets.length);
+  const hasSeenPresetDataRef = useRef(presets.length > 0);
   const wheelLockUntilRef = useRef(0);
 
   const totalPages = Math.max(1, Math.ceil(presets.length / PRESETS_PER_PAGE));
-  const clampedPageIndex = Math.min(pageIndex, totalPages - 1);
+  const clampedPageIndex = clampPageIndex(pageIndex, totalPages);
   const visiblePresets = useMemo(() => {
     const start = clampedPageIndex * PRESETS_PER_PAGE;
     return presets.slice(start, start + PRESETS_PER_PAGE);
   }, [clampedPageIndex, presets]);
 
   useEffect(() => {
+    if (presets.length === 0) {
+      previousPresetCountRef.current = 0;
+      return;
+    }
+
     setPageIndex((currentPage) => {
       const previousPresetCount = previousPresetCountRef.current;
+      const hasSeenPresetData = hasSeenPresetDataRef.current;
       const lastPage = totalPages - 1;
 
       previousPresetCountRef.current = presets.length;
+      hasSeenPresetDataRef.current = true;
 
       if (
+        hasSeenPresetData &&
         presets.length > previousPresetCount &&
         presets.length > PRESETS_PER_PAGE
       ) {
         return lastPage;
       }
 
-      return Math.min(currentPage, lastPage);
+      return clampPageIndex(currentPage, totalPages);
     });
   }, [presets.length, totalPages]);
+
+  useEffect(() => {
+    if (presets.length === 0) return;
+    writeStoredPageIndex(clampedPageIndex);
+  }, [clampedPageIndex, presets.length]);
 
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
     if (totalPages <= 1 || event.deltaY === 0) return;
