@@ -51,6 +51,24 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
   const foregroundVideoRef = useRef<HTMLVideoElement | null>(null);
 
+  const forceBlurBackgroundMuted = useCallback(
+    (el: HTMLVideoElement | null = backgroundVideoRef.current) => {
+      if (!el) return;
+      el.defaultMuted = true;
+      el.muted = true;
+      el.volume = 0;
+    },
+    [],
+  );
+
+  const setBackgroundVideoRef = useCallback(
+    (el: HTMLVideoElement | null) => {
+      backgroundVideoRef.current = el;
+      forceBlurBackgroundMuted(el);
+    },
+    [forceBlurBackgroundMuted],
+  );
+
   // Reset readiness every time the source or preview media mode changes.
   useEffect(() => {
     setVideoReady(false);
@@ -65,9 +83,9 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       el.muted = isMuted;
     };
     syncElement(mainVideoRef.current);
-    syncElement(backgroundVideoRef.current);
     syncElement(foregroundVideoRef.current);
-  }, [previewVolume, videoSrc, showBackgroundEffect]);
+    forceBlurBackgroundMuted();
+  }, [previewVolume, videoSrc, showBackgroundEffect, forceBlurBackgroundMuted]);
 
   const syncBlurBackgroundToForeground = useCallback(() => {
     if (!showBlur) return;
@@ -75,6 +93,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     const fg = foregroundVideoRef.current;
     if (!bg || !fg || !Number.isFinite(fg.currentTime)) return;
 
+    forceBlurBackgroundMuted(bg);
     bg.playbackRate = fg.playbackRate;
     if (Math.abs(bg.currentTime - fg.currentTime) > 0.05) {
       bg.currentTime = fg.currentTime;
@@ -84,7 +103,8 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     } else if (!fg.paused && bg.paused) {
       void bg.play().catch(() => {});
     }
-  }, [showBlur]);
+    forceBlurBackgroundMuted(bg);
+  }, [showBlur, forceBlurBackgroundMuted]);
 
   useEffect(() => {
     syncBlurBackgroundToForeground();
@@ -307,7 +327,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     key={`blur-bg-${videoSrc}`}
                     src={convertFileSrc(videoSrc)}
                     className="canvas-video-blur"
-                    ref={backgroundVideoRef}
+                    ref={setBackgroundVideoRef}
                     style={{
                       position: "absolute",
                       left: "50%",
@@ -326,8 +346,18 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     muted
                     loop
                     playsInline
-                    onLoadedMetadata={syncBlurBackgroundToForeground}
-                    onCanPlay={syncBlurBackgroundToForeground}
+                    onLoadedMetadata={(e) => {
+                      forceBlurBackgroundMuted(e.currentTarget);
+                      syncBlurBackgroundToForeground();
+                    }}
+                    onCanPlay={(e) => {
+                      forceBlurBackgroundMuted(e.currentTarget);
+                      syncBlurBackgroundToForeground();
+                    }}
+                    onPlay={(e) => forceBlurBackgroundMuted(e.currentTarget)}
+                    onVolumeChange={(e) =>
+                      forceBlurBackgroundMuted(e.currentTarget)
+                    }
                   />
                 )}
                 <video
