@@ -55,7 +55,7 @@ jobs:
             Signed Windows release for AspectShift-HtoV ${{ env.RELEASE_TAG }}.
 
             This release includes:
-            - the Windows installer
+            - the very first version of the aspectshift-htov windows installer
             - updater bundle artifacts
             - updater signatures
             - updater JSON metadata for GitHub Release delivery
