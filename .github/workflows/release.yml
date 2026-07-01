@@ -52,10 +52,30 @@ jobs:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: "AspectShift-HtoV ${{ env.RELEASE_TAG }}"
           releaseBody: |
-            Signed Windows release for AspectShift-HtoV ${{ env.RELEASE_TAG }}.
+            ## AspectShift-HtoV ${{ env.RELEASE_TAG }}
 
-            This release includes:
-            - more stability and bug fixes.
+            This update adds more customization controls for video overlays, improves subtitle editing, and fixes preview accuracy in the processing queue.
+
+            ### New Features
+
+            - Added support for custom fonts in videos.
+            - Added subtitle customization options:
+              - Change subtitle font style.
+              - Change subtitle color.
+              - Toggle subtitle visibility.
+              - Manually drag and adjust subtitle position.
+            - Added support for dragging and repositioning logo overlays anywhere on the video canvas.
+
+            ### Fixes
+
+            - Fixed the video orientation/rotation thumbnail issue in the processing queue.
+            - The processing queue now displays the corrected post-processing thumbnail instead of the original pre-processing thumbnail.
+            - Queue previews now more accurately match the final processed video output.
+
+            ### Notification Improvements
+
+            - Improved license-related notification messages.
+            - Revoked licenses, refunded licenses, and disallowed entitlements now display clear, specific messages instead of the generic notification used in v0.1.1.
 
           releaseDraft: false
           prerelease: false

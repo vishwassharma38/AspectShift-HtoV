@@ -4,7 +4,6 @@
 target/
 src-tauri/target/
 **/*.rs.bk
-Cargo.lock
 
 # ===========================
 # Node / Frontend
