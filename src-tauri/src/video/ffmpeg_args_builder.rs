@@ -1,10 +1,13 @@
 use crate::os_utils::OsUtils;
 use crate::video::preset_adapter::RenderPlan;
 
-fn with_subtitle_filter(filter_graph: &str, subtitle_path: &str) -> String {
-    let escaped_path = OsUtils::escape_filter_path(subtitle_path);
-
-    let subtitle_filter = format!("subtitles='{escaped_path}'");
+fn with_ass_filter(filter_graph: &str, ass_path: &str, fonts_dir: Option<&str>) -> String {
+    let escaped_path = OsUtils::escape_filter_path(ass_path);
+    let fonts = fonts_dir
+        .map(OsUtils::escape_filter_path)
+        .map(|path| format!(":fontsdir='{path}'"))
+        .unwrap_or_default();
+    let subtitle_filter = format!("ass='{escaped_path}'{fonts}");
 
     if uses_complex_graph(filter_graph) {
         format!("{filter_graph};[v]{subtitle_filter}[v]")
@@ -50,16 +53,24 @@ pub fn build_ffmpeg_args(
     output: &str,
     filter_graph: &str,
     plan: &RenderPlan,
+    text_overlay_path: Option<&str>,
+    text_fonts_dir: Option<&str>,
     subtitle_path: Option<&str>,
+    subtitle_fonts_dir: Option<&str>,
 ) -> Vec<String> {
-    let final_filter_graph = if plan.effects.burn_subtitles_enabled() {
-        if let Some(path) = subtitle_path {
-            with_subtitle_filter(filter_graph, path)
-        } else {
-            filter_graph.to_string()
-        }
+    let filter_with_text = if let Some(path) = text_overlay_path {
+        with_ass_filter(filter_graph, path, text_fonts_dir)
     } else {
         filter_graph.to_string()
+    };
+    let final_filter_graph = if plan.effects.burn_subtitles_enabled() {
+        if let Some(path) = subtitle_path {
+            with_ass_filter(&filter_with_text, path, subtitle_fonts_dir)
+        } else {
+            filter_with_text
+        }
+    } else {
+        filter_with_text
     };
 
     let mut args = vec!["-i".to_string(), input.to_string()];
@@ -129,4 +140,31 @@ pub fn build_ffmpeg_args(
     args.extend_from_slice(&["-y".to_string(), output.to_string()]);
 
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_ass_filter;
+
+    #[test]
+    fn subtitles_are_appended_after_a_labeled_text_stage() {
+        let graph = "[0:v]null[v];[v]drawtext=text=hello[v]";
+        let combined = with_ass_filter(graph, "subtitles.ass", None);
+        assert_eq!(
+            combined,
+            "[0:v]null[v];[v]drawtext=text=hello[v];[v]ass='subtitles.ass'[v]"
+        );
+    }
+
+    #[test]
+    fn text_overlay_is_composited_before_burned_subtitles() {
+        let graph = "[0:v]null[v]";
+        let with_text = with_ass_filter(graph, "text.ass", Some("fonts"));
+        let combined = with_ass_filter(&with_text, "captions.ass", None);
+
+        assert_eq!(
+            combined,
+            "[0:v]null[v];[v]ass='text.ass':fontsdir='fonts'[v];[v]ass='captions.ass'[v]"
+        );
+    }
 }

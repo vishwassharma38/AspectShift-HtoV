@@ -94,6 +94,8 @@ pub fn is_transient_refresh_failure(error: &AuthError) -> bool {
         AuthError::StorageError(_) | AuthError::MachineIdError(_) | AuthError::JsonError(_) => {
             false
         }
-        AuthError::NotActivated | AuthError::ActivationFailed { .. } | AuthError::PhaseDNotImplemented => false,
+        AuthError::NotActivated
+        | AuthError::ActivationFailed { .. }
+        | AuthError::PhaseDNotImplemented => false,
     }
 }

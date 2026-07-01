@@ -16,6 +16,7 @@ use aspectshift_htov_lib::video::{
         ConversionRequestDTO, CustomPreset, EncodingProfile, FileProgress, FileReadiness,
         JobStatus, LogoOptions, LogoPosition, OrientationInfo, OutputFormat, OutputJob,
         PlatformConfig, PlatformPreset, PreviewLayoutRequest, StructuredError,
+        SubtitleOverlaySettings, TextFontStyle, TextLayerSettings, TextOverlaySettings,
         VideoEffectsSettings, VideoPresetDTO, VideoTransform,
     },
 };
@@ -32,6 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<PlatformConfig>()
         .register::<VideoTransform>()
         .register::<LogoOptions>()
+        .register::<TextFontStyle>()
+        .register::<TextLayerSettings>()
+        .register::<TextOverlaySettings>()
+        .register::<SubtitleOverlaySettings>()
         .register::<VideoEffectsSettings>()
         .register::<AppConfig>()
         .register::<OutputJob>()

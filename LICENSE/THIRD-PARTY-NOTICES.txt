@@ -1,6 +1,6 @@
 # THIRD-PARTY SOFTWARE NOTICES
 
-AspectShift-HtoV includes, utilizes, or may download software, libraries, models, and other components developed and maintained by third parties.
+AspectShift-HtoV includes, utilizes, or may download software, libraries, models, fonts, and other components developed and maintained by third parties.
 
 This document provides attribution and licensing information for third-party components used by the application.
 
@@ -8,7 +8,7 @@ This document provides attribution and licensing information for third-party com
 
 ## FFmpeg / FFprobe
 
-Copyright © 2000–2026 The FFmpeg Developers
+Copyright (c) 2000-2026 The FFmpeg Developers
 
 Project Website:
 
@@ -29,6 +29,81 @@ https://www.gyan.dev/ffmpeg/builds/
 Copyright for FFmpeg and FFprobe remains with their respective authors and contributors.
 
 FFmpeg and FFprobe are independent third-party projects and are not affiliated with, endorsed by, or maintained by the developers of AspectShift-HtoV.
+
+---
+
+## Bundled Text Overlay Fonts
+
+AspectShift-HtoV bundles native regular, bold, italic, and bold-italic faces for the text overlay renderer:
+
+* Anton - Copyright 2020 The Anton Project Authors (https://github.com/googlefonts/AntonFont.git) - SIL Open Font License 1.1
+* Bungee - Copyright 2023 The Bungee Project Authors (https://github.com/djrrb/Bungee) - SIL Open Font License 1.1
+* Caveat - Copyright 2014 The Caveat Project Authors (https://github.com/googlefonts/caveat) - SIL Open Font License 1.1
+* Cormorant Garamond - Copyright 2015 the Cormorant Project Authors (github.com/CatharsisFonts/Cormorant) - SIL Open Font License 1.1
+* Exo 2 - Copyright 2013 The Exo 2 Project Authors (https://github.com/googlefonts/Exo-2.0) - SIL Open Font License 1.1
+* Fira Sans - Copyright (c) 2012-2015, The Mozilla Foundation and Telefonica S.A. - SIL Open Font License 1.1
+* Inter - Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter) - SIL Open Font License 1.1
+* Lato - Copyright (c) 2010-2014 by tyPoland Lukasz Dziedzic (team@latofonts.com) with Reserved Font Name "Lato" - SIL Open Font License 1.1
+* Montserrat - Copyright 2024 The Montserrat.Git Project Authors (https://github.com/JulietaUla/Montserrat.git) - SIL Open Font License 1.1
+* Orbitron - Copyright 2018 The Orbitron Project Authors (https://github.com/theleagueof/orbitron), with Reserved Font Name: "Orbitron" - SIL Open Font License 1.1
+
+The corresponding license text for each family is included as `OFL.txt` in that family's source directory under `src-tauri/resources/fonts/text-overlay/` and is distributed with official application resources under `fonts/text-overlay/`.
+
+---
+
+## Bundled User Interface Fonts
+
+AspectShift-HtoV bundles local web font files used by the frontend interface:
+
+* Space Grotesk - Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk) - SIL Open Font License 1.1
+* JetBrains Mono - Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) - SIL Open Font License 1.1
+
+The corresponding license texts are included beside the source font files under `src/assets/fonts/` and are distributed with official application resources under `LICENSE/fonts/`.
+
+---
+
+## Application Frameworks and Libraries
+
+AspectShift-HtoV is built with third-party open-source frontend and desktop application libraries, including React, React DOM, Tauri, Vite, TypeScript, and the Tauri JavaScript plugins listed in `package.json` and `package-lock.json`.
+
+Direct npm dependencies and development tools declared by the project include:
+
+* @tauri-apps/api - Apache-2.0 OR MIT
+* @tauri-apps/plugin-dialog - MIT OR Apache-2.0
+* @tauri-apps/plugin-opener - MIT OR Apache-2.0
+* @tauri-apps/plugin-process - MIT OR Apache-2.0
+* @tauri-apps/plugin-updater - MIT OR Apache-2.0
+* React and React DOM - MIT
+* @tauri-apps/cli - Apache-2.0 OR MIT
+* @types/react and @types/react-dom - MIT
+* @vitejs/plugin-react - MIT
+* TypeScript - Apache-2.0
+* Vite - MIT
+
+AspectShift-HtoV's Rust application code uses the direct Rust crates declared in `src-tauri/Cargo.toml`, with exact locked versions in `src-tauri/Cargo.lock`.
+
+Direct Rust dependencies include:
+
+* Tauri, tauri-build, and Tauri plugins - Apache-2.0 OR MIT
+* chrono - MIT OR Apache-2.0
+* dotenvy - MIT
+* futures-util - MIT OR Apache-2.0
+* hex - MIT OR Apache-2.0
+* hmac - MIT OR Apache-2.0
+* jsonwebtoken - MIT
+* keyring - MIT OR Apache-2.0
+* log - MIT OR Apache-2.0
+* rand - MIT OR Apache-2.0
+* reqwest - MIT OR Apache-2.0
+* serde and serde_json - MIT OR Apache-2.0
+* sha2 - MIT OR Apache-2.0
+* specta and specta-typescript - MIT
+* thiserror - MIT OR Apache-2.0
+* tokio and tokio-util - MIT
+* tracing and tracing-subscriber - MIT
+* uuid - Apache-2.0 OR MIT
+
+Transitive dependency names and versions are recorded in `package-lock.json` and `src-tauri/Cargo.lock`. Their upstream package metadata and license files remain authoritative for each package.
 
 ---
 
@@ -70,7 +145,7 @@ Model files remain the property of their respective authors and contributors and
 
 ## Third-Party Ownership
 
-AspectShift-HtoV does not claim ownership of FFmpeg, FFprobe, whisper.cpp, OpenAI Whisper, Whisper model files, or any other third-party software, libraries, models, trademarks, copyrights, patents, logos, or intellectual property.
+AspectShift-HtoV does not claim ownership of FFmpeg, FFprobe, whisper.cpp, OpenAI Whisper, Whisper model files, bundled fonts, or any other third-party software, libraries, models, trademarks, copyrights, patents, logos, or intellectual property.
 
 All rights remain the property of their respective owners.
 

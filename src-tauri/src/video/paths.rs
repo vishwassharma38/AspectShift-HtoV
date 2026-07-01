@@ -37,6 +37,7 @@ pub fn resolve_output_path(
             .as_ref()
             .map(|l| l.enabled)
             .unwrap_or(false),
+        text: target.job.effects.text_overlay_enabled(),
         subtitles: target.job.effects.burn_subtitles_enabled()
             || target.job.effects.export_subtitles_enabled()
             || target.job.effects.subtitles.is_some(),

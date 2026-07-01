@@ -26,6 +26,8 @@ pub enum UpdateEntitlementCheckStatus {
     NoUpdate,
     NotEntitled,
     ChannelNotAllowed,
+    LicenseRevoked,
+    LicenseRefunded,
     AuthRequired,
     Offline,
     ServerError,
@@ -68,6 +70,20 @@ impl UpdateEntitlementCheckResult {
         }
     }
 
+    pub fn license_revoked() -> Self {
+        Self {
+            status: UpdateEntitlementCheckStatus::LicenseRevoked,
+            data: None,
+        }
+    }
+
+    pub fn license_refunded() -> Self {
+        Self {
+            status: UpdateEntitlementCheckStatus::LicenseRefunded,
+            data: None,
+        }
+    }
+
     pub fn auth_required() -> Self {
         Self {
             status: UpdateEntitlementCheckStatus::AuthRequired,
@@ -87,5 +103,22 @@ impl UpdateEntitlementCheckResult {
             status: UpdateEntitlementCheckStatus::ServerError,
             data: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UpdateEntitlementCheckResult, UpdateEntitlementCheckStatus};
+
+    #[test]
+    fn preserves_revoked_and_refunded_update_outcomes() {
+        assert!(matches!(
+            UpdateEntitlementCheckResult::license_revoked().status,
+            UpdateEntitlementCheckStatus::LicenseRevoked
+        ));
+        assert!(matches!(
+            UpdateEntitlementCheckResult::license_refunded().status,
+            UpdateEntitlementCheckStatus::LicenseRefunded
+        ));
     }
 }

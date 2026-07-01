@@ -62,9 +62,8 @@ impl LicenseProvider for DevLicenseProvider {
         _current_version: &'a str,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = Result<UpdateEntitlementCheckResult, AuthError>,
-                > + Send
+            dyn std::future::Future<Output = Result<UpdateEntitlementCheckResult, AuthError>>
+                + Send
                 + 'a,
         >,
     > {

@@ -5,8 +5,7 @@ use log::warn;
 
 use crate::auth::contracts::BuildChannel;
 
-const DEFAULT_PRODUCTION_BASE_URL: &str =
-    "https://aspectshift-htov-license-server.vercel.app";
+const DEFAULT_PRODUCTION_BASE_URL: &str = "https://aspectshift-htov-license-server.vercel.app";
 const DEFAULT_DEVELOPMENT_BASE_URL: &str = "https://aspectshift-htov-license-server.vercel.app";
 // Keep this aligned with the startup launch-validation timeout in AuthManager.
 const DEFAULT_TIMEOUT_SECS: u64 = 12;
@@ -49,9 +48,7 @@ pub fn current_build_channel() -> BuildChannel {
         match parse_build_channel(&channel) {
             Some(parsed) => return parsed,
             None => {
-                warn!(
-                    "AuthConfig: invalid ASPECTSHIFT_BUILD_CHANNEL value, defaulting to stable"
-                );
+                warn!("AuthConfig: invalid ASPECTSHIFT_BUILD_CHANNEL value, defaulting to stable");
             }
         }
     }

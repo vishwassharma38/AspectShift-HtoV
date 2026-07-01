@@ -1,6 +1,7 @@
 use crate::os_utils::OsUtils;
 use crate::video::ffmpeg::run_ffprobe;
-use crate::video::types::{FileReadiness, OrientationInfo, VideoError};
+use crate::video::filter_builder::get_transform_filters;
+use crate::video::types::{FileReadiness, OrientationInfo, VideoError, VideoTransform};
 use serde_json::Value;
 use std::path::Path;
 use tauri::AppHandle;
@@ -175,23 +176,49 @@ pub async fn generate_thumbnail(
     app: &AppHandle,
     input_path: &str,
     output_path: &str,
+    transform: Option<&VideoTransform>,
 ) -> Result<String, VideoError> {
     let input = Path::new(input_path);
     if !input.exists() {
         return Err(VideoError::FileNotFound(input_path.to_string()));
     }
 
+    let orientation = detect_orientation(app, input_path).await?;
+    let mut filters = Vec::new();
+    let metadata_rotation = ((orientation.rotation % 360) + 360) % 360;
+    if metadata_rotation != 0 {
+        let metadata_transform = VideoTransform {
+            rotate: metadata_rotation,
+            flip_h: false,
+            flip_v: false,
+        };
+        let (rotation_filters, _) = get_transform_filters(&metadata_transform);
+        if !rotation_filters.is_empty() {
+            filters.push(rotation_filters);
+        }
+    }
+    if let Some(transform) = transform {
+        let (transform_filters, _) = get_transform_filters(transform);
+        if !transform_filters.is_empty() {
+            filters.push(transform_filters);
+        }
+    }
+    filters.push("scale=320:-1".to_string());
+    let filter_graph = filters.join(",");
+
     // Extract frame at 1s, or 0s if very short.
-    // -vf "thumbnail,scale=320:-1" to make it small and representative
-    let args = [
+    // Disable implicit autorotate so the queue thumbnail applies the same
+    // orientation correction explicitly and then mirrors any render transform.
+    let args = vec![
         "-ss",
         "00:00:01",
+        "-noautorotate",
         "-i",
         input_path,
         "-vframes",
         "1",
         "-vf",
-        "scale=320:-1",
+        &filter_graph,
         "-f",
         "image2",
         "-y",
@@ -214,13 +241,14 @@ pub async fn generate_thumbnail(
 
     if !output.status.success() {
         // Try at 0s if 1s failed (video might be < 1s)
-        let args_fallback = [
+        let args_fallback = vec![
+            "-noautorotate",
             "-i",
             input_path,
             "-vframes",
             "1",
             "-vf",
-            "scale=320:-1",
+            &filter_graph,
             "-f",
             "image2",
             "-y",

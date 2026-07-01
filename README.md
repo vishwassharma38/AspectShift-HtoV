@@ -98,5 +98,6 @@ The UI also supports opening the output folder and saving custom presets for rep
 - FFmpeg and FFprobe
 - whisper.cpp
 - OpenAI Whisper
-- Tauri, React, Vite, and the other third-party dependencies listed in the repository notices
+- Tauri, React, Vite, TypeScript, and the other third-party dependencies listed in the repository notices
+- Bundled fonts: Space Grotesk, JetBrains Mono, Anton, Bungee, Caveat, Cormorant Garamond, Exo 2, Fira Sans, Inter, Lato, Montserrat, and Orbitron
 - See [`LICENSE/THIRD-PARTY-NOTICES.txt`](LICENSE/THIRD-PARTY-NOTICES.txt) for the full attribution list

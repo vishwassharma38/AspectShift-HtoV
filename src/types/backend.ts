@@ -12,7 +12,7 @@ export type ActivateRequest = {
 	licenseKey: string,
 	// Machine fingerprint from `get_machine_id()`.
 	machineId: string,
-	// App version string, e.g. "0.1.1".
+	// App version string, e.g. "0.1.2".
 	appVersion: string,
 	// Build channel: "stable" | "beta" | "nightly" | "oss".
 	channel: BuildChannel,
@@ -41,6 +41,11 @@ export type AppConfig = {
 	logoPath: string | null,
 	logoOpacity: number | null,
 	logoPosition: LogoPosition | null,
+	logoManualPosition: boolean | null,
+	logoX: number | null,
+	logoY: number | null,
+	textOverlay: TextOverlaySettings | null,
+	subtitleOverlay: SubtitleOverlaySettings | null,
 	blur: boolean | null,
 	whiteBackground: boolean | null,
 	blurSigma: number | null,
@@ -212,6 +217,9 @@ export type LogoOptions = {
 	gap: number,
 	scale: number,
 	path: string | null,
+	manualPosition?: boolean,
+	x: number,
+	y: number,
 };
 
 export type LogoPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
@@ -302,7 +310,49 @@ export type SubtitleLayoutMetrics = {
 	playResY: number,
 };
 
+export type SubtitleOverlaySettings = {
+	fontStyle?: TextFontStyle,
+	bold: boolean,
+	italic?: boolean,
+	fontSize?: number | null,
+	color: string,
+	opacity: number,
+	outlineEnabled: boolean,
+	outlineColor: string,
+	outlineWidth?: number | null,
+	manualPosition?: boolean,
+	x: number,
+	y: number,
+};
+
 export type TargetType = "aspectRatio" | "platform" | "custom";
+
+export type TextFontStyle = "clean" | "minimal" | "caption" | "meme" | "creator" | "gaming" | "cyberpunk" | "cinematic" | "retro" | "handwritten";
+
+export type TextLayerSettings = {
+	id?: string,
+	enabled?: boolean,
+	text: string,
+	fontStyle?: TextFontStyle,
+	bold?: boolean,
+	italic?: boolean,
+	underline?: boolean,
+	strikethrough?: boolean,
+	fontSize: number,
+	color: string,
+	opacity: number,
+	x: number,
+	y: number,
+	outlineEnabled: boolean,
+	outlineColor: string,
+	outlineWidth: number,
+};
+
+export type TextOverlaySettings = {
+	panelOpen?: boolean,
+	layers?: TextLayerSettings[],
+	selectedLayerIds?: string[],
+};
 
 export type UpdateCheckAvailableResult = {
 	latestVersion: string,
@@ -344,7 +394,7 @@ export type UpdateEntitlementCheckResult = {
 	data?: UpdateCheckAvailableResult | null,
 };
 
-export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "not_entitled" | "channel_not_allowed" | "auth_required" | "offline" | "server_error";
+export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "not_entitled" | "channel_not_allowed" | "license_revoked" | "license_refunded" | "auth_required" | "offline" | "server_error";
 
 export type VideoEffectsSettings = {
 	blur: boolean | null,
@@ -359,6 +409,8 @@ export type VideoEffectsSettings = {
 	skipExisting: boolean | null,
 	outputFormat: OutputFormat | null,
 	logo: LogoOptions | null,
+	textOverlay?: TextOverlaySettings,
+	subtitleOverlay?: SubtitleOverlaySettings,
 	transform: VideoTransform | null,
 };
 

@@ -4,8 +4,8 @@ use chrono::DateTime;
 use log::{info, warn};
 use reqwest::StatusCode;
 
-use crate::auth::auth_models::{UpdateCheckAvailableResult, UpdateEntitlementCheckResult};
 use crate::auth::auth_errors::AuthError;
+use crate::auth::auth_models::{UpdateCheckAvailableResult, UpdateEntitlementCheckResult};
 use crate::auth::config::auth_config::{app_version, current_build_channel, AuthApiConfig};
 use crate::auth::contracts::{
     ActivateErrorResponse, ActivateRequest, ActivateResponse, RefreshErrorResponse, RefreshRequest,
@@ -242,7 +242,12 @@ impl ProductionLicenseProvider {
             self.config.updates_url
         );
 
-        let response = self.client.post(&self.config.updates_url).json(&request).send().await;
+        let response = self
+            .client
+            .post(&self.config.updates_url)
+            .json(&request)
+            .send()
+            .await;
 
         let response = match response {
             Ok(response) => response,
@@ -288,9 +293,7 @@ impl ProductionLicenseProvider {
                     ))
                 }
                 UpdateCheckResponse::NotAllowed { allowed } if !allowed => {
-                    info!(
-                        "ProductionAuthProvider: update entitlement response allowed=false"
-                    );
+                    info!("ProductionAuthProvider: update entitlement response allowed=false");
                     Ok(UpdateEntitlementCheckResult::no_update())
                 }
                 _ => Ok(UpdateEntitlementCheckResult::server_error()),
@@ -311,7 +314,9 @@ impl ProductionLicenseProvider {
                     UpdateCheckErrorCode::ChannelNotAllowed => {
                         Ok(UpdateEntitlementCheckResult::channel_not_allowed())
                     }
-                    UpdateCheckErrorCode::ServerError => Ok(UpdateEntitlementCheckResult::server_error()),
+                    UpdateCheckErrorCode::ServerError => {
+                        Ok(UpdateEntitlementCheckResult::server_error())
+                    }
                 },
                 Ok(_) => Ok(UpdateEntitlementCheckResult::server_error()),
                 Err(parse_err) => {
@@ -319,7 +324,10 @@ impl ProductionLicenseProvider {
                         "ProductionAuthProvider: update check failed with HTTP {} and unparseable body",
                         status
                     );
-                    warn!("ProductionAuthProvider: update check body parse error: {}", parse_err);
+                    warn!(
+                        "ProductionAuthProvider: update check body parse error: {}",
+                        parse_err
+                    );
                     Ok(UpdateEntitlementCheckResult::server_error())
                 }
             }
@@ -358,9 +366,8 @@ impl LicenseProvider for ProductionLicenseProvider {
         current_version: &'a str,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = Result<UpdateEntitlementCheckResult, AuthError>,
-                > + Send
+            dyn std::future::Future<Output = Result<UpdateEntitlementCheckResult, AuthError>>
+                + Send
                 + 'a,
         >,
     > {

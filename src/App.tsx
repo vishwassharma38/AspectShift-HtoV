@@ -39,7 +39,11 @@ import type {
   PreviewLayoutRequest,
   PreviewRenderLayout,
   SelectionMetadata,
+  SubtitleOverlaySettings,
   TargetType,
+  TextFontStyle,
+  TextLayerSettings,
+  TextOverlaySettings,
   UpdateEntitlementCheckResult,
   VideoEffectsSettings,
   VideoPresetDTO,
@@ -80,6 +84,21 @@ import {
   SUBTITLE_CORE_DEPENDENCY_IDS,
   type DependencyPromptMode,
 } from "./services/dependencyManager";
+import {
+  DEFAULT_TEXT_OVERLAY,
+  DEFAULT_TEXT_LAYER,
+  normalizeTextOverlay,
+  resolveTextOverlay,
+  type ResolvedTextLayerSettings,
+  TEXT_FONT_STYLE_KEYS,
+  type ResolvedTextOverlaySettings,
+} from "./utils/textOverlay";
+import {
+  DEFAULT_SUBTITLE_OVERLAY,
+  normalizeSubtitleOverlay,
+  resolveSubtitleOverlay,
+  type ResolvedSubtitleOverlaySettings,
+} from "./utils/subtitleOverlay";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -97,6 +116,19 @@ interface BackendError {
   code?: string;
   message?: string;
 }
+
+const TEXT_FONT_STYLE_LABELS: Record<TextFontStyle, string> = {
+  clean: "Clean",
+  minimal: "Minimal",
+  caption: "Caption",
+  meme: "Meme",
+  creator: "Creator",
+  gaming: "Gaming",
+  cyberpunk: "Cyberpunk",
+  cinematic: "Cinematic",
+  retro: "Retro",
+  handwritten: "Handwritten",
+};
 
 type DependencyOperation =
   | "idle"
@@ -152,6 +184,8 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   skipExisting: true,
   outputFormat: "mp4",
   logo: null,
+  textOverlay: DEFAULT_TEXT_OVERLAY,
+  subtitleOverlay: DEFAULT_SUBTITLE_OVERLAY,
   transform: { rotate: 0, flip_h: false, flip_v: false },
 };
 
@@ -319,6 +353,10 @@ function uiFlipsToTransform(
 
 function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
   if (!logo || !logo.enabled || !logo.path) return null;
+  const clampLogoPosition = (value: number | null | undefined) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0.5;
+  };
   return {
     enabled: true,
     position: logo.position,
@@ -326,6 +364,9 @@ function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
     gap: Number(logo.gap),
     scale: Number(logo.scale),
     path: logo.path,
+    manualPosition: !!logo.manualPosition,
+    x: clampLogoPosition(logo.x),
+    y: clampLogoPosition(logo.y),
   };
 }
 
@@ -344,6 +385,8 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
     blur: whiteBackground ? false : !!effects.blur,
     whiteBackground,
     logo: normalizeLogo(effects.logo ?? null),
+    textOverlay: normalizeTextOverlay(effects.textOverlay),
+    subtitleOverlay: normalizeSubtitleOverlay(effects.subtitleOverlay),
     transform: normalizeTransform(effects.transform),
   };
 }
@@ -420,7 +463,9 @@ function countActiveProcessingJobs(progress: BatchProgress | null): number {
 }
 
 function isTerminalBatchStatus(status: BatchProgress["status"]): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return (
+    status === "completed" || status === "failed" || status === "cancelled"
+  );
 }
 
 function sanitizeBatchProgress(
@@ -571,6 +616,128 @@ export default function App() {
     useState<EncodingProfile>(DEFAULT_ENCODING);
   const [effectsState, setEffectsState] =
     useState<VideoEffectsSettings>(DEFAULT_EFFECTS);
+  const textOverlay = useMemo<ResolvedTextOverlaySettings>(
+    () => resolveTextOverlay(effectsState.textOverlay),
+    [effectsState.textOverlay],
+  );
+  const subtitleOverlay = useMemo<ResolvedSubtitleOverlaySettings>(
+    () => resolveSubtitleOverlay(effectsState.subtitleOverlay),
+    [effectsState.subtitleOverlay],
+  );
+  const handleTextOverlayChange = useCallback((next: TextOverlaySettings) => {
+    setEffectsState((current) => ({
+      ...current,
+      textOverlay: resolveTextOverlay(next),
+    }));
+  }, []);
+  const handleSubtitleOverlayChange = useCallback(
+    (next: SubtitleOverlaySettings) => {
+      setEffectsState((current) => ({
+        ...current,
+        subtitleOverlay: normalizeSubtitleOverlay(next),
+      }));
+    },
+    [],
+  );
+  const handleLogoChange = useCallback((next: LogoOptions) => {
+    setEffectsState((current) => ({
+      ...current,
+      logo: normalizeLogo(next),
+    }));
+  }, []);
+  const selectedTextLayers = useMemo(
+    () =>
+      textOverlay.selectedLayerIds
+        .map((id) => textOverlay.layers.find((layer) => layer.id === id))
+        .filter((layer): layer is ResolvedTextLayerSettings => !!layer),
+    [textOverlay.layers, textOverlay.selectedLayerIds],
+  );
+  const primaryTextLayer = selectedTextLayers[0] ?? null;
+  const hasSelectedTextLayer = selectedTextLayers.length > 0;
+  const updateSelectedTextLayers = useCallback(
+    (
+      patch:
+        | Partial<TextLayerSettings>
+        | ((layer: TextLayerSettings) => Partial<TextLayerSettings>),
+    ) => {
+      setEffectsState((current) => {
+        const currentOverlay = resolveTextOverlay(current.textOverlay);
+        const selectedIds = new Set(currentOverlay.selectedLayerIds);
+        if (selectedIds.size === 0) return current;
+        return {
+          ...current,
+          textOverlay: normalizeTextOverlay({
+            ...currentOverlay,
+            layers: currentOverlay.layers.map((layer) => {
+              if (!selectedIds.has(layer.id)) return layer;
+              const nextPatch =
+                typeof patch === "function" ? patch(layer) : patch;
+              return { ...layer, ...nextPatch };
+            }),
+          }),
+        };
+      });
+    },
+    [],
+  );
+  const handleAddTextLayer = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveTextOverlay(current.textOverlay);
+      const offset = Math.min(0.2, currentOverlay.layers.length * 0.035);
+      const id = generateId();
+      const sourceLayer =
+        currentOverlay.selectedLayerIds
+          .map((selectedId) =>
+            currentOverlay.layers.find((layer) => layer.id === selectedId),
+          )
+          .find((layer): layer is ResolvedTextLayerSettings => !!layer) ??
+        DEFAULT_TEXT_LAYER;
+      const layer: TextLayerSettings = {
+        ...sourceLayer,
+        id,
+        x: Math.min(0.8, sourceLayer.x + offset),
+        y: Math.min(0.8, sourceLayer.y + offset),
+      };
+      return {
+        ...current,
+        textOverlay: normalizeTextOverlay({
+          ...currentOverlay,
+          panelOpen: true,
+          layers: [...currentOverlay.layers, layer],
+          selectedLayerIds: [id],
+        }),
+      };
+    });
+  }, []);
+  const handleRemoveSelectedTextLayers = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveTextOverlay(current.textOverlay);
+      const selectedIds = new Set(currentOverlay.selectedLayerIds);
+      if (selectedIds.size === 0) return current;
+      return {
+        ...current,
+        textOverlay: normalizeTextOverlay({
+          ...currentOverlay,
+          layers: currentOverlay.layers.filter(
+            (layer) => !selectedIds.has(layer.id),
+          ),
+          selectedLayerIds: [],
+        }),
+      };
+    });
+  }, []);
+  const updateSubtitleOverlay = useCallback(
+    (patch: Partial<SubtitleOverlaySettings>) => {
+      setEffectsState((current) => ({
+        ...current,
+        subtitleOverlay: normalizeSubtitleOverlay({
+          ...resolveSubtitleOverlay(current.subtitleOverlay),
+          ...patch,
+        }),
+      }));
+    },
+    [],
+  );
 
   // Custom preset builder
   const [newPresetName, setNewPresetName] = useState("");
@@ -691,7 +858,7 @@ export default function App() {
   const [refreshConfirmActiveCount, setRefreshConfirmActiveCount] = useState(0);
   const [aboutMetadata, setAboutMetadata] = useState({
     appName: "AspectShift-HtoV",
-    appVersion: "0.1.1",
+    appVersion: "0.1.2",
     tauriVersion: "2",
     identifier: "com.softwarefromvish.aspectshift-htov",
     buildMode: import.meta.env.MODE,
@@ -1355,7 +1522,16 @@ export default function App() {
         );
         return;
       }
-      setEffectsState((current) => ({ ...current, [intent]: enabled }));
+      setEffectsState((current) => {
+        const next = { ...current, [intent]: enabled };
+        if (!enabled && !next.exportSubtitles && !next.burnSubtitles) {
+          return {
+            ...next,
+            subtitleOverlay: DEFAULT_SUBTITLE_OVERLAY,
+          };
+        }
+        return next;
+      });
     },
     [
       missingSubtitleDependencies.length,
@@ -1364,303 +1540,336 @@ export default function App() {
     ],
   );
 
-  const runUpdateCheck = useCallback(async (mode: UpdateCheckMode) => {
-    const isManual = mode === "manual";
-    if (isAuthHydrating || !isLicensed) return;
+  const runUpdateCheck = useCallback(
+    async (mode: UpdateCheckMode) => {
+      const isManual = mode === "manual";
+      if (isAuthHydrating || !isLicensed) return;
 
-    if (
-      updateFlow.stage === "update_available" ||
-      updateFlow.stage === "installed_restart_required"
-    ) {
+      if (
+        updateFlow.stage === "update_available" ||
+        updateFlow.stage === "installed_restart_required"
+      ) {
+        if (isManual) {
+          setUpdateDialogOpen(true);
+        }
+        return;
+      }
+
+      if (updateCheckInFlightRef.current || isUpdateFlowBusy) return;
+
+      updateCheckInFlightRef.current = mode;
+      await closePendingUpdate();
+
+      const currentVersion = aboutMetadata.appVersion;
       if (isManual) {
-        setUpdateDialogOpen(true);
-      }
-      return;
-    }
-
-    if (updateCheckInFlightRef.current || isUpdateFlowBusy) return;
-
-    updateCheckInFlightRef.current = mode;
-    await closePendingUpdate();
-
-    const currentVersion = aboutMetadata.appVersion;
-    if (isManual) {
-      setIsCheckingUpdates(true);
-      setUpdateDialogOpen(false);
-      setUpdateFlow({
-        stage: "checking_entitlement",
-        tone: "info",
-        message: "Checking for updates...",
-        currentVersion,
-        latestVersion: null,
-        releaseNotes: null,
-        progressPercent: null,
-        progressLabel: "Checking for updates...",
-        errorMessage: null,
-      });
-      addLog("[Updater] Entitlement check started", "info");
-    }
-
-    try {
-      const entitlement = await invoke<UpdateEntitlementCheckResult>(
-        "check_update_entitlement",
-      );
-
-      if (isManual) {
-        addLog(
-          `Update entitlement response: status=${entitlement.status}${
-            entitlement.data
-              ? `, latestVersion=${entitlement.data.latestVersion}`
-              : ""
-          }`,
-          entitlement.status === "update_available" ? "success" : "info",
-        );
-      }
-
-      if (entitlement.status === "no_update") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "already_latest",
-            tone: "success",
-            message: "Already on the latest version.",
-            currentVersion,
-            latestVersion: currentVersion,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: null,
-          });
-          addLog("[Updater] Already on the latest version", "info");
-        } else {
-          setLastAutomaticUpdateCheckAt(Date.now());
-        }
-        return;
-      }
-
-      if (entitlement.status === "not_entitled") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "entitlement_denied",
-            tone: "warning",
-            message: "Update entitlement denied.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: null,
-          });
-          addLog("[Updater] Update entitlement denied", "warn");
-        } else {
-          setLastAutomaticUpdateCheckAt(Date.now());
-        }
-        return;
-      }
-
-      if (entitlement.status === "channel_not_allowed") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "entitlement_denied",
-            tone: "warning",
-            message: "Update entitlement denied for this release channel.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: null,
-          });
-          addLog(
-            "[Updater] Update entitlement denied for this release channel",
-            "warn",
-          );
-        } else {
-          setLastAutomaticUpdateCheckAt(Date.now());
-        }
-        return;
-      }
-
-      if (entitlement.status === "auth_required") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "entitlement_denied",
-            tone: "error",
-            message: "Please sign in again before checking for updates.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: null,
-          });
-          addLog(
-            "[Updater] Update entitlement requires re-authentication",
-            "warn",
-          );
-        } else {
-          setLastAutomaticUpdateCheckAt(Date.now());
-        }
-        return;
-      }
-
-      if (entitlement.status === "offline") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "failed",
-            tone: "warning",
-            message: "Offline: unable to verify update entitlement.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: "Offline: unable to verify update entitlement.",
-          });
-          addLog("[Updater] Update entitlement check failed: offline", "warn");
-        }
-        return;
-      }
-
-      if (entitlement.status === "server_error") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "failed",
-            tone: "error",
-            message: "Update check failed. Please try again later.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: "Update check failed. Please try again later.",
-          });
-          addLog(
-            "[Updater] Update entitlement check failed: server error",
-            "error",
-          );
-        }
-        return;
-      }
-
-      if (entitlement.status !== "update_available") {
-        if (isManual) {
-          setUpdateFlow({
-            stage: "failed",
-            tone: "error",
-            message: "Update check failed.",
-            currentVersion,
-            latestVersion: entitlement.data?.latestVersion ?? null,
-            releaseNotes: null,
-            progressPercent: null,
-            progressLabel: null,
-            errorMessage: "Update check failed.",
-          });
-          addLog(
-            `[Updater] Unexpected entitlement status: ${entitlement.status}`,
-            "error",
-          );
-        }
-        return;
-      }
-
-      if (isManual) {
-        addLog(
-          "[Updater] Entitlement approved; checking updater manifest",
-          "success",
-        );
+        setIsCheckingUpdates(true);
+        setUpdateDialogOpen(false);
         setUpdateFlow({
-          stage: "checking_updater",
+          stage: "checking_entitlement",
           tone: "info",
           message: "Checking for updates...",
           currentVersion,
-          latestVersion: entitlement.data?.latestVersion ?? null,
+          latestVersion: null,
           releaseNotes: null,
           progressPercent: null,
           progressLabel: "Checking for updates...",
           errorMessage: null,
         });
+        addLog("[Updater] Entitlement check started", "info");
       }
 
-      const availableUpdate = await check();
-      if (!isManual) {
-        setLastAutomaticUpdateCheckAt(Date.now());
-      }
-      if (!availableUpdate) {
+      try {
+        const entitlement = await invoke<UpdateEntitlementCheckResult>(
+          "check_update_entitlement",
+        );
+
+        if (isManual) {
+          addLog(
+            `Update entitlement response: status=${entitlement.status}${
+              entitlement.data
+                ? `, latestVersion=${entitlement.data.latestVersion}`
+                : ""
+            }`,
+            entitlement.status === "update_available" ? "success" : "info",
+          );
+        }
+
+        if (entitlement.status === "no_update") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "already_latest",
+              tone: "success",
+              message: "Already on the latest version.",
+              currentVersion,
+              latestVersion: currentVersion,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog("[Updater] Already on the latest version", "info");
+          } else {
+            setLastAutomaticUpdateCheckAt(Date.now());
+          }
+          return;
+        }
+
+        if (entitlement.status === "not_entitled") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "entitlement_denied",
+              tone: "warning",
+              message: "Update entitlement denied.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog("[Updater] Update entitlement denied", "warn");
+          } else {
+            setLastAutomaticUpdateCheckAt(Date.now());
+          }
+          return;
+        }
+
+        if (entitlement.status === "channel_not_allowed") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "entitlement_denied",
+              tone: "warning",
+              message: "Update entitlement denied for this release channel.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog(
+              "[Updater] Update entitlement denied for this release channel",
+              "warn",
+            );
+          } else {
+            setLastAutomaticUpdateCheckAt(Date.now());
+          }
+          return;
+        }
+
+        if (
+          entitlement.status === "license_revoked" ||
+          entitlement.status === "license_refunded"
+        ) {
+          const reason =
+            entitlement.status === "license_revoked" ? "revoked" : "refunded";
+          const message = `Update entitlement is unavailable: license ${reason}.`;
+
+          if (isManual) {
+            setUpdateFlow({
+              stage: "entitlement_denied",
+              tone: "error",
+              message,
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog(`[Updater] ${message}`, "warn");
+          } else {
+            setLastAutomaticUpdateCheckAt(Date.now());
+          }
+          return;
+        }
+
+        if (entitlement.status === "auth_required") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "entitlement_denied",
+              tone: "error",
+              message: "Please sign in again before checking for updates.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog(
+              "[Updater] Update entitlement requires re-authentication",
+              "warn",
+            );
+          } else {
+            setLastAutomaticUpdateCheckAt(Date.now());
+          }
+          return;
+        }
+
+        if (entitlement.status === "offline") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "failed",
+              tone: "warning",
+              message: "Offline: unable to verify update entitlement.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: "Offline: unable to verify update entitlement.",
+            });
+            addLog(
+              "[Updater] Update entitlement check failed: offline",
+              "warn",
+            );
+          }
+          return;
+        }
+
+        if (entitlement.status === "server_error") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "failed",
+              tone: "error",
+              message: "Update check failed. Please try again later.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: "Update check failed. Please try again later.",
+            });
+            addLog(
+              "[Updater] Update entitlement check failed: server error",
+              "error",
+            );
+          }
+          return;
+        }
+
+        if (entitlement.status !== "update_available") {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "failed",
+              tone: "error",
+              message: "Update check failed.",
+              currentVersion,
+              latestVersion: entitlement.data?.latestVersion ?? null,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: "Update check failed.",
+            });
+            addLog(
+              `[Updater] Unexpected entitlement status: ${entitlement.status}`,
+              "error",
+            );
+          }
+          return;
+        }
+
+        if (isManual) {
+          addLog(
+            "[Updater] Entitlement approved; checking updater manifest",
+            "success",
+          );
+          setUpdateFlow({
+            stage: "checking_updater",
+            tone: "info",
+            message: "Checking for updates...",
+            currentVersion,
+            latestVersion: entitlement.data?.latestVersion ?? null,
+            releaseNotes: null,
+            progressPercent: null,
+            progressLabel: "Checking for updates...",
+            errorMessage: null,
+          });
+        }
+
+        const availableUpdate = await check();
+        if (!isManual) {
+          setLastAutomaticUpdateCheckAt(Date.now());
+        }
+        if (!availableUpdate) {
+          if (isManual) {
+            setUpdateFlow({
+              stage: "already_latest",
+              tone: "success",
+              message: "Already on the latest version.",
+              currentVersion,
+              latestVersion: currentVersion,
+              releaseNotes: null,
+              progressPercent: null,
+              progressLabel: null,
+              errorMessage: null,
+            });
+            addLog("[Updater] Updater reported no available update", "info");
+          }
+          return;
+        }
+
+        updateRef.current = availableUpdate;
+        const updateVersion =
+          availableUpdate.version ?? entitlement.data?.latestVersion ?? null;
+        const updateCurrentVersion =
+          availableUpdate.currentVersion ?? currentVersion ?? null;
+
+        setUpdateFlow({
+          stage: "update_available",
+          tone: "success",
+          message: `Update available: ${formatUpdateVersion(updateVersion)}.`,
+          currentVersion: updateCurrentVersion,
+          latestVersion: updateVersion,
+          releaseNotes: availableUpdate.body ?? null,
+          progressPercent: null,
+          progressLabel: null,
+          errorMessage: null,
+        });
+        setUpdateDialogOpen(true);
+        if (isManual) {
+          addLog(
+            `[Updater] Update detected: current=${updateCurrentVersion ?? "unknown"}, latest=${updateVersion ?? "unknown"}`,
+            "success",
+          );
+        }
+      } catch (error) {
+        await closePendingUpdate();
         if (isManual) {
           setUpdateFlow({
-            stage: "already_latest",
-            tone: "success",
-            message: "Already on the latest version.",
+            stage: "failed",
+            tone: "error",
+            message: "Updater check failed.",
             currentVersion,
-            latestVersion: currentVersion,
+            latestVersion: null,
             releaseNotes: null,
             progressPercent: null,
             progressLabel: null,
-            errorMessage: null,
+            errorMessage: errorMessage(error),
           });
-          addLog("[Updater] Updater reported no available update", "info");
+          addLog(
+            `[Updater] Update flow failed during check: ${errorMessage(error)}`,
+            "error",
+          );
         }
-        return;
+      } finally {
+        updateCheckInFlightRef.current = null;
+        if (isManual) {
+          setIsCheckingUpdates(false);
+        }
       }
-
-      updateRef.current = availableUpdate;
-      const updateVersion =
-        availableUpdate.version ?? entitlement.data?.latestVersion ?? null;
-      const updateCurrentVersion =
-        availableUpdate.currentVersion ?? currentVersion ?? null;
-
-      setUpdateFlow({
-        stage: "update_available",
-        tone: "success",
-        message: `Update available: ${formatUpdateVersion(updateVersion)}.`,
-        currentVersion: updateCurrentVersion,
-        latestVersion: updateVersion,
-        releaseNotes: availableUpdate.body ?? null,
-        progressPercent: null,
-        progressLabel: null,
-        errorMessage: null,
-      });
-      setUpdateDialogOpen(true);
-      if (isManual) {
-        addLog(
-          `[Updater] Update detected: current=${updateCurrentVersion ?? "unknown"}, latest=${updateVersion ?? "unknown"}`,
-          "success",
-        );
-      }
-    } catch (error) {
-      await closePendingUpdate();
-      if (isManual) {
-        setUpdateFlow({
-          stage: "failed",
-          tone: "error",
-          message: "Updater check failed.",
-          currentVersion,
-          latestVersion: null,
-          releaseNotes: null,
-          progressPercent: null,
-          progressLabel: null,
-          errorMessage: errorMessage(error),
-        });
-        addLog(
-          `[Updater] Update flow failed during check: ${errorMessage(error)}`,
-          "error",
-        );
-      }
-    } finally {
-      updateCheckInFlightRef.current = null;
-      if (isManual) {
-        setIsCheckingUpdates(false);
-      }
-    }
-  }, [
-    aboutMetadata.appVersion,
-    addLog,
-    closePendingUpdate,
-    isAuthHydrating,
-    isLicensed,
-    isUpdateFlowBusy,
-    updateFlow.stage,
-  ]);
+    },
+    [
+      aboutMetadata.appVersion,
+      addLog,
+      closePendingUpdate,
+      isAuthHydrating,
+      isLicensed,
+      isUpdateFlowBusy,
+      updateFlow.stage,
+    ],
+  );
 
   const handleCheckForUpdates = useCallback(async () => {
     await runUpdateCheck("manual");
@@ -1688,8 +1897,7 @@ export default function App() {
           ? WEEKLY_UPDATE_CHECK_INTERVAL_MS
           : Math.max(0, Date.now() - lastCheckedAt);
       const nextDelayMs =
-        delayMs ??
-        Math.max(0, WEEKLY_UPDATE_CHECK_INTERVAL_MS - elapsedMs);
+        delayMs ?? Math.max(0, WEEKLY_UPDATE_CHECK_INTERVAL_MS - elapsedMs);
 
       automaticUpdateTimerRef.current = setTimeout(async () => {
         automaticUpdateTimerRef.current = null;
@@ -1996,6 +2204,17 @@ export default function App() {
         return;
       }
 
+      if (
+        event.key === "Delete" &&
+        hasSelectedTextLayer &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRemoveSelectedTextLayers();
+        return;
+      }
+
       if (import.meta.env.PROD && isBrowserOnlyShortcut(event)) {
         // Production builds should not expose Chromium/WebView browser UI.
         event.preventDefault();
@@ -2005,7 +2224,13 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleCheckForUpdates, handleRefreshApp, handleToggleSettings]);
+  }, [
+    handleCheckForUpdates,
+    handleRefreshApp,
+    handleRemoveSelectedTextLayers,
+    handleToggleSettings,
+    hasSelectedTextLayer,
+  ]);
 
   useEffect(() => {
     if (!firstRunGapReady || !firstRunPendingNext) return;
@@ -2225,6 +2450,11 @@ export default function App() {
       if (
         config.logoPath ||
         config.logoOpacity !== null ||
+        config.logoManualPosition !== null ||
+        config.logoX !== null ||
+        config.logoY !== null ||
+        config.textOverlay !== null ||
+        config.subtitleOverlay !== null ||
         config.blur !== null ||
         config.whiteBackground !== null ||
         config.blurSigma !== null
@@ -2240,8 +2470,14 @@ export default function App() {
                   config.logoPosition ?? prev.logo?.position ?? "bottom_right",
                 gap: prev.logo?.gap ?? 20,
                 scale: prev.logo?.scale ?? 0.15,
+                manualPosition:
+                  config.logoManualPosition ?? prev.logo?.manualPosition ?? false,
+                x: config.logoX ?? prev.logo?.x ?? 0.5,
+                y: config.logoY ?? prev.logo?.y ?? 0.5,
               }
             : null,
+          textOverlay: normalizeTextOverlay(config.textOverlay),
+          subtitleOverlay: normalizeSubtitleOverlay(config.subtitleOverlay),
           blur: config.whiteBackground ? false : (config.blur ?? prev.blur),
           whiteBackground: config.whiteBackground ?? prev.whiteBackground,
           blurSigma: config.blurSigma ?? prev.blurSigma,
@@ -2309,6 +2545,11 @@ export default function App() {
         logoPath: effectsState.logo?.path || null,
         logoOpacity: effectsState.logo?.opacity ?? null,
         logoPosition: effectsState.logo?.position ?? null,
+        logoManualPosition: effectsState.logo?.manualPosition ?? null,
+        logoX: effectsState.logo?.x ?? null,
+        logoY: effectsState.logo?.y ?? null,
+        textOverlay: normalizeTextOverlay(effectsState.textOverlay),
+        subtitleOverlay: normalizeSubtitleOverlay(effectsState.subtitleOverlay),
         blur: effectsState.blur ?? null,
         whiteBackground: effectsState.whiteBackground ?? null,
         blurSigma: effectsState.blurSigma ?? null,
@@ -2328,6 +2569,8 @@ export default function App() {
     selectedRatios,
     selectedPresetIds,
     effectsState.logo,
+    effectsState.textOverlay,
+    effectsState.subtitleOverlay,
     effectsState.blur,
     effectsState.whiteBackground,
     effectsState.blurSigma,
@@ -2793,6 +3036,9 @@ export default function App() {
             gap: prev.logo?.gap ?? 20,
             scale: prev.logo?.scale ?? 0.15,
             path: sel,
+            manualPosition: prev.logo?.manualPosition ?? false,
+            x: prev.logo?.x ?? 0.5,
+            y: prev.logo?.y ?? 0.5,
           },
         }));
         await invoke("allow_path_scope", { path: sel }).catch(() => {});
@@ -3348,8 +3594,7 @@ export default function App() {
                         <span className="toggle-label">Blur Background</span>
                         <Toggle
                           checked={
-                            !!effectsState.blur &&
-                            !effectsState.whiteBackground
+                            !!effectsState.blur && !effectsState.whiteBackground
                           }
                           onChange={(v) =>
                             setEffectsState({
@@ -3431,6 +3676,208 @@ export default function App() {
                           }
                         />
                       </div>
+                      {(effectsState.exportSubtitles ||
+                        effectsState.burnSubtitles) && (
+                        <div className="text-overlay-controls subtitle-overlay-controls">
+                          <label
+                            className="input-label"
+                            htmlFor="subtitle-style"
+                          >
+                            Style
+                          </label>
+                          <select
+                            id="subtitle-style"
+                            className="input select"
+                            value={subtitleOverlay.fontStyle}
+                            onChange={(e) =>
+                              updateSubtitleOverlay({
+                                fontStyle: e.target.value as TextFontStyle,
+                              })
+                            }
+                          >
+                            {TEXT_FONT_STYLE_KEYS.map((style) => (
+                              <option key={style} value={style}>
+                                {TEXT_FONT_STYLE_LABELS[style]}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="text-format-section">
+                            <span className="input-label">Formatting</span>
+                            <div
+                              className="text-format-controls subtitle-format-controls"
+                              role="group"
+                              aria-label="Subtitle formatting"
+                            >
+                              {(
+                                [
+                                  ["bold", "B", "Bold"],
+                                  ["italic", "I", "Italic"],
+                                ] as const
+                              ).map(([property, glyph, label]) => (
+                                <button
+                                  key={property}
+                                  type="button"
+                                  className={`text-format-btn text-format-${property}${subtitleOverlay[property] ? " active" : ""}`}
+                                  aria-label={label}
+                                  aria-pressed={!!subtitleOverlay[property]}
+                                  title={label}
+                                  onClick={() =>
+                                    updateSubtitleOverlay({
+                                      [property]: !subtitleOverlay[property],
+                                    })
+                                  }
+                                >
+                                  {glyph}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="text-color-row mt-2">
+                            <label
+                              className="input-label"
+                              htmlFor="subtitle-color"
+                            >
+                              Color
+                            </label>
+                            <input
+                              id="subtitle-color"
+                              className="text-color-input"
+                              type="color"
+                              value={subtitleOverlay.color}
+                              onChange={(e) =>
+                                updateSubtitleOverlay({
+                                  color: e.target.value,
+                                })
+                              }
+                            />
+                            <span className="text-color-value">
+                              {subtitleOverlay.color.toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Size</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="12"
+                              max="240"
+                              step="1"
+                              value={
+                                subtitleOverlay.fontSize ??
+                                previewLayout?.subtitle.fontSize ??
+                                54
+                              }
+                              onChange={(e) =>
+                                updateSubtitleOverlay({
+                                  fontSize: Number(e.target.value),
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {subtitleOverlay.fontSize ??
+                                previewLayout?.subtitle.fontSize ??
+                                54}
+                              px
+                            </span>
+                          </div>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Opacity</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={subtitleOverlay.opacity}
+                              onChange={(e) =>
+                                updateSubtitleOverlay({
+                                  opacity: Number(e.target.value),
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {Math.round(subtitleOverlay.opacity * 100)}%
+                            </span>
+                          </div>
+                          <div className="toggle-row mt-2">
+                            <span className="toggle-label">Outline</span>
+                            <Toggle
+                              checked={subtitleOverlay.outlineEnabled}
+                              onChange={(v) =>
+                                updateSubtitleOverlay({
+                                  outlineEnabled: v,
+                                })
+                              }
+                            />
+                          </div>
+                          {subtitleOverlay.outlineEnabled && (
+                            <>
+                              <div className="text-color-row mt-2">
+                                <label
+                                  className="input-label"
+                                  htmlFor="subtitle-outline-color"
+                                >
+                                  Outline
+                                </label>
+                                <input
+                                  id="subtitle-outline-color"
+                                  className="text-color-input"
+                                  type="color"
+                                  value={subtitleOverlay.outlineColor}
+                                  onChange={(e) =>
+                                    updateSubtitleOverlay({
+                                      outlineColor: e.target.value,
+                                    })
+                                  }
+                                />
+                                <span className="text-color-value">
+                                  {subtitleOverlay.outlineColor.toUpperCase()}
+                                </span>
+                              </div>
+                              <div className="slider-row mt-2">
+                                <span className="text-xs">Outline</span>
+                                <input
+                                  className="slider"
+                                  type="range"
+                                  min="0"
+                                  max="20"
+                                  step="1"
+                                  value={
+                                    subtitleOverlay.outlineWidth ??
+                                    Math.round(
+                                      previewLayout?.subtitle.outline ?? 3,
+                                    )
+                                  }
+                                  onChange={(e) =>
+                                    updateSubtitleOverlay({
+                                      outlineWidth: Number(e.target.value),
+                                    })
+                                  }
+                                />
+                                <span className="slider-value">
+                                  {subtitleOverlay.outlineWidth ??
+                                    Math.round(
+                                      previewLayout?.subtitle.outline ?? 3,
+                                    )}
+                                  px
+                                </span>
+                              </div>
+                            </>
+                          )}
+                          {subtitleOverlay.manualPosition && (
+                            <button
+                              className="btn btn-ghost btn-sm btn-full mt-2"
+                              onClick={() =>
+                                updateSubtitleOverlay({
+                                  manualPosition: false,
+                                })
+                              }
+                            >
+                              Reset subtitle position
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="settings-group">
@@ -3551,6 +3998,10 @@ export default function App() {
                                     gap: effectsState.logo?.gap ?? 20,
                                     scale: effectsState.logo?.scale ?? 0.15,
                                     path: effectsState.logo?.path ?? null,
+                                    manualPosition:
+                                      effectsState.logo?.manualPosition ?? false,
+                                    x: effectsState.logo?.x ?? 0.5,
+                                    y: effectsState.logo?.y ?? 0.5,
                                   }
                                 : null,
                             })
@@ -3590,6 +4041,7 @@ export default function App() {
                                 logo: {
                                   ...effectsState.logo!,
                                   position: e.target.value as LogoPosition,
+                                  manualPosition: false,
                                 },
                               })
                             }
@@ -3646,6 +4098,170 @@ export default function App() {
                             </span>
                           </div>
                         </>
+                      )}
+
+                      <div className="toggle-row">
+                        <span className="toggle-label">Add Text</span>
+                        <Toggle
+                          checked={textOverlay.panelOpen}
+                          onChange={(panelOpen) =>
+                            handleTextOverlayChange(
+                              panelOpen
+                                ? {
+                                    ...textOverlay,
+                                    panelOpen,
+                                  }
+                                : DEFAULT_TEXT_OVERLAY,
+                            )
+                          }
+                        />
+                      </div>
+                      {textOverlay.panelOpen && (
+                        <div className="text-overlay-controls">
+                          <div className="text-overlay-hint">
+                            Use A to add a layer. Click text to select or edit;
+                            drag to move.
+                          </div>
+                          <label className="input-label" htmlFor="text-style">
+                            Style
+                          </label>
+                          <select
+                            id="text-style"
+                            className="input select"
+                            value={primaryTextLayer?.fontStyle ?? "clean"}
+                            disabled={!hasSelectedTextLayer}
+                            onChange={(e) => {
+                              const fontStyle = e.target.value as TextFontStyle;
+                              updateSelectedTextLayers({
+                                fontStyle,
+                              });
+                            }}
+                          >
+                            {TEXT_FONT_STYLE_KEYS.map((style) => (
+                              <option key={style} value={style}>
+                                {TEXT_FONT_STYLE_LABELS[style]}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="text-format-section">
+                            <span className="input-label">Formatting</span>
+                            <div
+                              className="text-format-controls"
+                              role="group"
+                              aria-label="Text formatting"
+                            >
+                              {(
+                                [
+                                  ["add", "A", "Add New Text Layer"],
+                                  ["bold", "B", "Bold"],
+                                  ["italic", "I", "Italic"],
+                                  ["underline", "U", "Underline"],
+                                  ["strikethrough", "S", "Strikethrough"],
+                                ] as const
+                              ).map(([property, glyph, label]) => {
+                                if (property === "add") {
+                                  return (
+                                    <button
+                                      key={property}
+                                      type="button"
+                                      className="text-format-btn text-format-add"
+                                      aria-label={label}
+                                      title={label}
+                                      onClick={handleAddTextLayer}
+                                    >
+                                      {glyph}
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <button
+                                    key={property}
+                                    type="button"
+                                    className={`text-format-btn text-format-${property}${primaryTextLayer?.[property] ? " active" : ""}`}
+                                    aria-label={label}
+                                    aria-pressed={!!primaryTextLayer?.[property]}
+                                    title={label}
+                                    disabled={!hasSelectedTextLayer}
+                                    onClick={() =>
+                                      updateSelectedTextLayers((layer) => ({
+                                        [property]: !layer[property],
+                                      }))
+                                    }
+                                  >
+                                    {glyph}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="text-color-row mt-2">
+                            <label className="input-label" htmlFor="text-color">
+                              Color
+                            </label>
+                            <input
+                              id="text-color"
+                              className="text-color-input"
+                              type="color"
+                              value={primaryTextLayer?.color ?? "#ffffff"}
+                              disabled={!hasSelectedTextLayer}
+                              onChange={(e) =>
+                                updateSelectedTextLayers({
+                                  color: e.target.value,
+                                })
+                              }
+                            />
+                            <span className="text-color-value">
+                              {(primaryTextLayer?.color ?? "#ffffff").toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Size</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="12"
+                              max="240"
+                              step="1"
+                              value={primaryTextLayer?.fontSize ?? 48}
+                              disabled={!hasSelectedTextLayer}
+                              onChange={(e) =>
+                                updateSelectedTextLayers({
+                                  fontSize: Number(e.target.value),
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {primaryTextLayer?.fontSize ?? 48}px
+                            </span>
+                          </div>
+                          <div className="slider-row mt-2">
+                            <span className="text-xs">Opacity</span>
+                            <input
+                              className="slider"
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={primaryTextLayer?.opacity ?? 1}
+                              disabled={!hasSelectedTextLayer}
+                              onChange={(e) =>
+                                updateSelectedTextLayers({
+                                  opacity: Number(e.target.value),
+                                })
+                              }
+                            />
+                            <span className="slider-value">
+                              {Math.round((primaryTextLayer?.opacity ?? 1) * 100)}%
+                            </span>
+                          </div>
+                          <button
+                            className="btn btn-ghost btn-sm btn-full mt-2 text-remove-btn"
+                            disabled={!hasSelectedTextLayer}
+                            onClick={handleRemoveSelectedTextLayers}
+                          >
+                            Remove Text
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -3898,6 +4514,9 @@ export default function App() {
                   videoSrc={previewFile}
                   previewLayout={previewLayout}
                   effects={effectsState}
+                  onTextOverlayChange={handleTextOverlayChange}
+                  onSubtitleOverlayChange={handleSubtitleOverlayChange}
+                  onLogoChange={handleLogoChange}
                   orientation={orientation}
                   previewVolume={previewVolume}
                   showGuides={showGuides}

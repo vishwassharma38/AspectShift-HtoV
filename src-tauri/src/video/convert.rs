@@ -7,9 +7,110 @@ use crate::video::lock::ProcessingLock;
 use crate::video::preset_adapter::create_render_plan_resolved;
 use crate::video::probe::{check_file_ready, detect_orientation};
 use crate::video::types::{ConversionResult, VideoError};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tracing::info;
+
+struct PreparedTextOverlay {
+    ass_path: PathBuf,
+    fonts_dir: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct PreparedSubtitle {
+    pub path: PathBuf,
+    pub fonts_dir: Option<PathBuf>,
+}
+
+fn ass_colour(hex: &str, opacity: f32) -> String {
+    let rgb = hex.strip_prefix('#').unwrap_or(hex);
+    let (red, green, blue) = if rgb.len() == 6 {
+        (&rgb[0..2], &rgb[2..4], &rgb[4..6])
+    } else {
+        ("FF", "FF", "FF")
+    };
+    let alpha = ((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8;
+    format!("&H{alpha:02X}{blue}{green}{red}")
+}
+
+fn prepare_text_overlay(
+    app: &AppHandle,
+    plan: &crate::video::preset_adapter::RenderPlan,
+    orientation: &crate::video::types::OrientationInfo,
+    duration_secs: f64,
+    stem: &str,
+) -> Result<Option<PreparedTextOverlay>, VideoError> {
+    if !plan.effects.text_overlay_enabled() {
+        return Ok(None);
+    }
+
+    let layout = crate::video::render_layout::calculate_render_layout(plan, orientation, None);
+    let temp_dir = crate::os_utils::OsUtils::get_temp_dir(app);
+    let path = temp_dir.join(format!("{stem}_text_{}.ass", uuid::Uuid::new_v4()));
+    let fonts_dir = temp_dir.join(format!("text_fonts_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&fonts_dir)?;
+    let mut copied_fonts = HashSet::new();
+    let mut prepared_layers = Vec::new();
+    for (index, settings) in plan
+        .effects
+        .text_overlay
+        .layers
+        .iter()
+        .filter(|layer| layer.enabled && !layer.text.trim().is_empty())
+        .enumerate()
+    {
+        for font_path in
+            crate::video::text_fonts::resolve_text_overlay_font_files(app, &settings.font_style)?
+        {
+            if copied_fonts.insert(font_path.clone()) {
+                let file_name = font_path.file_name().ok_or_else(|| {
+                    VideoError::InvalidInput(format!(
+                        "Bundled text font '{}' has no file name",
+                        crate::video::text_fonts::family(&settings.font_style).ass_name
+                    ))
+                })?;
+                std::fs::copy(&font_path, fonts_dir.join(file_name))?;
+            }
+        }
+        let font_name = crate::video::text_fonts::family(&settings.font_style).ass_name;
+        let style = crate::subtitles::ass_writer::AssStyle {
+            name: format!("TextOverlay{}", index + 1),
+            font_name: font_name.to_string(),
+            font_size: settings.font_size.max(1) as u32,
+            primary_colour: ass_colour(&settings.color, settings.opacity),
+            outline_colour: ass_colour(&settings.outline_color, settings.opacity),
+            back_colour: "&HFF000000".to_string(),
+            bold: settings.bold,
+            italic: settings.italic,
+            underline: settings.underline,
+            strikethrough: settings.strikethrough,
+            outline: if settings.outline_enabled {
+                settings.outline_width.max(0) as f32
+            } else {
+                0.0
+            },
+            shadow: 0.0,
+            alignment: 5,
+            margin_v: 0,
+            play_res_y: layout.target_height,
+            play_res_x: layout.target_width,
+            position: None,
+        };
+        prepared_layers.push((settings.text.clone(), style, settings.x, settings.y));
+    }
+    let duration_ms = (duration_secs.max(0.01) * 1000.0).ceil() as u64;
+    let layer_entries: Vec<(&str, &crate::subtitles::ass_writer::AssStyle, f32, f32)> =
+        prepared_layers
+            .iter()
+            .map(|(text, style, x, y)| (text.as_str(), style, *x, *y))
+            .collect();
+    crate::subtitles::ass_writer::write_text_overlays_ass(&path, &layer_entries, duration_ms)?;
+    Ok(Some(PreparedTextOverlay {
+        ass_path: path,
+        fonts_dir,
+    }))
+}
 
 async fn is_valid_completed_output(app: &AppHandle, output_path: &Path) -> bool {
     if !output_path.exists() {
@@ -79,9 +180,10 @@ pub async fn prepare_subtitles(
     target_height: u32,
     foreground_frame_height: u32,
     blur_enabled: bool,
+    subtitle_overlay: &crate::video::types::SubtitleOverlaySettings,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     on_progress: Option<Box<dyn Fn(f32) + Send + Sync>>,
-) -> Result<PathBuf, VideoError> {
+) -> Result<PreparedSubtitle, VideoError> {
     let input_path = Path::new(input);
     let segments = transcribe_to_segments(
         app,
@@ -92,7 +194,10 @@ pub async fn prepare_subtitles(
     )
     .await?;
 
-    let mut result_path = PathBuf::new();
+    let mut result = PreparedSubtitle {
+        path: PathBuf::new(),
+        fonts_dir: None,
+    };
 
     // 1. Export SRT if requested (in output directory)
     if export_subtitles {
@@ -103,7 +208,7 @@ pub async fn prepare_subtitles(
             input_path.display(),
             srt_path.display()
         );
-        result_path = srt_path;
+        result.path = srt_path;
     }
 
     // 2. Generate ASS for burn-in (always in temp directory)
@@ -114,12 +219,27 @@ pub async fn prepare_subtitles(
             .and_then(|s| s.to_str())
             .unwrap_or("subtitle");
         let ass_path = temp_dir.join(format!("{}_{}.ass", stem, uuid::Uuid::new_v4()));
+        let fonts_dir = temp_dir.join(format!("subtitle_fonts_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&fonts_dir)?;
+        for font_path in crate::video::text_fonts::resolve_subtitle_overlay_font_files(
+            app,
+            &subtitle_overlay.font_style,
+        )? {
+            let file_name = font_path.file_name().ok_or_else(|| {
+                VideoError::InvalidInput(format!(
+                    "Bundled subtitle font '{}' has no file name",
+                    crate::video::text_fonts::family(&subtitle_overlay.font_style).ass_name
+                ))
+            })?;
+            std::fs::copy(&font_path, fonts_dir.join(file_name))?;
+        }
 
         let style = crate::subtitles::positioning::calculate_ass_style(
             target_width,
             target_height,
             foreground_frame_height,
             blur_enabled,
+            subtitle_overlay,
         );
         crate::subtitles::ass_writer::write_ass(&ass_path, &segments, &style)?;
 
@@ -130,10 +250,11 @@ pub async fn prepare_subtitles(
         );
 
         // If we're burning in, the ASS path is the one we want to return for the FFmpeg filter
-        result_path = ass_path;
+        result.path = ass_path;
+        result.fonts_dir = Some(fonts_dir);
     }
 
-    Ok(result_path)
+    Ok(result)
 }
 
 pub async fn render_single(
@@ -220,6 +341,7 @@ pub async fn render_single(
         && !job.effects.background_effect_enabled()
         && !job.effects.remove_audio_enabled()
         && !job.effects.burn_subtitles_enabled()
+        && !job.effects.text_overlay_enabled()
         && plan.logo.is_none()
         && !has_transform
     {
@@ -246,10 +368,27 @@ pub async fn render_single(
 
     // 9. Filter Construction
     let filter = build_filter_graph(&plan, &orientation);
+    let text_overlay_path = prepare_text_overlay(app, &plan, &orientation, duration, stem)?;
 
     // 10. FFmpeg Command Building
+    let text_overlay_str = text_overlay_path
+        .as_ref()
+        .and_then(|prepared| prepared.ass_path.to_str());
+    let text_fonts_dir = text_overlay_path
+        .as_ref()
+        .and_then(|prepared| prepared.fonts_dir.to_str());
     let subtitle_str = job.subtitle_path.as_ref().and_then(|p| p.to_str());
-    let args_vec = build_ffmpeg_args(input, &temp_output_path_str, &filter, &plan, subtitle_str);
+    let subtitle_fonts_dir = job.subtitle_fonts_dir.as_ref().and_then(|p| p.to_str());
+    let args_vec = build_ffmpeg_args(
+        input,
+        &temp_output_path_str,
+        &filter,
+        &plan,
+        text_overlay_str,
+        text_fonts_dir,
+        subtitle_str,
+        subtitle_fonts_dir,
+    );
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
     let ffmpeg_res = run_ffmpeg(
@@ -278,6 +417,10 @@ pub async fn render_single(
                 temp_output_path.display()
             );
         }
+    }
+    if let Some(prepared) = &text_overlay_path {
+        let _ = std::fs::remove_file(&prepared.ass_path);
+        let _ = std::fs::remove_dir_all(&prepared.fonts_dir);
     }
 
     ffmpeg_res?;

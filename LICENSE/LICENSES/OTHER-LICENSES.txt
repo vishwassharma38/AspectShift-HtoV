@@ -2,16 +2,22 @@ ADDITIONAL THIRD-PARTY LICENSE INFORMATION
 
 AspectShift-HtoV may include or interact with third-party software components, libraries, codecs, fonts, or services.
 
-Where required, license notices and attributions will be provided in future releases as additional bundled dependencies are introduced.
-
 Current bundled third-party software:
 
 * FFmpeg
 * FFprobe
+* Frontend web fonts: Space Grotesk and JetBrains Mono
+* Text overlay fonts: Anton, Bungee, Caveat, Cormorant Garamond, Exo 2, Fira Sans, Inter, Lato, Montserrat, and Orbitron
+* Frontend and desktop libraries declared in `package.json` and locked in `package-lock.json`
+* Rust crates declared in `src-tauri/Cargo.toml` and locked in `src-tauri/Cargo.lock`
 
 For FFmpeg licensing information, refer to:
 
 * FFMPEG-GPL.txt
 * THIRD-PARTY-NOTICES.txt
+
+Bundled text overlay font license texts remain with the font files under `src-tauri/resources/fonts/text-overlay/<family>/OFL.txt` and are distributed with official application resources under `fonts/text-overlay/`.
+
+Bundled frontend UI font license texts are included beside the source font files under `src/assets/fonts/` and are distributed with official application resources under `LICENSE/fonts/`.
 
 For complete and current license information, consult the project's GitHub repository and release documentation.

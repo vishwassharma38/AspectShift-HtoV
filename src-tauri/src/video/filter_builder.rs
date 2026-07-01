@@ -2,7 +2,7 @@ use crate::video::preset_adapter::RenderPlan;
 use crate::video::render_layout::{calculate_render_layout, PreviewFitMode};
 use crate::video::types::{LogoPosition, OrientationInfo, VideoTransform};
 
-fn get_transform_filters(transform: &VideoTransform) -> (String, bool) {
+pub(crate) fn get_transform_filters(transform: &VideoTransform) -> (String, bool) {
     let mut filters = Vec::new();
     let mut swaps_dimensions = false;
 
@@ -46,8 +46,10 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
 
     let mut filter_stages = Vec::new();
     let has_transform = !transform_filter.is_empty();
-    let uses_complex_graph =
-        plan.effects.background_effect_enabled() || plan.logo.is_some() || has_transform;
+    let uses_complex_graph = plan.effects.background_effect_enabled()
+        || plan.logo.is_some()
+        || plan.effects.text_overlay_enabled()
+        || has_transform;
 
     // Determine foreground scaling strategy
     let fg_filter = match layout.foreground_fit {
@@ -137,20 +139,27 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
 
     // Stage 2: Logo Overlay (Optional)
     if let Some(logo) = &plan.logo {
-        let (x, y) = match logo.position {
-            LogoPosition::TopLeft => (logo.gap.to_string(), logo.gap.to_string()),
-            LogoPosition::TopRight => (
-                format!("main_w-overlay_w-{}", logo.gap),
-                logo.gap.to_string(),
-            ),
-            LogoPosition::BottomLeft => (
-                logo.gap.to_string(),
-                format!("main_h-overlay_h-{}", logo.gap),
-            ),
-            LogoPosition::BottomRight => (
-                format!("main_w-overlay_w-{}", logo.gap),
-                format!("main_h-overlay_h-{}", logo.gap),
-            ),
+        let (x, y) = if logo.manual_position {
+            (
+                format!("main_w*{:.6}-overlay_w/2", logo.x.clamp(0.0, 1.0)),
+                format!("main_h*{:.6}-overlay_h/2", logo.y.clamp(0.0, 1.0)),
+            )
+        } else {
+            match logo.position {
+                LogoPosition::TopLeft => (logo.gap.to_string(), logo.gap.to_string()),
+                LogoPosition::TopRight => (
+                    format!("main_w-overlay_w-{}", logo.gap),
+                    logo.gap.to_string(),
+                ),
+                LogoPosition::BottomLeft => (
+                    logo.gap.to_string(),
+                    format!("main_h-overlay_h-{}", logo.gap),
+                ),
+                LogoPosition::BottomRight => (
+                    format!("main_w-overlay_w-{}", logo.gap),
+                    format!("main_h-overlay_h-{}", logo.gap),
+                ),
+            }
         };
 
         let logo_scale_w = (tw as f32 * logo.scale).round() as u32;

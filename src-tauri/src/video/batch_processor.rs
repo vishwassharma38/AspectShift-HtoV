@@ -1,5 +1,5 @@
 use crate::os_utils::OsUtils;
-use crate::video::convert::{prepare_subtitles, render_single};
+use crate::video::convert::{prepare_subtitles, render_single, PreparedSubtitle};
 use crate::video::queue::{clear_terminal_progress_fields, BatchManager, BatchState};
 use crate::video::targets::normalize_targets;
 use crate::video::types::{
@@ -163,12 +163,16 @@ pub async fn start_batch(
     let mut jobs = Vec::new();
     let mut initial_progress = Vec::new();
     let session_id = Uuid::new_v4().to_string();
+    let thumbnail_transform = targets
+        .first()
+        .and_then(|target| target.job.effects.transform.clone());
 
     // Parallel preparation: Probe and Thumbnail for each input file
     let mut preparation_tasks = tokio::task::JoinSet::new();
     for file in valid_input_files {
         let app_c = app.clone();
         let thumb_dir_c = thumb_dir.clone();
+        let thumbnail_transform_c = thumbnail_transform.clone();
         preparation_tasks.spawn(async move {
             let res = crate::video::probe::check_file_ready(&app_c, &file).await;
             let (duration, probe_error) = match res {
@@ -183,15 +187,20 @@ pub async fn start_batch(
             let thumb_dest = thumb_dir_c.join(thumb_name);
             let thumb_dest_str = thumb_dest.to_string_lossy().to_string();
 
-            let thumb_path =
-                match crate::video::probe::generate_thumbnail(&app_c, &file, &thumb_dest_str).await
-                {
-                    Ok(p) => Some(p),
-                    Err(e) => {
-                        warn!("Failed to generate thumbnail for {}: {}", file, e);
-                        None
-                    }
-                };
+            let thumb_path = match crate::video::probe::generate_thumbnail(
+                &app_c,
+                &file,
+                &thumb_dest_str,
+                thumbnail_transform_c.as_ref(),
+            )
+            .await
+            {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warn!("Failed to generate thumbnail for {}: {}", file, e);
+                    None
+                }
+            };
 
             (file, duration, thumb_path, probe_error)
         });
@@ -273,8 +282,9 @@ pub async fn start_batch(
     let app_clone = app.clone();
 
     tokio::spawn(async move {
-        let mut subtitle_cache: HashMap<String, PathBuf> = HashMap::new();
+        let mut subtitle_cache: HashMap<String, PreparedSubtitle> = HashMap::new();
         let mut temp_srt_paths: Vec<PathBuf> = Vec::new();
+        let mut temp_subtitle_font_dirs: Vec<PathBuf> = Vec::new();
 
         loop {
             let (job, token) = {
@@ -431,6 +441,7 @@ pub async fn start_batch(
                     effects: job.output.effects.clone(),
                     platform_config: job.output.platform_config.clone(),
                     subtitle_path: None,
+                    subtitle_fonts_dir: None,
                 };
 
                 let subtitle_plan = match crate::video::preset_adapter::create_render_plan_resolved(
@@ -455,15 +466,18 @@ pub async fn start_batch(
                     None,
                 );
 
+                let subtitle_style_key = serde_json::to_string(&job.output.effects.subtitle_overlay)
+                    .unwrap_or_else(|_| "subtitle-style".to_string());
                 let subtitle_cache_key = format!(
-                    "{}|{}x{}|fg{}|blur{}|burn{}|export{}",
+                    "{}|{}x{}|fg{}|blur{}|burn{}|export{}|{}",
                     input_path,
                     subtitle_layout.target_width,
                     subtitle_layout.target_height,
                     subtitle_layout.foreground_frame_height,
                     job.output.effects.background_effect_enabled(),
                     job.output.effects.burn_subtitles_enabled(),
-                    job.output.effects.export_subtitles_enabled()
+                    job.output.effects.export_subtitles_enabled(),
+                    subtitle_style_key
                 );
 
                 if let Some(path) = subtitle_cache.get(&subtitle_cache_key) {
@@ -509,6 +523,7 @@ pub async fn start_batch(
                         subtitle_layout.target_height,
                         subtitle_layout.foreground_frame_height,
                         job.output.effects.background_effect_enabled(),
+                        &job.output.effects.subtitle_overlay,
                         Some(token.clone()),
                         Some(Box::new({
                             let state = state_clone.clone();
@@ -547,7 +562,10 @@ pub async fn start_batch(
                     {
                         Ok(path) => {
                             if !is_export {
-                                temp_srt_paths.push(path.clone());
+                                temp_srt_paths.push(path.path.clone());
+                                if let Some(fonts_dir) = &path.fonts_dir {
+                                    temp_subtitle_font_dirs.push(fonts_dir.clone());
+                                }
                             }
                             subtitle_cache.insert(subtitle_cache_key, path.clone());
                             prepared_subtitle = Some(path);
@@ -594,7 +612,10 @@ pub async fn start_batch(
                 encoding: job.output.encoding.clone(),
                 effects: job.output.effects.clone(),
                 platform_config: job.output.platform_config.clone(),
-                subtitle_path: prepared_subtitle,
+                subtitle_path: prepared_subtitle.as_ref().map(|prepared| prepared.path.clone()),
+                subtitle_fonts_dir: prepared_subtitle
+                    .as_ref()
+                    .and_then(|prepared| prepared.fonts_dir.clone()),
             };
 
             if token.is_cancelled() {
@@ -723,9 +744,12 @@ pub async fn start_batch(
             sanitize_terminal_state(&mut s);
         }
 
-        // Cleanup temporary SRT files
+        // Cleanup temporary subtitle files
         for path in temp_srt_paths {
             let _ = std::fs::remove_file(path);
+        }
+        for path in temp_subtitle_font_dirs {
+            let _ = std::fs::remove_dir_all(path);
         }
 
         emit_batch_progress(&app_clone, &state_clone).await;

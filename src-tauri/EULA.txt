@@ -530,9 +530,14 @@ SECTION 14 — THIRD-PARTY COMPONENTS
 
     - FFmpeg.
     - FFprobe.
+    - Bundled fonts used by the application interface,
+      text overlays, and subtitle overlays.
     - Whisper-related binaries.
     - Whisper models.
     - Tauri and related dependencies.
+    - React, Vite, TypeScript, and related frontend
+      dependencies.
+    - Rust crates used by the application backend.
     - Other open-source libraries used by the
     application.
 
@@ -546,6 +551,12 @@ SECTION 14 — THIRD-PARTY COMPONENTS
   subtitle-related features. These components may be
   required for certain
   subtitle, transcription, or caption workflows.
+
+  Bundled font files are distributed under their
+  respective font licenses.
+  Current bundled font families are identified in the
+  third-party notices
+  included with the application and repository.
 
   Third-party components are licensed by their
   respective

@@ -42,6 +42,30 @@ FFmpeg and FFprobe remain the property of their respective copyright holders and
 
 Refer to the files in this directory for additional licensing information.
 
+### Bundled Fonts
+
+AspectShift-HtoV bundles local font files for the application interface and text/subtitle overlay rendering.
+
+Frontend interface fonts:
+
+* Space Grotesk
+* JetBrains Mono
+
+Text overlay fonts:
+
+* Anton
+* Bungee
+* Caveat
+* Cormorant Garamond
+* Exo 2
+* Fira Sans
+* Inter
+* Lato
+* Montserrat
+* Orbitron
+
+All currently bundled font families are distributed under the SIL Open Font License, Version 1.1. License texts are included beside the source font files. Official builds distribute UI font license texts under `LICENSE/fonts/` and text overlay font license texts with the bundled `fonts/text-overlay/` resources.
+
 ---
 
 ## Optional Downloaded Components

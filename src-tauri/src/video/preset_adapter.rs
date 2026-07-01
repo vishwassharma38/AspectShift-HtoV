@@ -41,6 +41,9 @@ fn resolve_logo(effects: &VideoEffectsSettings, input: &str) -> Option<LogoPrese
         opacity: logo_opts.opacity,
         gap: logo_opts.gap,
         scale: logo_opts.scale,
+        manual_position: logo_opts.manual_position,
+        x: logo_opts.x,
+        y: logo_opts.y,
     })
 }
 

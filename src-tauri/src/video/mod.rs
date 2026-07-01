@@ -12,6 +12,7 @@ pub mod probe;
 pub mod queue;
 pub mod render_layout;
 pub mod targets;
+pub mod text_fonts;
 pub mod types;
 pub mod validation;
 
@@ -119,6 +120,7 @@ pub async fn compute_preview_layout(
         effects: request.effects,
         platform_config: request.platform_config,
         subtitle_path: None,
+        subtitle_fonts_dir: None,
     };
 
     let plan =
@@ -176,6 +178,7 @@ pub async fn convert_to_ratio(
         effects: job.effects,
         platform_config: job.platform_config,
         subtitle_path: None,
+        subtitle_fonts_dir: None,
     };
 
     convert::render_single(&app, resolved_job, None, None)

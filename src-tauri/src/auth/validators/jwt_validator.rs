@@ -403,9 +403,16 @@ mod tests {
             "future_claim": "test_value"
         });
 
-        let claims: JwtClaims = serde_json::from_value(payload).expect("Should deserialize with unknown fields");
+        let claims: JwtClaims =
+            serde_json::from_value(payload).expect("Should deserialize with unknown fields");
         assert_eq!(claims.sub, "subject-123");
-        assert_eq!(claims.unknown_fields.get("future_claim").and_then(|v| v.as_str()), Some("test_value"));
+        assert_eq!(
+            claims
+                .unknown_fields
+                .get("future_claim")
+                .and_then(|v| v.as_str()),
+            Some("test_value")
+        );
     }
 
     #[test]
@@ -460,6 +467,9 @@ mod tests {
         let metadata = validate_jwt(&jwt).expect("dev JWT should validate");
 
         assert_eq!(metadata.expires_at - metadata.issued_at, 30 * 24 * 3600);
-        assert_eq!(metadata.grace_expires_at - metadata.expires_at, grace_period_secs());
+        assert_eq!(
+            metadata.grace_expires_at - metadata.expires_at,
+            grace_period_secs()
+        );
     }
 }

@@ -24,6 +24,289 @@
   font-synthesis: none;
 }
 
+/* Bundled text-overlay faces. Keep these aliases aligned with
+   TEXT_FONT_FAMILIES and the Rust TextFontStyle mapping. */
+@font-face {
+  font-family: "AspectShift Text Clean";
+  src: url("../src-tauri/resources/fonts/text-overlay/fira-sans/FiraSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Clean";
+  src: url("../src-tauri/resources/fonts/text-overlay/fira-sans/FiraSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Clean";
+  src: url("../src-tauri/resources/fonts/text-overlay/fira-sans/FiraSans-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Clean";
+  src: url("../src-tauri/resources/fonts/text-overlay/fira-sans/FiraSans-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Minimal";
+  src: url("../src-tauri/resources/fonts/text-overlay/lato/Lato-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Minimal";
+  src: url("../src-tauri/resources/fonts/text-overlay/lato/Lato-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Minimal";
+  src: url("../src-tauri/resources/fonts/text-overlay/lato/Lato-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Minimal";
+  src: url("../src-tauri/resources/fonts/text-overlay/lato/Lato-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Caption";
+  src: url("../src-tauri/resources/fonts/text-overlay/inter/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Caption";
+  src: url("../src-tauri/resources/fonts/text-overlay/inter/Inter-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Caption";
+  src: url("../src-tauri/resources/fonts/text-overlay/inter/Inter-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Caption";
+  src: url("../src-tauri/resources/fonts/text-overlay/inter/Inter-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Meme";
+  src: url("../src-tauri/resources/fonts/text-overlay/anton/Anton-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Meme";
+  src: url("../src-tauri/resources/fonts/text-overlay/anton/Anton-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Meme";
+  src: url("../src-tauri/resources/fonts/text-overlay/anton/Anton-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Meme";
+  src: url("../src-tauri/resources/fonts/text-overlay/anton/Anton-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Creator";
+  src: url("../src-tauri/resources/fonts/text-overlay/montserrat/Montserrat-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Creator";
+  src: url("../src-tauri/resources/fonts/text-overlay/montserrat/Montserrat-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Creator";
+  src: url("../src-tauri/resources/fonts/text-overlay/montserrat/Montserrat-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Creator";
+  src: url("../src-tauri/resources/fonts/text-overlay/montserrat/Montserrat-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Gaming";
+  src: url("../src-tauri/resources/fonts/text-overlay/exo-2/Exo2-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Gaming";
+  src: url("../src-tauri/resources/fonts/text-overlay/exo-2/Exo2-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Gaming";
+  src: url("../src-tauri/resources/fonts/text-overlay/exo-2/Exo2-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Gaming";
+  src: url("../src-tauri/resources/fonts/text-overlay/exo-2/Exo2-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cyberpunk";
+  src: url("../src-tauri/resources/fonts/text-overlay/orbitron/Orbitron-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cyberpunk";
+  src: url("../src-tauri/resources/fonts/text-overlay/orbitron/Orbitron-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cyberpunk";
+  src: url("../src-tauri/resources/fonts/text-overlay/orbitron/Orbitron-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cyberpunk";
+  src: url("../src-tauri/resources/fonts/text-overlay/orbitron/Orbitron-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cinematic";
+  src: url("../src-tauri/resources/fonts/text-overlay/cormorant-garamond/CormorantGaramond-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cinematic";
+  src: url("../src-tauri/resources/fonts/text-overlay/cormorant-garamond/CormorantGaramond-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cinematic";
+  src: url("../src-tauri/resources/fonts/text-overlay/cormorant-garamond/CormorantGaramond-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Cinematic";
+  src: url("../src-tauri/resources/fonts/text-overlay/cormorant-garamond/CormorantGaramond-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Retro";
+  src: url("../src-tauri/resources/fonts/text-overlay/bungee/Bungee-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Retro";
+  src: url("../src-tauri/resources/fonts/text-overlay/bungee/Bungee-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Retro";
+  src: url("../src-tauri/resources/fonts/text-overlay/bungee/Bungee-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Retro";
+  src: url("../src-tauri/resources/fonts/text-overlay/bungee/Bungee-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Handwritten";
+  src: url("../src-tauri/resources/fonts/text-overlay/caveat/Caveat-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Handwritten";
+  src: url("../src-tauri/resources/fonts/text-overlay/caveat/Caveat-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Handwritten";
+  src: url("../src-tauri/resources/fonts/text-overlay/caveat/Caveat-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "AspectShift Text Handwritten";
+  src: url("../src-tauri/resources/fonts/text-overlay/caveat/Caveat-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+
 :root {
   --font-ui: "Space Grotesk";
   --font-mono: "JetBrains Mono";
@@ -1655,6 +1938,157 @@ html.theme-transitioning *::after {
   color: var(--text-primary);
   display: block;
   margin-bottom: 1px;
+}
+
+/* Text Overlay */
+.text-overlay-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.text-overlay-hint {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.text-format-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.text-format-section .input-label {
+  margin: 0;
+}
+
+.text-format-controls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.subtitle-format-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.subtitle-overlay-controls {
+  margin-top: 10px;
+}
+
+.text-format-btn {
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.text-format-btn:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.text-format-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.text-format-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.text-format-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.text-format-bold { font-weight: 700; }
+.text-format-italic { font-style: italic; }
+.text-format-underline { text-decoration: underline; }
+.text-format-strikethrough { text-decoration: line-through; }
+.text-format-add { font-weight: 800; }
+
+.text-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.text-color-row .input-label {
+  margin: 0;
+}
+
+.text-color-input {
+  width: 34px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  cursor: pointer;
+}
+
+.text-color-value {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.text-remove-btn {
+  color: var(--error);
+}
+
+.canvas-text-overlay {
+  outline: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.canvas-text-overlay.is-empty {
+  min-width: 3.5em;
+  min-height: 1.15em;
+}
+
+.canvas-text-overlay.is-empty:not(.is-editing)::before {
+  content: attr(data-placeholder);
+  color: currentColor;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.canvas-text-overlay.is-empty.is-selected:not(.is-editing)::before {
+  opacity: 0.65;
+}
+
+.canvas-text-overlay:active:not(.is-editing) {
+  cursor: grabbing !important;
+}
+
+.canvas-subtitles:active {
+  cursor: grabbing !important;
+}
+
+.video-canvas-box img:active {
+  cursor: grabbing !important;
+}
+
+.canvas-text-overlay.is-selected:not(.is-editing) {
+  outline: 1px solid rgba(255, 255, 255, 0.72);
+  outline-offset: 5px;
+}
+
+.canvas-text-overlay.is-editing {
+  outline: 1px dashed rgba(255, 255, 255, 0.8);
+  outline-offset: 5px;
 }
 
 /* ── Slider ───────────────────────────────────────────────── */

@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::auth::auth_errors::AuthError;
+use crate::auth::auth_models::UpdateEntitlementCheckResult;
 use crate::auth::state::auth_state::AuthStatus;
 
 pub type LicenseToken = String;
@@ -23,9 +23,7 @@ pub trait LicenseProvider: Send + Sync {
         &'a self,
         token: &'a LicenseToken,
         current_version: &'a str,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<UpdateEntitlementCheckResult, AuthError>> + Send + 'a>,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateEntitlementCheckResult, AuthError>> + Send + 'a>>;
     fn validate<'a>(
         &'a self,
         token: &'a LicenseToken,

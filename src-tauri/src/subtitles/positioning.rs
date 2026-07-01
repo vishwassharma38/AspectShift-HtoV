@@ -1,4 +1,5 @@
 use crate::subtitles::ass_writer::AssStyle;
+use crate::video::types::SubtitleOverlaySettings;
 
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +10,17 @@ pub struct SubtitleLayoutMetrics {
     pub margin_h: u32,
     pub play_res_x: u32,
     pub play_res_y: u32,
+}
+
+fn hex_to_ass_colour(hex: &str, opacity: f32) -> String {
+    let rgb = hex.strip_prefix('#').unwrap_or(hex);
+    let (red, green, blue) = if rgb.len() == 6 {
+        (&rgb[0..2], &rgb[2..4], &rgb[4..6])
+    } else {
+        ("FF", "FF", "FF")
+    };
+    let alpha = ((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8;
+    format!("&H{alpha:02X}{blue}{green}{red}")
 }
 
 const REF_WIDTH: f32 = 1920.0;
@@ -32,6 +44,7 @@ pub fn calculate_layout_metrics(
     target_height: u32,
     foreground_frame_height: u32,
     blur_enabled: bool,
+    subtitle_overlay: &SubtitleOverlaySettings,
 ) -> SubtitleLayoutMetrics {
     let w = target_width.max(2) as f32;
     let h = target_height.max(2) as f32;
@@ -66,8 +79,21 @@ pub fn calculate_layout_metrics(
     let margin_h = (w * MIN_MARGIN_H_PCT).round() as u32;
     let outline = (font_size * OUTLINE_RATIO).clamp(MIN_OUTLINE, MAX_OUTLINE);
 
+    let font_size = subtitle_overlay
+        .font_size
+        .map(|size| size.max(1) as u32)
+        .unwrap_or_else(|| font_size.round() as u32);
+    let outline = if subtitle_overlay.outline_enabled {
+        subtitle_overlay
+            .outline_width
+            .map(|width| width.max(0) as f32)
+            .unwrap_or(outline)
+    } else {
+        0.0
+    };
+
     SubtitleLayoutMetrics {
-        font_size: font_size.round() as u32,
+        font_size,
         outline,
         margin_v,
         margin_h,
@@ -81,28 +107,44 @@ pub fn calculate_ass_style(
     target_height: u32,
     foreground_frame_height: u32,
     blur_enabled: bool,
+    subtitle_overlay: &SubtitleOverlaySettings,
 ) -> AssStyle {
     let metrics = calculate_layout_metrics(
         target_width,
         target_height,
         foreground_frame_height,
         blur_enabled,
+        subtitle_overlay,
     );
+    let font_name = crate::video::text_fonts::family(&subtitle_overlay.font_style).ass_name;
 
     AssStyle {
         name: "Professional".to_string(),
-        font_name: "Arial".to_string(),
+        font_name: font_name.to_string(),
         font_size: metrics.font_size,
-        primary_colour: "&H00FFFFFF".to_string(),
-        outline_colour: "&H00000000".to_string(),
+        primary_colour: hex_to_ass_colour(&subtitle_overlay.color, subtitle_overlay.opacity),
+        outline_colour: hex_to_ass_colour(
+            &subtitle_overlay.outline_color,
+            subtitle_overlay.opacity,
+        ),
         back_colour: "&H00000000".to_string(),
-        bold: true,
+        bold: subtitle_overlay.bold,
+        italic: subtitle_overlay.italic,
+        underline: false,
+        strikethrough: false,
         outline: metrics.outline,
         shadow: 0.0,
-        alignment: 2, // Bottom Center
+        alignment: if subtitle_overlay.manual_position {
+            5
+        } else {
+            2
+        },
         margin_v: metrics.margin_v,
         play_res_y: metrics.play_res_y,
         play_res_x: metrics.play_res_x,
+        position: subtitle_overlay
+            .manual_position
+            .then_some((subtitle_overlay.x, subtitle_overlay.y)),
     }
 }
 

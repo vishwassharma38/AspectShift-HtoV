@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to publish, for example v0.1.1"
+        description: "Release tag to publish, for example v0.1.2"
         required: true
         type: string
   push:
@@ -55,10 +55,8 @@ jobs:
             Signed Windows release for AspectShift-HtoV ${{ env.RELEASE_TAG }}.
 
             This release includes:
-            - the very first version of the aspectshift-htov windows installer
-            - updater bundle artifacts
-            - updater signatures
-            - updater JSON metadata for GitHub Release delivery
+            - more stability and bug fixes.
+            - better update entitlement flow and notification dialogs.
 
             Updater artifact signing is separate from the licensing JWT chain.
             The release is gated by the existing /api/updates/check entitlement flow in the app.

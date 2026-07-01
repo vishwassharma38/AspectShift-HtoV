@@ -425,6 +425,12 @@ impl AuthManager {
                         UpdateEntitlementCheckStatus::ChannelNotAllowed => {
                             return UpdateEntitlementCheckResult::channel_not_allowed();
                         }
+                        UpdateEntitlementCheckStatus::LicenseRevoked => {
+                            return UpdateEntitlementCheckResult::license_revoked();
+                        }
+                        UpdateEntitlementCheckStatus::LicenseRefunded => {
+                            return UpdateEntitlementCheckResult::license_refunded();
+                        }
                         UpdateEntitlementCheckStatus::Offline => {
                             return UpdateEntitlementCheckResult::offline();
                         }
@@ -468,11 +474,11 @@ impl AuthManager {
                 }
                 Err(AuthError::LicenseRevoked) => {
                     self.apply_error_state(&AuthError::LicenseRevoked).await;
-                    return UpdateEntitlementCheckResult::auth_required();
+                    return UpdateEntitlementCheckResult::license_revoked();
                 }
                 Err(AuthError::LicenseRefunded) => {
                     self.apply_error_state(&AuthError::LicenseRefunded).await;
-                    return UpdateEntitlementCheckResult::auth_required();
+                    return UpdateEntitlementCheckResult::license_refunded();
                 }
                 Err(AuthError::MachineMismatch) => {
                     self.apply_error_state(&AuthError::MachineMismatch).await;
@@ -965,6 +971,8 @@ impl AuthManager {
 
     fn result_from_refresh_failure(&self, error: &AuthError) -> UpdateEntitlementCheckResult {
         match error {
+            AuthError::LicenseRevoked => UpdateEntitlementCheckResult::license_revoked(),
+            AuthError::LicenseRefunded => UpdateEntitlementCheckResult::license_refunded(),
             AuthError::ServerError
             | AuthError::InvalidRequest
             | AuthError::StorageError(_)

@@ -105,6 +105,7 @@ pub fn calculate_render_layout(
         target_height,
         foreground_frame_height,
         background_effect_enabled,
+        &plan.effects.subtitle_overlay,
     );
 
     PreviewRenderLayout {

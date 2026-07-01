@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="../src/App.css" />
+    <title>AspectShift text style preview verification</title>
+  </head>
+  <body>
+    <pre id="result">RUNNING</pre>
+    <script>
+      const families = [
+        "AspectShift Text Clean",
+        "AspectShift Text Minimal",
+        "AspectShift Text Caption",
+        "AspectShift Text Meme",
+        "AspectShift Text Creator",
+        "AspectShift Text Gaming",
+        "AspectShift Text Cyberpunk",
+        "AspectShift Text Cinematic",
+        "AspectShift Text Retro",
+        "AspectShift Text Handwritten",
+      ];
+      const faceStyles = [
+        ["regular", "normal", 400],
+        ["bold", "normal", 700],
+        ["italic", "italic", 400],
+        ["bold-italic", "italic", 700],
+      ];
+
+      function pixelHash(family, fontStyle, fontWeight) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 600;
+        canvas.height = 140;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.fillStyle = "white";
+        context.font = `${fontStyle} ${fontWeight} 72px "${family}"`;
+        context.fillText("AspectShift Aa 123", 30, 95);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let hash = 2166136261;
+        for (let index = 3; index < pixels.length; index += 4) {
+          hash ^= pixels[index];
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+
+      (async () => {
+        try {
+          const lines = [];
+          for (const family of families) {
+            const familyHashes = new Map();
+            for (const [faceName, fontStyle, fontWeight] of faceStyles) {
+              const loaded = await document.fonts.load(
+                `${fontStyle} ${fontWeight} 72px "${family}"`,
+                "AspectShift Aa 123",
+              );
+              if (loaded.length !== 1 || loaded[0].status !== "loaded") {
+                throw new Error(`${family} / ${faceName} did not load exactly one bundled face`);
+              }
+              const hash = pixelHash(family, fontStyle, fontWeight);
+              if (familyHashes.has(hash)) {
+                throw new Error(`${family} ${faceName} rendered identically to ${familyHashes.get(hash)}`);
+              }
+              familyHashes.set(hash, faceName);
+            }
+
+            const probe = document.createElement("span");
+            probe.style.fontFamily = `"${family}"`;
+            probe.style.fontWeight = "700";
+            probe.style.fontStyle = "italic";
+            probe.style.textDecorationLine = "underline line-through";
+            probe.textContent = "AspectShift Aa 123";
+            document.body.appendChild(probe);
+            const computed = getComputedStyle(probe);
+            if (
+              computed.fontWeight !== "700" ||
+              computed.fontStyle !== "italic" ||
+              !computed.textDecorationLine.includes("underline") ||
+              !computed.textDecorationLine.includes("line-through")
+            ) {
+              throw new Error(`${family} failed the combined style computation`);
+            }
+            probe.remove();
+            lines.push(`${family}: 4/4 bundled faces loaded`);
+          }
+          document.getElementById("result").textContent =
+            `PASS\n${lines.join("\n")}\nAll text-overlay preview style controls resolve bundled faces.`;
+        } catch (error) {
+          document.getElementById("result").textContent = `FAIL\n${error.stack || error}`;
+          document.documentElement.dataset.failed = "true";
+        }
+      })();
+    </script>
+  </body>
+</html>

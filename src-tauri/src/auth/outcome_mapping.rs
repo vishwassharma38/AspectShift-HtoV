@@ -54,7 +54,9 @@ pub fn map_auth_error(error: &AuthError) -> AuthOutcomeMapping {
         AuthError::InvalidLicenseKey => {
             AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license_key")
         }
-        AuthError::InvalidLicense => AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license"),
+        AuthError::InvalidLicense => {
+            AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license")
+        }
         AuthError::InvalidLicenseTier => {
             AuthOutcomeMapping::new(AuthStatus::Invalid, "invalid_license_tier")
         }

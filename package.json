@@ -1,7 +1,7 @@
 {
   "name": "aspectshift-htov",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows.",
   "author": "Vishwas Sharma",
   "copyright": "Copyright © 2026 Vishwas Sharma",
