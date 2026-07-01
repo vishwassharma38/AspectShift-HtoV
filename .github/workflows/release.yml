@@ -56,10 +56,7 @@ jobs:
 
             This release includes:
             - more stability and bug fixes.
-            - better update entitlement flow and notification dialogs.
 
-            Updater artifact signing is separate from the licensing JWT chain.
-            The release is gated by the existing /api/updates/check entitlement flow in the app.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
