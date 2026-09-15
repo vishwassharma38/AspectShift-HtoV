@@ -22,6 +22,9 @@ pub struct BatchState {
     pub current_stage_id: Option<String>,
     pub current_stage_message: Option<String>,
     pub current_job_lifecycle_progress: f32,
+    // Per-job lifecycle progress (0..=100), so the duration-weighted global
+    // progress aggregation can account for every active job independently.
+    pub job_lifecycle_progress: HashMap<String, f32>,
 }
 
 pub struct BatchManager {
@@ -55,6 +58,7 @@ impl BatchManager {
                 current_stage_id: None,
                 current_stage_message: None,
                 current_job_lifecycle_progress: 0.0,
+                job_lifecycle_progress: HashMap::new(),
             })),
         }
     }
@@ -92,6 +96,7 @@ impl BatchManager {
         state.processed_duration_secs = 0.0;
         state.current_stage_id = None;
         state.current_stage_message = None;
+        state.job_lifecycle_progress.clear();
         state.current_job_lifecycle_progress = 0.0;
     }
 

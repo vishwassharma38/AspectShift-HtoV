@@ -46,6 +46,7 @@ impl LifecycleWeights {
 
 fn set_stage(
     state: &mut BatchState,
+    job_id: &str,
     stage_id: &str,
     stage_message: String,
     lifecycle_progress: f32,
@@ -54,6 +55,11 @@ fn set_stage(
     state.current_stage_message = Some(stage_message);
     state.current_job_lifecycle_progress =
         state.current_job_lifecycle_progress.max(lifecycle_progress);
+    state
+        .job_lifecycle_progress
+        .entry(job_id.to_string())
+        .and_modify(|current| *current = current.max(lifecycle_progress))
+        .or_insert(lifecycle_progress);
 }
 
 fn sanitize_terminal_state(state: &mut BatchState) {
@@ -115,6 +121,12 @@ async fn collect_valid_video_inputs(entries: Vec<String>) -> Vec<String> {
         }
     }
     files
+}
+
+enum JobOutcome {
+    Processed,
+    Skipped,
+    Cancelled,
 }
 
 pub async fn start_batch(
@@ -310,426 +322,28 @@ pub async fn start_batch(
                 let job = job.unwrap();
                 s.current_job_id = Some(job.id.clone());
                 s.current_job_lifecycle_progress = 0.0;
+                s.job_lifecycle_progress.insert(job.id.clone(), 0.0);
                 (job, s.cancellation_token.clone())
             };
 
             emit_batch_progress(&app_clone, &state_clone).await;
 
-            let job_id = job.id.clone();
-            let input_path = job.input_path.clone();
-            let output_path = PathBuf::from(&job.resolved_output_path);
-            let alt_output_path = job.alt_output_path.as_deref().map(Path::new);
-
-            if job.output.effects.skip_existing_enabled() {
-                {
-                    let mut s = state_clone.lock().await;
-                    set_stage(
-                        &mut s,
-                        "checking_existing_output",
-                        "Checking for existing output...".to_string(),
-                        2.0,
-                    );
-                }
-                emit_batch_progress(&app_clone, &state_clone).await;
-
-                if let Some(existing_path) =
-                    crate::video::convert::resolve_existing_output_for_skip(
-                        &app_clone,
-                        &output_path,
-                        alt_output_path,
-                    )
-                    .await
-                {
-                    {
-                        let mut s = state_clone.lock().await;
-                        let mut duration = 0.0;
-                        if let Some(p) = s.job_progress.get_mut(&job_id) {
-                            p.status = JobStatus::Completed;
-                            p.progress = 100.0;
-                            duration = p.duration_secs;
-                            let _ = app_clone.emit("batch://file-status", p.clone());
-                        }
-                        s.completed_jobs += 1;
-                        s.processed_duration_secs += duration;
-                        s.current_job_lifecycle_progress = 100.0;
-                        s.current_job_id = None;
-                        set_stage(
-                            &mut s,
-                            "skipping_existing_output",
-                            format!(
-                                "Skipped existing output: {}",
-                                existing_path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("output")
-                            ),
-                            100.0,
-                        );
-                    }
-                    emit_batch_progress(&app_clone, &state_clone).await;
-                    continue;
-                }
-            }
-
-            {
-                let mut s = state_clone.lock().await;
-                if let Some(p) = s.job_progress.get_mut(&job.id) {
-                    p.status = JobStatus::Processing;
-                    let _ = app_clone.emit("batch://file-status", p.clone());
-                }
-            }
-            emit_batch_progress(&app_clone, &state_clone).await;
-
-            let should_prepare_subtitles = job.output.effects.export_subtitles_enabled()
-                || job.output.effects.burn_subtitles_enabled();
-            let weights = LifecycleWeights::for_job(should_prepare_subtitles);
-
-            {
-                let mut s = state_clone.lock().await;
-                set_stage(
-                    &mut s,
-                    "preparing_video",
-                    format!(
-                        "Preparing {}",
-                        Path::new(&input_path)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("video")
-                    ),
-                    weights.prepare,
-                );
-            }
-            emit_batch_progress(&app_clone, &state_clone).await;
-
-            let mut prepared_subtitle = None;
-            if should_prepare_subtitles {
-                {
-                    let mut s = state_clone.lock().await;
-                    set_stage(
-                        &mut s,
-                        "preparing_subtitles",
-                        "Preparing subtitles...".to_string(),
-                        weights.prepare,
-                    );
-                }
-                emit_batch_progress(&app_clone, &state_clone).await;
-
-                let orientation_for_subtitles =
-                    match crate::video::probe::detect_orientation(&app_clone, &input_path).await {
-                        Ok(o) => o,
-                        Err(e) => {
-                            let failure =
-                                format!("Failed to detect orientation for subtitles: {}", e);
-                            let mut s = state_clone.lock().await;
-                            if let Some(p) = s.job_progress.get_mut(&job_id) {
-                                p.status = JobStatus::Failed(failure);
-                            }
-                            s.failed_jobs += 1;
-                            emit_batch_progress(&app_clone, &state_clone).await;
-                            continue;
-                        }
-                    };
-
-                let subtitle_job = crate::video::types::ResolvedJob {
-                    id: "subtitle-layout-job".to_string(),
-                    session_id: session_id.clone(),
-                    input_path: input_path.clone(),
-                    output_path: String::new(),
-                    alt_output_path: None,
-                    ratio: job.output.ratio.clone(),
-                    encoding: job.output.encoding.clone(),
-                    effects: job.output.effects.clone(),
-                    platform_config: job.output.platform_config.clone(),
-                    subtitle_path: None,
-                    subtitle_fonts_dir: None,
-                };
-
-                let subtitle_plan = match crate::video::preset_adapter::create_render_plan_resolved(
-                    &subtitle_job,
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let failure = e.to_string();
-                        let mut s = state_clone.lock().await;
-                        if let Some(p) = s.job_progress.get_mut(&job_id) {
-                            p.status = JobStatus::Failed(failure);
-                        }
-                        s.failed_jobs += 1;
-                        emit_batch_progress(&app_clone, &state_clone).await;
-                        continue;
-                    }
-                };
-
-                let subtitle_layout = crate::video::render_layout::calculate_render_layout(
-                    &subtitle_plan,
-                    &orientation_for_subtitles,
-                    None,
-                );
-
-                let subtitle_style_key = serde_json::to_string(&job.output.effects.subtitle_overlay)
-                    .unwrap_or_else(|_| "subtitle-style".to_string());
-                let subtitle_cache_key = format!(
-                    "{}|{}x{}|fg{}|blur{}|burn{}|export{}|{}",
-                    input_path,
-                    subtitle_layout.target_width,
-                    subtitle_layout.target_height,
-                    subtitle_layout.foreground_frame_height,
-                    job.output.effects.background_effect_enabled(),
-                    job.output.effects.burn_subtitles_enabled(),
-                    job.output.effects.export_subtitles_enabled(),
-                    subtitle_style_key
-                );
-
-                if let Some(path) = subtitle_cache.get(&subtitle_cache_key) {
-                    prepared_subtitle = Some(path.clone());
-                    {
-                        let mut s = state_clone.lock().await;
-                        set_stage(
-                            &mut s,
-                            "embedding_subtitles",
-                            "Embedding subtitles...".to_string(),
-                            weights.prepare + weights.subtitle,
-                        );
-                    }
-                    emit_batch_progress(&app_clone, &state_clone).await;
-                } else {
-                    let is_export = job.output.effects.export_subtitles_enabled();
-                    let sub_output_dir = if is_export {
-                        Path::new(&job.resolved_output_path)
-                            .parent()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|| ".".to_string())
-                    } else {
-                        crate::os_utils::OsUtils::get_temp_dir(&app_clone)
-                            .to_string_lossy()
-                            .to_string()
-                    };
-                    let source_duration_secs = {
-                        let s = state_clone.lock().await;
-                        s.job_progress
-                            .get(&job_id)
-                            .map(|p| p.duration_secs)
-                            .unwrap_or(0.0)
-                    };
-
-                    match prepare_subtitles(
-                        &app_clone,
-                        &input_path,
-                        &sub_output_dir,
-                        source_duration_secs,
-                        job.output.effects.burn_subtitles_enabled(),
-                        is_export,
-                        subtitle_layout.target_width,
-                        subtitle_layout.target_height,
-                        subtitle_layout.foreground_frame_height,
-                        job.output.effects.background_effect_enabled(),
-                        &job.output.effects.subtitle_overlay,
-                        Some(token.clone()),
-                        Some(Box::new({
-                            let state = state_clone.clone();
-                            let app = app_clone.clone();
-                            let session = session_id.clone();
-                            let token = token.clone();
-                            move |subtitle_percent: f32| {
-                                let state = state.clone();
-                                let app = app.clone();
-                                let session = session.clone();
-                                let token = token.clone();
-                                tokio::spawn(async move {
-                                    if token.is_cancelled() {
-                                        return;
-                                    }
-                                    let mut s = state.lock().await;
-                                    if s.session_id.as_deref() != Some(session.as_str()) {
-                                        return;
-                                    }
-                                    let lifecycle = weights.prepare
-                                        + (weights.subtitle
-                                            * (subtitle_percent.clamp(0.0, 100.0) / 100.0));
-                                    set_stage(
-                                        &mut s,
-                                        "generating_subtitles",
-                                        "Generating subtitles...".to_string(),
-                                        lifecycle,
-                                    );
-                                    drop(s);
-                                    emit_batch_progress(&app, &state).await;
-                                });
-                            }
-                        })),
-                    )
-                    .await
-                    {
-                        Ok(path) => {
-                            if !is_export {
-                                temp_srt_paths.push(path.path.clone());
-                                if let Some(fonts_dir) = &path.fonts_dir {
-                                    temp_subtitle_font_dirs.push(fonts_dir.clone());
-                                }
-                            }
-                            subtitle_cache.insert(subtitle_cache_key, path.clone());
-                            prepared_subtitle = Some(path);
-                            {
-                                let mut s = state_clone.lock().await;
-                                set_stage(
-                                    &mut s,
-                                    "embedding_subtitles",
-                                    "Embedding subtitles...".to_string(),
-                                    weights.prepare + weights.subtitle,
-                                );
-                            }
-                            emit_batch_progress(&app_clone, &state_clone).await;
-                        }
-                        Err(e) => {
-                            if token.is_cancelled() {
-                                let mut s = state_clone.lock().await;
-                                s.status = BatchStatus::Cancelled;
-                                sanitize_terminal_state(&mut s);
-                                break;
-                            }
-                            let failure = e.to_string();
-                            {
-                                let mut s = state_clone.lock().await;
-                                if let Some(p) = s.job_progress.get_mut(&job_id) {
-                                    p.status = JobStatus::Failed(failure.clone());
-                                }
-                                s.failed_jobs += 1;
-                            }
-                            emit_batch_progress(&app_clone, &state_clone).await;
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            let resolved_job = crate::video::types::ResolvedJob {
-                id: job_id.clone(),
-                session_id: session_id.clone(),
-                input_path: input_path.clone(),
-                output_path: job.resolved_output_path.clone(),
-                alt_output_path: job.alt_output_path.clone(),
-                ratio: job.output.ratio.clone(),
-                encoding: job.output.encoding.clone(),
-                effects: job.output.effects.clone(),
-                platform_config: job.output.platform_config.clone(),
-                subtitle_path: prepared_subtitle.as_ref().map(|prepared| prepared.path.clone()),
-                subtitle_fonts_dir: prepared_subtitle
-                    .as_ref()
-                    .and_then(|prepared| prepared.fonts_dir.clone()),
-            };
-
-            if token.is_cancelled() {
-                let mut s = state_clone.lock().await;
-                s.status = BatchStatus::Cancelled;
-                sanitize_terminal_state(&mut s);
-                break;
-            }
-
-            let state_c = state_clone.clone();
-            let jid_c = job_id.clone();
-            let app_c = app_clone.clone();
-            let session_c = session_id.clone();
-            let token_c = token.clone();
-
-            {
-                let mut s = state_clone.lock().await;
-                set_stage(
-                    &mut s,
-                    "preparing_render",
-                    "Preparing render...".to_string(),
-                    weights.prepare + weights.subtitle + weights.render_prepare,
-                );
-            }
-            emit_batch_progress(&app_clone, &state_clone).await;
-
-            let on_progress = Box::new(move |percent: f32| {
-                let percent = percent.clamp(0.0, 100.0);
-                let state = state_c.clone();
-                let jid = jid_c.clone();
-                let app = app_c.clone();
-                let session = session_c.clone();
-                let token = token_c.clone();
-                tokio::spawn(async move {
-                    if token.is_cancelled() {
-                        return;
-                    }
-                    {
-                        let mut s = state.lock().await;
-                        if s.session_id.as_deref() != Some(session.as_str()) {
-                            return;
-                        }
-                        if let Some(p) = s.job_progress.get_mut(&jid) {
-                            p.progress = percent;
-                        } else {
-                            return;
-                        }
-                        let render_base =
-                            weights.prepare + weights.subtitle + weights.render_prepare;
-                        let lifecycle =
-                            render_base + (weights.rendering * (percent.clamp(0.0, 100.0) / 100.0));
-                        set_stage(
-                            &mut s,
-                            "rendering_video",
-                            "Rendering video...".to_string(),
-                            lifecycle,
-                        );
-                    }
-                    emit_batch_progress(&app, &state).await;
-                });
-            });
-
-            let result = render_single(
+            let outcome = process_batch_job(
                 &app_clone,
-                resolved_job,
-                Some(token.clone()),
-                Some(on_progress),
+                &state_clone,
+                job,
+                token,
+                &session_id,
+                &mut subtitle_cache,
+                &mut temp_srt_paths,
+                &mut temp_subtitle_font_dirs,
             )
             .await;
 
-            if token.is_cancelled() {
-                let mut s = state_clone.lock().await;
-                s.status = BatchStatus::Cancelled;
-                sanitize_terminal_state(&mut s);
-                break;
+            match outcome {
+                JobOutcome::Cancelled => break,
+                JobOutcome::Processed | JobOutcome::Skipped => {}
             }
-
-            match result {
-                Ok(_) => {
-                    let mut s = state_clone.lock().await;
-                    set_stage(
-                        &mut s,
-                        "finalizing_output",
-                        "Finalizing output...".to_string(),
-                        100.0 - weights.finalize,
-                    );
-                    let mut duration = 0.0;
-                    if let Some(p) = s.job_progress.get_mut(&job_id) {
-                        p.status = JobStatus::Completed;
-                        p.progress = 100.0;
-                        duration = p.duration_secs;
-                        let _ = app_clone.emit("batch://file-status", p.clone());
-                    }
-                    s.completed_jobs += 1;
-                    s.processed_duration_secs += duration;
-                    s.current_job_lifecycle_progress = 100.0;
-                    s.current_job_id = None;
-                }
-                Err(e) => {
-                    let mut s = state_clone.lock().await;
-                    let mut duration = 0.0;
-                    if let Some(p) = s.job_progress.get_mut(&job_id) {
-                        p.status = JobStatus::Failed(e.to_string());
-                        duration = p.duration_secs;
-                        let _ = app_clone.emit("batch://file-status", p.clone());
-                    }
-                    s.failed_jobs += 1;
-                    s.processed_duration_secs += duration;
-                    s.current_job_lifecycle_progress = 100.0;
-                    s.current_job_id = None;
-                }
-            }
-
-            emit_batch_progress(&app_clone, &state_clone).await;
         }
 
         {
@@ -758,20 +372,490 @@ pub async fn start_batch(
     Ok(())
 }
 
+async fn process_batch_job(
+    app: &AppHandle,
+    state: &Arc<Mutex<BatchState>>,
+    job: BatchJob,
+    token: tokio_util::sync::CancellationToken,
+    session_id: &str,
+    subtitle_cache: &mut HashMap<String, PreparedSubtitle>,
+    temp_srt_paths: &mut Vec<PathBuf>,
+    temp_subtitle_font_dirs: &mut Vec<PathBuf>,
+) -> JobOutcome {
+    let job_id = job.id.clone();
+    let input_path = job.input_path.clone();
+    let output_path = PathBuf::from(&job.resolved_output_path);
+    let alt_output_path = job.alt_output_path.as_deref().map(Path::new);
+
+    if job.output.effects.skip_existing_enabled() {
+        {
+            let mut s = state.lock().await;
+            set_stage(
+                &mut s,
+                &job_id,
+                "checking_existing_output",
+                "Checking for existing output...".to_string(),
+                2.0,
+            );
+        }
+        emit_batch_progress(app, state).await;
+
+        if let Some(existing_path) = crate::video::convert::resolve_existing_output_for_skip(
+            app,
+            &output_path,
+            alt_output_path,
+        )
+        .await
+        {
+            {
+                let mut s = state.lock().await;
+                let mut duration = 0.0;
+                if let Some(p) = s.job_progress.get_mut(&job_id) {
+                    p.status = JobStatus::Completed;
+                    p.progress = 100.0;
+                    duration = p.duration_secs;
+                    let _ = app.emit("batch://file-status", p.clone());
+                }
+                s.completed_jobs += 1;
+                s.processed_duration_secs += duration;
+                s.current_job_lifecycle_progress = 100.0;
+                s.job_lifecycle_progress.insert(job_id.clone(), 100.0);
+                s.current_job_id = None;
+                set_stage(
+                    &mut s,
+                    &job_id,
+                    "skipping_existing_output",
+                    format!(
+                        "Skipped existing output: {}",
+                        existing_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("output")
+                    ),
+                    100.0,
+                );
+            }
+            emit_batch_progress(app, state).await;
+            return JobOutcome::Skipped;
+        }
+    }
+
+    {
+        let mut s = state.lock().await;
+        if let Some(p) = s.job_progress.get_mut(&job.id) {
+            p.status = JobStatus::Processing;
+            let _ = app.emit("batch://file-status", p.clone());
+        }
+    }
+    emit_batch_progress(app, state).await;
+
+    let should_prepare_subtitles = job.output.effects.export_subtitles_enabled()
+        || job.output.effects.burn_subtitles_enabled();
+    let weights = LifecycleWeights::for_job(should_prepare_subtitles);
+    let session_id = session_id.to_string();
+
+    {
+        let mut s = state.lock().await;
+        set_stage(
+            &mut s,
+            &job_id,
+            "preparing_video",
+            format!(
+                "Preparing {}",
+                Path::new(&input_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("video")
+            ),
+            weights.prepare,
+        );
+    }
+    emit_batch_progress(app, state).await;
+
+    let mut prepared_subtitle = None;
+    if should_prepare_subtitles {
+        {
+            let mut s = state.lock().await;
+            set_stage(
+                &mut s,
+                &job_id,
+                "preparing_subtitles",
+                "Preparing subtitles...".to_string(),
+                weights.prepare,
+            );
+        }
+        emit_batch_progress(app, state).await;
+
+        let orientation_for_subtitles =
+            match crate::video::probe::detect_orientation(app, &input_path).await {
+                Ok(o) => o,
+                Err(e) => {
+                    let failure = format!("Failed to detect orientation for subtitles: {}", e);
+                    let mut s = state.lock().await;
+                    if let Some(p) = s.job_progress.get_mut(&job_id) {
+                        p.status = JobStatus::Failed(failure);
+                    }
+                    s.failed_jobs += 1;
+                    emit_batch_progress(app, state).await;
+                    return JobOutcome::Processed;
+                }
+            };
+
+        let subtitle_job = crate::video::types::ResolvedJob {
+            id: "subtitle-layout-job".to_string(),
+            session_id: session_id.clone(),
+            input_path: input_path.clone(),
+            output_path: String::new(),
+            alt_output_path: None,
+            ratio: job.output.ratio.clone(),
+            encoding: job.output.encoding.clone(),
+            effects: job.output.effects.clone(),
+            platform_config: job.output.platform_config.clone(),
+            subtitle_path: None,
+            subtitle_fonts_dir: None,
+        };
+
+        let subtitle_plan =
+            match crate::video::preset_adapter::create_render_plan_resolved(&subtitle_job) {
+                Ok(p) => p,
+                Err(e) => {
+                    let failure = e.to_string();
+                    let mut s = state.lock().await;
+                    if let Some(p) = s.job_progress.get_mut(&job_id) {
+                        p.status = JobStatus::Failed(failure);
+                    }
+                    s.failed_jobs += 1;
+                    emit_batch_progress(app, state).await;
+                    return JobOutcome::Processed;
+                }
+            };
+
+        let subtitle_layout = crate::video::render_layout::calculate_render_layout(
+            &subtitle_plan,
+            &orientation_for_subtitles,
+            None,
+        );
+
+        let subtitle_style_key = serde_json::to_string(&job.output.effects.subtitle_overlay)
+            .unwrap_or_else(|_| "subtitle-style".to_string());
+        let subtitle_cache_key = format!(
+            "{}|{}x{}|fg{}|blur{}|burn{}|export{}|{}",
+            input_path,
+            subtitle_layout.target_width,
+            subtitle_layout.target_height,
+            subtitle_layout.foreground_frame_height,
+            job.output.effects.background_effect_enabled(),
+            job.output.effects.burn_subtitles_enabled(),
+            job.output.effects.export_subtitles_enabled(),
+            subtitle_style_key
+        );
+
+        if let Some(path) = subtitle_cache.get(&subtitle_cache_key) {
+            prepared_subtitle = Some(path.clone());
+            {
+                let mut s = state.lock().await;
+                set_stage(
+                    &mut s,
+                    &job_id,
+                    "embedding_subtitles",
+                    "Embedding subtitles...".to_string(),
+                    weights.prepare + weights.subtitle,
+                );
+            }
+            emit_batch_progress(app, state).await;
+        } else {
+            let is_export = job.output.effects.export_subtitles_enabled();
+            let sub_output_dir = if is_export {
+                Path::new(&job.resolved_output_path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string())
+            } else {
+                crate::os_utils::OsUtils::get_temp_dir(app)
+                    .to_string_lossy()
+                    .to_string()
+            };
+            let source_duration_secs = {
+                let s = state.lock().await;
+                s.job_progress
+                    .get(&job_id)
+                    .map(|p| p.duration_secs)
+                    .unwrap_or(0.0)
+            };
+
+            match prepare_subtitles(
+                app,
+                &input_path,
+                &sub_output_dir,
+                source_duration_secs,
+                job.output.effects.burn_subtitles_enabled(),
+                is_export,
+                subtitle_layout.target_width,
+                subtitle_layout.target_height,
+                subtitle_layout.foreground_frame_height,
+                job.output.effects.background_effect_enabled(),
+                &job.output.effects.subtitle_overlay,
+                Some(token.clone()),
+                Some(Box::new({
+                    let state = state.clone();
+                    let app = app.clone();
+                    let session = session_id.clone();
+                    let token = token.clone();
+                    let jid_c = job_id.clone();
+                    move |subtitle_percent: f32| {
+                        let state = state.clone();
+                        let app = app.clone();
+                        let session = session.clone();
+                        let token = token.clone();
+                        let jid_c = jid_c.clone();
+                        tokio::spawn(async move {
+                            if token.is_cancelled() {
+                                return;
+                            }
+                            let mut s = state.lock().await;
+                            if s.session_id.as_deref() != Some(session.as_str()) {
+                                return;
+                            }
+                            let lifecycle = weights.prepare
+                                + (weights.subtitle * (subtitle_percent.clamp(0.0, 100.0) / 100.0));
+                            set_stage(
+                                &mut s,
+                                &jid_c,
+                                "generating_subtitles",
+                                "Generating subtitles...".to_string(),
+                                lifecycle,
+                            );
+                            drop(s);
+                            emit_batch_progress(&app, &state).await;
+                        });
+                    }
+                })),
+            )
+            .await
+            {
+                Ok(path) => {
+                    if !is_export {
+                        temp_srt_paths.push(path.path.clone());
+                        if let Some(fonts_dir) = &path.fonts_dir {
+                            temp_subtitle_font_dirs.push(fonts_dir.clone());
+                        }
+                    }
+                    subtitle_cache.insert(subtitle_cache_key, path.clone());
+                    prepared_subtitle = Some(path);
+                    {
+                        let mut s = state.lock().await;
+                        set_stage(
+                            &mut s,
+                            &job_id,
+                            "embedding_subtitles",
+                            "Embedding subtitles...".to_string(),
+                            weights.prepare + weights.subtitle,
+                        );
+                    }
+                    emit_batch_progress(app, state).await;
+                }
+                Err(e) => {
+                    if token.is_cancelled() {
+                        let mut s = state.lock().await;
+                        s.status = BatchStatus::Cancelled;
+                        sanitize_terminal_state(&mut s);
+                        return JobOutcome::Cancelled;
+                    }
+                    let failure = e.to_string();
+                    {
+                        let mut s = state.lock().await;
+                        if let Some(p) = s.job_progress.get_mut(&job_id) {
+                            p.status = JobStatus::Failed(failure.clone());
+                        }
+                        s.failed_jobs += 1;
+                    }
+                    emit_batch_progress(app, state).await;
+                    return JobOutcome::Processed;
+                }
+            }
+        }
+    }
+
+    let resolved_job = crate::video::types::ResolvedJob {
+        id: job_id.clone(),
+        session_id: session_id.clone(),
+        input_path: input_path.clone(),
+        output_path: job.resolved_output_path.clone(),
+        alt_output_path: job.alt_output_path.clone(),
+        ratio: job.output.ratio.clone(),
+        encoding: job.output.encoding.clone(),
+        effects: job.output.effects.clone(),
+        platform_config: job.output.platform_config.clone(),
+        subtitle_path: prepared_subtitle
+            .as_ref()
+            .map(|prepared| prepared.path.clone()),
+        subtitle_fonts_dir: prepared_subtitle
+            .as_ref()
+            .and_then(|prepared| prepared.fonts_dir.clone()),
+    };
+
+    if token.is_cancelled() {
+        let mut s = state.lock().await;
+        s.status = BatchStatus::Cancelled;
+        sanitize_terminal_state(&mut s);
+        return JobOutcome::Cancelled;
+    }
+
+    let state_c = state.clone();
+    let jid_c = job_id.clone();
+    let app_c = app.clone();
+    let session_c = session_id.clone();
+    let token_c = token.clone();
+
+    {
+        let mut s = state.lock().await;
+        set_stage(
+            &mut s,
+            &job_id,
+            "preparing_render",
+            "Preparing render...".to_string(),
+            weights.prepare + weights.subtitle + weights.render_prepare,
+        );
+    }
+    emit_batch_progress(app, state).await;
+
+    let on_progress = Box::new(move |percent: f32| {
+        let percent = percent.clamp(0.0, 100.0);
+        let state = state_c.clone();
+        let jid = jid_c.clone();
+        let app = app_c.clone();
+        let session = session_c.clone();
+        let token = token_c.clone();
+        tokio::spawn(async move {
+            if token.is_cancelled() {
+                return;
+            }
+            {
+                let mut s = state.lock().await;
+                if s.session_id.as_deref() != Some(session.as_str()) {
+                    return;
+                }
+                if let Some(p) = s.job_progress.get_mut(&jid) {
+                    p.progress = percent;
+                } else {
+                    return;
+                }
+                let render_base = weights.prepare + weights.subtitle + weights.render_prepare;
+                let lifecycle =
+                    render_base + (weights.rendering * (percent.clamp(0.0, 100.0) / 100.0));
+                set_stage(
+                    &mut s,
+                    &jid,
+                    "rendering_video",
+                    "Rendering video...".to_string(),
+                    lifecycle,
+                );
+            }
+            emit_batch_progress(&app, &state).await;
+        });
+    });
+
+    let result = render_single(app, resolved_job, Some(token.clone()), Some(on_progress)).await;
+
+    if token.is_cancelled() {
+        let mut s = state.lock().await;
+        s.status = BatchStatus::Cancelled;
+        sanitize_terminal_state(&mut s);
+        return JobOutcome::Cancelled;
+    }
+
+    match result {
+        Ok(_) => {
+            let mut s = state.lock().await;
+            set_stage(
+                &mut s,
+                &job_id,
+                "finalizing_output",
+                "Finalizing output...".to_string(),
+                100.0 - weights.finalize,
+            );
+            let mut duration = 0.0;
+            if let Some(p) = s.job_progress.get_mut(&job_id) {
+                p.status = JobStatus::Completed;
+                p.progress = 100.0;
+                duration = p.duration_secs;
+                let _ = app.emit("batch://file-status", p.clone());
+            }
+            s.completed_jobs += 1;
+            s.processed_duration_secs += duration;
+            s.current_job_lifecycle_progress = 100.0;
+            s.job_lifecycle_progress.insert(job_id.clone(), 100.0);
+            s.current_job_id = None;
+        }
+        Err(e) => {
+            let mut s = state.lock().await;
+            let mut duration = 0.0;
+            if let Some(p) = s.job_progress.get_mut(&job_id) {
+                p.status = JobStatus::Failed(e.to_string());
+                duration = p.duration_secs;
+                let _ = app.emit("batch://file-status", p.clone());
+            }
+            s.failed_jobs += 1;
+            s.processed_duration_secs += duration;
+            s.current_job_lifecycle_progress = 100.0;
+            s.job_lifecycle_progress.insert(job_id.clone(), 100.0);
+            s.current_job_id = None;
+        }
+    }
+
+    emit_batch_progress(app, state).await;
+
+    JobOutcome::Processed
+}
+
+/// Duration-weighted aggregation of processed time across all active jobs.
+///
+/// `active_jobs` is a slice of `(progress_ratio, duration_secs)` pairs where
+/// `progress_ratio` is normalized to `0.0..=1.0`. Completed duration is the
+/// raw duration already accumulated by finished jobs and is added once. Every
+/// active job contributes `progress_ratio * duration_secs`; queued/not-started
+/// jobs are never passed in and therefore contribute nothing.
+fn calculate_processed_duration(completed_duration_secs: f64, active_jobs: &[(f32, f64)]) -> f64 {
+    let mut total = completed_duration_secs;
+    for &(progress_ratio, duration_secs) in active_jobs {
+        total += (progress_ratio as f64) * duration_secs;
+    }
+    total
+}
+
+/// Collects the duration-weighted contribution of every currently-active job.
+///
+/// A job is active iff its `FileProgress.status` is `Processing`. For each such
+/// job the lifecycle progress recorded per job (from `set_stage`) is converted
+/// to a ratio and paired with its duration. The result is ready to feed into
+/// `calculate_processed_duration`; this deliberately does not depend on
+/// `current_job_id` identifying the only active job.
+fn active_job_duration_contributions(state: &BatchState) -> Vec<(f32, f64)> {
+    state
+        .job_progress
+        .iter()
+        .filter(|(_, p)| matches!(p.status, JobStatus::Processing))
+        .map(|(job_id, p)| {
+            let lifecycle = state
+                .job_lifecycle_progress
+                .get(job_id)
+                .copied()
+                .unwrap_or(p.progress)
+                .clamp(0.0, 100.0);
+            ((lifecycle / 100.0), p.duration_secs)
+        })
+        .collect()
+}
+
 fn calculate_stats(state: &BatchState) -> (f32, f32, Option<f64>, f64) {
     let total = state.total_jobs;
     let completed = state.completed_jobs;
     let failed = state.failed_jobs;
 
-    let mut processed_secs = state.processed_duration_secs;
-    if let Some(current_id) = &state.current_job_id {
-        if let Some(p) = state.job_progress.get(current_id) {
-            if matches!(p.status, JobStatus::Processing) {
-                let lifecycle = state.current_job_lifecycle_progress.clamp(0.0, 100.0);
-                processed_secs += (lifecycle as f64 / 100.0) * p.duration_secs;
-            }
-        }
-    }
+    let mut processed_secs = calculate_processed_duration(
+        state.processed_duration_secs,
+        &active_job_duration_contributions(state),
+    );
     processed_secs = processed_secs.clamp(0.0, state.total_duration_secs.max(0.0));
 
     let percentage = if state.total_duration_secs > 0.0 {
@@ -874,4 +958,197 @@ async fn emit_batch_progress(app: &AppHandle, state_mutex: &Arc<Mutex<BatchState
             current_stage_message: state.current_stage_message.clone(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::video::types::{AspectRatio, SelectionMetadata, TargetType};
+    use std::collections::VecDeque;
+    use tokio_util::sync::CancellationToken;
+
+    fn assert_duration_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "expected processed duration {}, got {}",
+            expected,
+            actual
+        );
+    }
+
+    fn assert_percent_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1e-2,
+            "expected percentage {}, got {}",
+            expected,
+            actual
+        );
+    }
+
+    fn test_file_progress(job_id: &str, duration_secs: f64, status: JobStatus) -> FileProgress {
+        FileProgress {
+            session_id: "test-session".to_string(),
+            job_id: job_id.to_string(),
+            file_path: format!("{}.mp4", job_id),
+            ratio: AspectRatio::Ratio9x16,
+            progress: 0.0,
+            status,
+            thumbnail_path: None,
+            duration_secs,
+            selection: SelectionMetadata {
+                source_type: TargetType::AspectRatio,
+                source_id: "test-source".to_string(),
+                label: "test".to_string(),
+            },
+        }
+    }
+
+    fn test_batch_state(
+        files: Vec<FileProgress>,
+        completed_jobs: usize,
+        processed_duration_secs: f64,
+        total_duration_secs: f64,
+        lifecycle: &[(&str, f32)],
+        current_job_id: Option<&str>,
+    ) -> BatchState {
+        let job_progress = files
+            .into_iter()
+            .map(|p| (p.job_id.clone(), p))
+            .collect::<HashMap<_, _>>();
+        let job_lifecycle_progress = lifecycle
+            .iter()
+            .map(|(id, value)| ((*id).to_string(), *value))
+            .collect::<HashMap<_, _>>();
+        let all_job_ids = job_progress.keys().cloned().collect::<Vec<_>>();
+        let total_jobs = all_job_ids.len();
+        BatchState {
+            session_id: Some("test-session".to_string()),
+            queue: VecDeque::new(),
+            job_progress,
+            all_job_ids,
+            current_job_id: current_job_id.map(|id| id.to_string()),
+            completed_jobs,
+            failed_jobs: 0,
+            total_jobs,
+            cancellation_token: CancellationToken::new(),
+            status: BatchStatus::Processing,
+            start_time: None,
+            total_duration_secs,
+            processed_duration_secs,
+            current_stage_id: None,
+            current_stage_message: None,
+            current_job_lifecycle_progress: 0.0,
+            job_lifecycle_progress,
+        }
+    }
+
+    #[test]
+    fn multi_job_aggregation_sums_all_active_jobs() {
+        let active = &[(0.8, 100.0), (0.3, 200.0), (0.5, 300.0)];
+        let total = calculate_processed_duration(0.0, active);
+        assert_duration_close(total, 290.0);
+    }
+
+    #[test]
+    fn aggregation_includes_completed_duration_once() {
+        assert_duration_close(calculate_processed_duration(120.0, &[]), 120.0);
+
+        let active = &[(0.8, 100.0), (0.3, 200.0), (0.5, 300.0)];
+        let total = calculate_processed_duration(120.0, active);
+        assert_duration_close(total, 410.0);
+    }
+
+    #[test]
+    fn calculate_stats_single_active_job_matches_old_formula() {
+        let state = test_batch_state(
+            vec![
+                test_file_progress("done", 120.0, JobStatus::Completed),
+                test_file_progress("active", 100.0, JobStatus::Processing),
+            ],
+            1,
+            120.0,
+            220.0,
+            &[("active", 80.0)],
+            Some("active"),
+        );
+
+        let (percentage, _, _, processed_secs) = calculate_stats(&state);
+        assert_duration_close(processed_secs, 200.0);
+        assert_percent_close(percentage, 200.0 / 220.0 * 100.0);
+    }
+
+    #[test]
+    fn calculate_stats_sums_all_active_jobs_regardless_of_current_job_id() {
+        let state = test_batch_state(
+            vec![
+                test_file_progress("a", 100.0, JobStatus::Processing),
+                test_file_progress("b", 200.0, JobStatus::Processing),
+                test_file_progress("c", 300.0, JobStatus::Processing),
+            ],
+            0,
+            0.0,
+            600.0,
+            &[("a", 80.0), ("b", 30.0), ("c", 50.0)],
+            Some("c"),
+        );
+
+        let (percentage, _, _, processed_secs) = calculate_stats(&state);
+        assert_duration_close(processed_secs, 290.0);
+        assert_percent_close(percentage, 290.0 / 600.0 * 100.0);
+    }
+
+    #[test]
+    fn calculate_stats_mixed_batch_includes_completed_and_all_active() {
+        let state = test_batch_state(
+            vec![
+                test_file_progress("done", 250.0, JobStatus::Completed),
+                test_file_progress("active-1", 100.0, JobStatus::Processing),
+                test_file_progress("active-2", 300.0, JobStatus::Processing),
+                test_file_progress("queued", 75.0, JobStatus::Queued),
+            ],
+            1,
+            250.0,
+            725.0,
+            &[("active-1", 80.0), ("active-2", 50.0)],
+            Some("active-2"),
+        );
+
+        let (_, _, _, processed_secs) = calculate_stats(&state);
+        assert_duration_close(processed_secs, 480.0);
+    }
+
+    #[test]
+    fn calculate_stats_without_active_jobs_only_counts_completed() {
+        let state = test_batch_state(
+            vec![
+                test_file_progress("done", 100.0, JobStatus::Completed),
+                test_file_progress("queued", 50.0, JobStatus::Queued),
+            ],
+            1,
+            100.0,
+            150.0,
+            &[],
+            None,
+        );
+
+        let (percentage, _, _, processed_secs) = calculate_stats(&state);
+        assert_duration_close(processed_secs, 100.0);
+        assert_percent_close(percentage, 100.0 / 150.0 * 100.0);
+    }
+
+    #[test]
+    fn calculate_stats_zero_progress_active_job_contributes_nothing() {
+        let state = test_batch_state(
+            vec![test_file_progress("active", 200.0, JobStatus::Processing)],
+            0,
+            0.0,
+            200.0,
+            &[("active", 0.0)],
+            Some("active"),
+        );
+
+        let (percentage, _, _, processed_secs) = calculate_stats(&state);
+        assert_duration_close(processed_secs, 0.0);
+        assert_percent_close(percentage, 0.0);
+    }
 }

@@ -294,7 +294,7 @@ pub async fn render_single(
     }
 
     // 3. Acquire Lock
-    let _lock = ProcessingLock::acquire(app, input)?;
+    let _lock = ProcessingLock::acquire(app, input, output_path)?;
 
     // 4. Ensure output directory exists
     if let Some(parent) = output_path_buf.parent() {
@@ -388,6 +388,7 @@ pub async fn render_single(
         text_fonts_dir,
         subtitle_str,
         subtitle_fonts_dir,
+        None,
     );
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
