@@ -79,7 +79,10 @@ fn make_test_video(path: &Path, duration_secs: u32, with_audio: bool) {
     args.push("-f".into());
     args.push("lavfi".into());
     args.push("-i".into());
-    args.push(format!("testsrc=duration={}:size=640x360:rate=30", duration_secs));
+    args.push(format!(
+        "testsrc=duration={}:size=640x360:rate=30",
+        duration_secs
+    ));
     if with_audio {
         args.push("-f".into());
         args.push("lavfi".into());
@@ -296,7 +299,11 @@ async fn single_video_renders_with_progress_and_events() {
     assert_eq!(terminal.failed_jobs, 0);
 
     let expected = out_dir.join("in_9x16.mp4");
-    assert!(expected.exists(), "expected output at {}", expected.display());
+    assert!(
+        expected.exists(),
+        "expected output at {}",
+        expected.display()
+    );
     assert!(std::fs::metadata(&expected).unwrap().len() > 0);
     let probe = probe_video(&expected);
     assert!(
@@ -312,7 +319,9 @@ async fn single_video_renders_with_progress_and_events() {
         assert_eq!(last.status, BatchStatus::Completed);
         assert_eq!(last.percentage, 100.0);
         assert!(
-            snaps.iter().any(|s| s.percentage > 0.0 && s.percentage < 100.0),
+            snaps
+                .iter()
+                .any(|s| s.percentage > 0.0 && s.percentage < 100.0),
             "expected at least one intermediate progress value"
         );
         assert!(
@@ -333,11 +342,19 @@ async fn single_video_renders_with_progress_and_events() {
 }
 
 // ---------------------------------------------------------------------------
-// B: multiple videos are processed sequentially (never more than one active
-// job at a time) with correct tallies.
+// B: multiple videos process correctly with tallies, progress and outputs
+// valid, and the number of simultaneously-Processing jobs never exceeds the
+// machine's computed concurrency capacity. Before Stage 2.3 capacity was
+// forced to 1, so this also verified strict sequentiality; Stage 2.3 enables
+// real concurrency, so the invariant is the capacity bound, not "<= 1".
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn multiple_videos_process_sequentially_without_overlap() {
+async fn multiple_videos_process_without_exceeding_capacity() {
+    use aspectshift_htov_lib::video::concurrency::{
+        calculate_safe_concurrency, detect_system_resources,
+    };
+    let capacity = calculate_safe_concurrency(&detect_system_resources()).total_capacity;
+
     let app = app();
     let root = test_dir("multi");
     let out_dir = root.join("out");
@@ -363,7 +380,10 @@ async fn multiple_videos_process_sequentially_without_overlap() {
 
     let manager = app.state::<BatchManager>();
     let targets = vec![output_job("job-b", AspectRatio::Ratio9x16, base_effects())];
-    let input_strs: Vec<String> = inputs.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let input_strs: Vec<String> = inputs
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     start_batch(
         app.handle().clone(),
         manager,
@@ -380,7 +400,11 @@ async fn multiple_videos_process_sequentially_without_overlap() {
     assert_eq!(outputs.len(), 3, "expected three outputs: {outputs:?}");
     for out in &outputs {
         let probe = probe_video(out);
-        assert!(probe.contains("duration"), "invalid output {}", out.display());
+        assert!(
+            probe.contains("duration"),
+            "invalid output {}",
+            out.display()
+        );
     }
 
     {
@@ -389,7 +413,8 @@ async fn multiple_videos_process_sequentially_without_overlap() {
         let last = snaps.last().unwrap();
         assert_eq!(last.status, BatchStatus::Completed);
         assert_eq!(last.percentage, 100.0);
-        // Sequential guarantee: no snapshot may show more than one Processing job.
+        // Capacity bound: no snapshot may show more Processing jobs than the
+        // machine's computed total_capacity permits.
         for snap in snaps.iter() {
             let processing = snap
                 .queue
@@ -397,8 +422,8 @@ async fn multiple_videos_process_sequentially_without_overlap() {
                 .filter(|f| matches!(f.status, JobStatus::Processing))
                 .count();
             assert!(
-                processing <= 1,
-                "more than one job Processing in a single snapshot ({processing})"
+                processing <= capacity,
+                "more than {capacity} jobs Processing in a single snapshot ({processing})"
             );
         }
         assert_eq!(last.completed_jobs, 3);
@@ -506,7 +531,10 @@ async fn invalid_input_does_not_abort_batch() {
 
     let terminal = wait_for_terminal(&app, Duration::from_secs(120)).await;
     assert_completed(&terminal, 1);
-    assert_eq!(terminal.failed_jobs, 0, "probe-rejected inputs must not count as failed jobs (baseline behavior)");
+    assert_eq!(
+        terminal.failed_jobs, 0,
+        "probe-rejected inputs must not count as failed jobs (baseline behavior)"
+    );
 
     assert!(
         out_dir.join("valid_9x16.mp4").exists(),
@@ -521,7 +549,11 @@ async fn invalid_input_does_not_abort_batch() {
     // (never added to all_job_ids). Only D2 tests the surfaced-failure path.
     let manager = app.state::<BatchManager>();
     let progress = get_batch_status(manager).await.unwrap();
-    assert_eq!(progress.queue.len(), 1, "queue should only contain the valid job");
+    assert_eq!(
+        progress.queue.len(),
+        1,
+        "queue should only contain the valid job"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -593,7 +625,11 @@ async fn skip_existing_preserves_output_and_continues() {
     assert!(before_len > 0);
 
     let manager = app.state::<BatchManager>();
-    let targets = vec![output_job("job-e", AspectRatio::Ratio9x16, effects_with_skip())];
+    let targets = vec![output_job(
+        "job-e",
+        AspectRatio::Ratio9x16,
+        effects_with_skip(),
+    )];
     let inputs = [
         existing_input.to_string_lossy().to_string(),
         render_input.to_string_lossy().to_string(),
@@ -635,13 +671,19 @@ async fn subtitles_export_and_burn_with_stubbed_whisper() {
     let out_dir = root.join("out");
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    install_whisper_stub(&app).await.expect("whisper stub install");
+    install_whisper_stub(&app)
+        .await
+        .expect("whisper stub install");
 
     let input = root.join("speech.mp4");
     make_test_video(&input, 4, true);
 
     let manager = app.state::<BatchManager>();
-    let targets = vec![output_job("job-f", AspectRatio::Ratio9x16, effects_with_subtitles())];
+    let targets = vec![output_job(
+        "job-f",
+        AspectRatio::Ratio9x16,
+        effects_with_subtitles(),
+    )];
     start_batch(
         app.handle().clone(),
         manager,
@@ -673,23 +715,26 @@ async fn subtitles_export_and_burn_with_stubbed_whisper() {
         collect_outputs(&out_dir)
     );
     let probe = probe_video(&output);
-    assert!(probe.contains("duration"), "invalid burned-in output: {probe}");
+    assert!(
+        probe.contains("duration"),
+        "invalid burned-in output: {probe}"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
 
 async fn install_whisper_stub(app: &tauri::App) -> Result<(), String> {
-    let runtime = aspectshift_htov_lib::runtime_paths::RuntimePaths::from_app(
-        &app.handle().clone(),
-    )
-    .map_err(|e| e.to_string())?;
+    let runtime =
+        aspectshift_htov_lib::runtime_paths::RuntimePaths::from_app(&app.handle().clone())
+            .map_err(|e| e.to_string())?;
     let bin_dir = runtime.dependency_current_dir("whisper");
     let model_dir = runtime.model_current_dir("whisper");
     std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
 
     let stub = std::path::PathBuf::from(env!("CARGO_BIN_EXE_whisper_stub"));
-    let dest = bin_dir.join(aspectshift_htov_lib::runtime_paths::RuntimePaths::whisper_binary_default_filename());
+    let dest = bin_dir
+        .join(aspectshift_htov_lib::runtime_paths::RuntimePaths::whisper_binary_default_filename());
     std::fs::copy(&stub, &dest).map_err(|e| e.to_string())?;
 
     let model = model_dir.join("ggml-medium.en.bin");

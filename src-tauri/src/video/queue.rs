@@ -29,6 +29,9 @@ pub struct BatchState {
 
 pub struct BatchManager {
     pub state: Arc<Mutex<BatchState>>,
+    /// Live free-space provider for the Stage 3.3 disk admission gate. Shared
+    /// by reference so a batch's scheduler can query it per admitted job.
+    pub disk_source: Arc<dyn crate::video::concurrency::DiskSpaceSource>,
 }
 
 pub(crate) fn clear_terminal_progress_fields(state: &mut BatchState) {
@@ -40,6 +43,15 @@ pub(crate) fn clear_terminal_progress_fields(state: &mut BatchState) {
 
 impl BatchManager {
     pub fn new() -> Self {
+        Self::with_disk_source(Arc::new(crate::video::concurrency::SystemDiskSpaceSource))
+    }
+
+    /// Creates a manager with an injected disk-space source (Stage 3.3). Tests
+    /// and benchmarks use this to simulate low-disk conditions deterministically;
+    /// production always uses the real system source via [`BatchManager::new`].
+    pub fn with_disk_source(
+        disk_source: Arc<dyn crate::video::concurrency::DiskSpaceSource>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(BatchState {
                 session_id: None,
@@ -60,6 +72,7 @@ impl BatchManager {
                 current_job_lifecycle_progress: 0.0,
                 job_lifecycle_progress: HashMap::new(),
             })),
+            disk_source,
         }
     }
 
@@ -103,13 +116,21 @@ impl BatchManager {
     pub async fn cancel(&self) {
         let token = {
             let mut state = self.state.lock().await;
-            state.status = BatchStatus::Cancelled;
-            clear_terminal_progress_fields(&mut state);
-            // Mark all non-terminal jobs as cancelled in the progress map
+            // Stage 2.5 Phase A — cancellation is *requested*, not yet complete.
+            // The batch-level status deliberately stays `Processing` so the UI
+            // never sees `Cancelled` while in-flight FFmpeg children are still
+            // shutting down. Cancelling the token is what stops the scheduler
+            // from admitting further work; the scheduler flips the status to
+            // `Cancelled` only after every spawned task has actually exited
+            // (and, per `run_ffmpeg`, its child process has been terminated).
+            //
+            // Only jobs that have never started running are marked cancelled
+            // here. In-flight jobs keep their `Processing` status so their true
+            // exit is represented by the task's own terminal transition when it
+            // observes the cancellation token.
             for progress in state.job_progress.values_mut() {
                 match progress.status {
                     crate::video::types::JobStatus::Queued
-                    | crate::video::types::JobStatus::Processing
                     | crate::video::types::JobStatus::Pending => {
                         progress.status = crate::video::types::JobStatus::Cancelled;
                     }
@@ -123,5 +144,11 @@ impl BatchManager {
 
     pub async fn is_processing(&self) -> bool {
         self.state.lock().await.status == BatchStatus::Processing
+    }
+}
+
+impl Default for BatchManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

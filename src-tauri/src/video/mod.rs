@@ -1,4 +1,5 @@
 pub mod batch_processor;
+pub mod concurrency;
 pub mod config;
 pub mod convert;
 pub mod ffmpeg;
@@ -11,6 +12,7 @@ pub mod presets;
 pub mod probe;
 pub mod queue;
 pub mod render_layout;
+pub mod scheduler;
 pub mod targets;
 pub mod text_fonts;
 pub mod types;
@@ -121,6 +123,7 @@ pub async fn compute_preview_layout(
         platform_config: request.platform_config,
         subtitle_path: None,
         subtitle_fonts_dir: None,
+        threads_per_job: None,
     };
 
     let plan =
@@ -179,6 +182,7 @@ pub async fn convert_to_ratio(
         platform_config: job.platform_config,
         subtitle_path: None,
         subtitle_fonts_dir: None,
+        threads_per_job: None,
     };
 
     convert::render_single(&app, resolved_job, None, None)
@@ -199,8 +203,11 @@ pub async fn start_batch(
 }
 
 #[tauri::command]
-pub async fn cancel_batch(manager: State<'_, queue::BatchManager>) -> Result<(), StructuredError> {
-    batch_processor::cancel_batch(manager)
+pub async fn cancel_batch(
+    app: AppHandle,
+    manager: State<'_, queue::BatchManager>,
+) -> Result<(), StructuredError> {
+    batch_processor::cancel_batch(app, manager)
         .await
         .map_err(|e| StructuredError {
             code: "operation_failed".to_string(),

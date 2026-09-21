@@ -165,8 +165,17 @@ async fn finalize_temp_output(
         let _ = std::fs::remove_file(final_output_path);
     }
 
-    std::fs::rename(temp_output_path, final_output_path)?;
-    Ok(())
+    match std::fs::rename(temp_output_path, final_output_path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Do not strand a full-length temp artifact when the rename fails:
+            // it would masquerade as a completed output and quietly consume
+            // disk space that the Stage 3.3 gate accounts for. Best-effort
+            // removal keeps the failure surface clean.
+            let _ = std::fs::remove_file(temp_output_path);
+            Err(VideoError::IoError(e))
+        }
+    }
 }
 
 pub async fn prepare_subtitles(
@@ -388,7 +397,7 @@ pub async fn render_single(
         text_fonts_dir,
         subtitle_str,
         subtitle_fonts_dir,
-        None,
+        job.threads_per_job,
     );
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 

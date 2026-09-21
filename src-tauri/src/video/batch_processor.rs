@@ -1,6 +1,7 @@
 use crate::os_utils::OsUtils;
 use crate::video::convert::{prepare_subtitles, render_single, PreparedSubtitle};
 use crate::video::queue::{clear_terminal_progress_fields, BatchManager, BatchState};
+use crate::video::scheduler::{self, classify_video_error, FailureClass};
 use crate::video::targets::normalize_targets;
 use crate::video::types::{
     BatchJob, BatchJobSettings, BatchProgress, BatchStatus, FileProgress, JobStatus,
@@ -127,6 +128,13 @@ enum JobOutcome {
     Processed,
     Skipped,
     Cancelled,
+    /// A classified failure (Stage 3.4). The job state has been recorded for
+    /// user-facing feedback, but the batch-level failure accounting is
+    /// deferred to the scheduler, which decides whether to retry.
+    ClassifiedFailed {
+        message: String,
+        failure_class: FailureClass,
+    },
 }
 
 pub async fn start_batch(
@@ -290,62 +298,98 @@ pub async fn start_batch(
     drop(state);
     emit_batch_progress(&app, &manager.state).await;
 
+    // Stage 2.3 + Stage 3.1: compute the ConcurrencyPlan that will govern this
+    // batch. `concurrency::plan_for_batch_start()` performs a *live*
+    // `detect_system_resources()` read at every batch start and derives a
+    // brand-new plan from it (Stage 1.3 CPU tier + RAM gate + hard cap), then
+    // records a concise diagnostic. No resource snapshot, capacity value, or
+    // plan is cached or shared between batches — Batch B always re-observes
+    // current RAM before its concurrency plan is finalised. The Stage 2.7
+    // benchmark override (`ASPECTSHIFT_BENCH_TOTAL_CAPACITY`) is read and
+    // honored inside the planner; this call site never touches it.
+    let plan = crate::video::concurrency::plan_for_batch_start();
+    let total_capacity = plan.total_capacity;
+    let ffmpeg_threads_per_job = plan.ffmpeg_threads_per_job;
+
     let state_clone = Arc::clone(&manager.state);
     let app_clone = app.clone();
+    // Stage 3.3: the live disk-space source is captured here (before the task
+    // spawn) so the scheduler's admission gate can be built inside the task.
+    let disk_source = Arc::clone(&manager.disk_source);
 
     tokio::spawn(async move {
-        let mut subtitle_cache: HashMap<String, PreparedSubtitle> = HashMap::new();
-        let mut temp_srt_paths: Vec<PathBuf> = Vec::new();
-        let mut temp_subtitle_font_dirs: Vec<PathBuf> = Vec::new();
+        let subtitle_cache: Arc<Mutex<HashMap<String, PreparedSubtitle>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let temp_srt_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let temp_subtitle_font_dirs: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
-        loop {
-            let (job, token) = {
-                let mut s = state_clone.lock().await;
-
-                if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
-                    s.status = BatchStatus::Cancelled;
-                    sanitize_terminal_state(&mut s);
-                    break;
-                }
-
-                let job = s.queue.pop_front();
-                if job.is_none() {
-                    s.status = if s.failed_jobs > 0 {
-                        BatchStatus::Failed
-                    } else {
-                        BatchStatus::Completed
+        // Stage 2.2/2.3: Route batch execution through the Stage 2.1
+        // capacity-based scheduler. Stage 2.2 forced total_capacity = 1 for
+        // sequential parity; Stage 2.3 removed that override so the scheduler
+        // runs with the real Phase 1 ConcurrencyPlan value (which may exceed
+        // 1, enabling genuinely concurrent FFmpeg jobs).
+        let process_fn = {
+            let state = Arc::clone(&state_clone);
+            let app = app_clone.clone();
+            let session_id = session_id.clone();
+            let ffmpeg_threads_per_job = ffmpeg_threads_per_job;
+            let subtitle_cache = Arc::clone(&subtitle_cache);
+            let temp_srt_paths = Arc::clone(&temp_srt_paths);
+            let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
+            move |job: BatchJob| {
+                let state = Arc::clone(&state);
+                let app = app.clone();
+                let session_id = session_id.clone();
+                let ffmpeg_threads_per_job = ffmpeg_threads_per_job;
+                let subtitle_cache = Arc::clone(&subtitle_cache);
+                let temp_srt_paths = Arc::clone(&temp_srt_paths);
+                let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
+                async move {
+                    let token = {
+                        let s = state.lock().await;
+                        s.cancellation_token.clone()
                     };
-                    sanitize_terminal_state(&mut s);
-                    break;
+
+                    let outcome = process_batch_job(
+                        &app,
+                        &state,
+                        job,
+                        token,
+                        &session_id,
+                        ffmpeg_threads_per_job,
+                        &subtitle_cache,
+                        &temp_srt_paths,
+                        &temp_subtitle_font_dirs,
+                    )
+                    .await;
+
+                    match outcome {
+                        JobOutcome::Processed => scheduler::JobOutcome::Processed,
+                        JobOutcome::Skipped => scheduler::JobOutcome::Skipped,
+                        JobOutcome::Cancelled => scheduler::JobOutcome::Cancelled,
+                        JobOutcome::ClassifiedFailed {
+                            message,
+                            failure_class,
+                        } => scheduler::JobOutcome::ClassifiedFailed {
+                            message,
+                            failure_class,
+                        },
+                    }
                 }
-
-                let job = job.unwrap();
-                s.current_job_id = Some(job.id.clone());
-                s.current_job_lifecycle_progress = 0.0;
-                s.job_lifecycle_progress.insert(job.id.clone(), 0.0);
-                (job, s.cancellation_token.clone())
-            };
-
-            emit_batch_progress(&app_clone, &state_clone).await;
-
-            let outcome = process_batch_job(
-                &app_clone,
-                &state_clone,
-                job,
-                token,
-                &session_id,
-                &mut subtitle_cache,
-                &mut temp_srt_paths,
-                &mut temp_subtitle_font_dirs,
-            )
-            .await;
-
-            match outcome {
-                JobOutcome::Cancelled => break,
-                JobOutcome::Processed | JobOutcome::Skipped => {}
             }
-        }
+        };
 
+        // Stage 3.3: build the disk-space admission gate right before
+        // scheduling so every batch performs a *live* free-space read.
+        let disk_gate = crate::video::concurrency::DiskAdmissionGate::new(
+            disk_source,
+            crate::video::concurrency::DISK_SAFETY_MARGIN_BYTES,
+        );
+        let _summary =
+            scheduler::run_scheduler(&state_clone, total_capacity, &disk_gate, process_fn).await;
+
+        // Final batch status: the scheduler handles per-job outcomes but
+        // does not set the terminal batch-level status.
         {
             let mut s = state_clone.lock().await;
             if s.status == BatchStatus::Processing {
@@ -359,11 +403,17 @@ pub async fn start_batch(
         }
 
         // Cleanup temporary subtitle files
-        for path in temp_srt_paths {
-            let _ = std::fs::remove_file(path);
+        {
+            let paths = temp_srt_paths.lock().await;
+            for path in paths.iter() {
+                let _ = std::fs::remove_file(path);
+            }
         }
-        for path in temp_subtitle_font_dirs {
-            let _ = std::fs::remove_dir_all(path);
+        {
+            let dirs = temp_subtitle_font_dirs.lock().await;
+            for path in dirs.iter() {
+                let _ = std::fs::remove_dir_all(path);
+            }
         }
 
         emit_batch_progress(&app_clone, &state_clone).await;
@@ -378,14 +428,27 @@ async fn process_batch_job(
     job: BatchJob,
     token: tokio_util::sync::CancellationToken,
     session_id: &str,
-    subtitle_cache: &mut HashMap<String, PreparedSubtitle>,
-    temp_srt_paths: &mut Vec<PathBuf>,
-    temp_subtitle_font_dirs: &mut Vec<PathBuf>,
+    ffmpeg_threads_per_job: usize,
+    subtitle_cache: &Arc<Mutex<HashMap<String, PreparedSubtitle>>>,
+    temp_srt_paths: &Arc<Mutex<Vec<PathBuf>>>,
+    temp_subtitle_font_dirs: &Arc<Mutex<Vec<PathBuf>>>,
 ) -> JobOutcome {
     let job_id = job.id.clone();
     let input_path = job.input_path.clone();
     let output_path = PathBuf::from(&job.resolved_output_path);
     let alt_output_path = job.alt_output_path.as_deref().map(Path::new);
+
+    // Stage 2.5: if the batch was already cancelled while this job was
+    // sitting in the spawn-to-runwindow, abort immediately so no FFmpeg
+    // child may be spawned past that point (Race C).
+    if token.is_cancelled() {
+        let mut s = state.lock().await;
+        if let Some(p) = s.job_progress.get_mut(&job_id) {
+            p.status = JobStatus::Cancelled;
+            let _ = app.emit("batch://file-status", p.clone());
+        }
+        return JobOutcome::Cancelled;
+    }
 
     if job.output.effects.skip_existing_enabled() {
         {
@@ -490,10 +553,21 @@ async fn process_batch_job(
             match crate::video::probe::detect_orientation(app, &input_path).await {
                 Ok(o) => o,
                 Err(e) => {
+                    let failure_class = classify_video_error(&e);
                     let failure = format!("Failed to detect orientation for subtitles: {}", e);
                     let mut s = state.lock().await;
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
-                        p.status = JobStatus::Failed(failure);
+                        p.status = JobStatus::Failed(failure.clone());
+                        let _ = app.emit("batch://file-status", p.clone());
+                    }
+                    if matches!(failure_class, FailureClass::ResourceRelated) {
+                        // Defer the failed_jobs accounting to the scheduler so
+                        // a reduced-capacity retry can still succeed.
+                        emit_batch_progress(app, state).await;
+                        return JobOutcome::ClassifiedFailed {
+                            message: failure,
+                            failure_class,
+                        };
                     }
                     s.failed_jobs += 1;
                     emit_batch_progress(app, state).await;
@@ -513,16 +587,25 @@ async fn process_batch_job(
             platform_config: job.output.platform_config.clone(),
             subtitle_path: None,
             subtitle_fonts_dir: None,
+            threads_per_job: Some(ffmpeg_threads_per_job),
         };
 
         let subtitle_plan =
             match crate::video::preset_adapter::create_render_plan_resolved(&subtitle_job) {
                 Ok(p) => p,
                 Err(e) => {
+                    let failure_class = classify_video_error(&e);
                     let failure = e.to_string();
                     let mut s = state.lock().await;
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
-                        p.status = JobStatus::Failed(failure);
+                        p.status = JobStatus::Failed(failure.clone());
+                    }
+                    if matches!(failure_class, FailureClass::ResourceRelated) {
+                        emit_batch_progress(app, state).await;
+                        return JobOutcome::ClassifiedFailed {
+                            message: failure,
+                            failure_class,
+                        };
                     }
                     s.failed_jobs += 1;
                     emit_batch_progress(app, state).await;
@@ -550,8 +633,12 @@ async fn process_batch_job(
             subtitle_style_key
         );
 
-        if let Some(path) = subtitle_cache.get(&subtitle_cache_key) {
-            prepared_subtitle = Some(path.clone());
+        let cached_subtitle = {
+            let cache = subtitle_cache.lock().await;
+            cache.get(&subtitle_cache_key).cloned()
+        };
+        if let Some(path) = cached_subtitle {
+            prepared_subtitle = Some(path);
             {
                 let mut s = state.lock().await;
                 set_stage(
@@ -635,12 +722,19 @@ async fn process_batch_job(
             {
                 Ok(path) => {
                     if !is_export {
-                        temp_srt_paths.push(path.path.clone());
+                        {
+                            let mut paths = temp_srt_paths.lock().await;
+                            paths.push(path.path.clone());
+                        }
                         if let Some(fonts_dir) = &path.fonts_dir {
-                            temp_subtitle_font_dirs.push(fonts_dir.clone());
+                            let mut dirs = temp_subtitle_font_dirs.lock().await;
+                            dirs.push(fonts_dir.clone());
                         }
                     }
-                    subtitle_cache.insert(subtitle_cache_key, path.clone());
+                    {
+                        let mut cache = subtitle_cache.lock().await;
+                        cache.insert(subtitle_cache_key, path.clone());
+                    }
                     prepared_subtitle = Some(path);
                     {
                         let mut s = state.lock().await;
@@ -656,20 +750,36 @@ async fn process_batch_job(
                 }
                 Err(e) => {
                     if token.is_cancelled() {
+                        // Stage 2.5: task observes the cancellation token
+                        // during subtitle preparation. The per-job state
+                        // becomes Cancelled; the batch-level `Cancelled`
+                        // status is deferred to the scheduler drain.
                         let mut s = state.lock().await;
-                        s.status = BatchStatus::Cancelled;
-                        sanitize_terminal_state(&mut s);
+                        if let Some(p) = s.job_progress.get_mut(&job_id) {
+                            p.status = JobStatus::Cancelled;
+                            let _ = app.emit("batch://file-status", p.clone());
+                        }
                         return JobOutcome::Cancelled;
                     }
+                    let failure_class = classify_video_error(&e);
                     let failure = e.to_string();
                     {
                         let mut s = state.lock().await;
                         if let Some(p) = s.job_progress.get_mut(&job_id) {
                             p.status = JobStatus::Failed(failure.clone());
+                            let _ = app.emit("batch://file-status", p.clone());
                         }
-                        s.failed_jobs += 1;
+                        if !matches!(failure_class, FailureClass::ResourceRelated) {
+                            s.failed_jobs += 1;
+                        }
                     }
                     emit_batch_progress(app, state).await;
+                    if matches!(failure_class, FailureClass::ResourceRelated) {
+                        return JobOutcome::ClassifiedFailed {
+                            message: failure,
+                            failure_class,
+                        };
+                    }
                     return JobOutcome::Processed;
                 }
             }
@@ -692,12 +802,20 @@ async fn process_batch_job(
         subtitle_fonts_dir: prepared_subtitle
             .as_ref()
             .and_then(|prepared| prepared.fonts_dir.clone()),
+        threads_per_job: Some(ffmpeg_threads_per_job),
     };
 
     if token.is_cancelled() {
+        // Stage 2.5: the token was cancelled while subtitle preparation
+        // completed but before rendering started. Abort without spawning
+        // FFmpeg; the per-job status transitions to Cancelled, and the
+        // batch-level `Cancelled` will be set once the scheduler has joined
+        // every in-flight task.
         let mut s = state.lock().await;
-        s.status = BatchStatus::Cancelled;
-        sanitize_terminal_state(&mut s);
+        if let Some(p) = s.job_progress.get_mut(&job_id) {
+            p.status = JobStatus::Cancelled;
+            let _ = app.emit("batch://file-status", p.clone());
+        }
         return JobOutcome::Cancelled;
     }
 
@@ -758,9 +876,15 @@ async fn process_batch_job(
     let result = render_single(app, resolved_job, Some(token.clone()), Some(on_progress)).await;
 
     if token.is_cancelled() {
+        // Stage 2.5: `render_single` (via `run_ffmpeg`) has killed its child
+        // process and returned. This task is fully exited, so the per-job
+        // state may now truthfully become Cancelled. The batch-level
+        // `Cancelled` is deferred until the scheduler has joined every task.
         let mut s = state.lock().await;
-        s.status = BatchStatus::Cancelled;
-        sanitize_terminal_state(&mut s);
+        if let Some(p) = s.job_progress.get_mut(&job_id) {
+            p.status = JobStatus::Cancelled;
+            let _ = app.emit("batch://file-status", p.clone());
+        }
         return JobOutcome::Cancelled;
     }
 
@@ -788,12 +912,26 @@ async fn process_batch_job(
             s.current_job_id = None;
         }
         Err(e) => {
+            let failure_class = classify_video_error(&e);
+            let failure = e.to_string();
             let mut s = state.lock().await;
             let mut duration = 0.0;
             if let Some(p) = s.job_progress.get_mut(&job_id) {
-                p.status = JobStatus::Failed(e.to_string());
+                p.status = JobStatus::Failed(failure.clone());
                 duration = p.duration_secs;
                 let _ = app.emit("batch://file-status", p.clone());
+            }
+            if matches!(failure_class, FailureClass::ResourceRelated) {
+                // Stage 3.4: the job state reflects the failure for the
+                // frontend, but the batch-level failed_jobs accounting and
+                // the retry decision are deferred to the scheduler. Do not
+                // mark the job terminal yet.
+                drop(s);
+                emit_batch_progress(app, state).await;
+                return JobOutcome::ClassifiedFailed {
+                    message: failure,
+                    failure_class,
+                };
             }
             s.failed_jobs += 1;
             s.processed_duration_secs += duration;
@@ -887,8 +1025,12 @@ fn calculate_stats(state: &BatchState) -> (f32, f32, Option<f64>, f64) {
     (percentage, speed, eta_seconds, processed_secs)
 }
 
-pub async fn cancel_batch(manager: State<'_, BatchManager>) -> Result<(), String> {
+pub async fn cancel_batch(app: AppHandle, manager: State<'_, BatchManager>) -> Result<(), String> {
     manager.cancel().await;
+    // Stage 2.5 Phase A: emit a fresh snapshot immediately after cancellation is
+    // requested so the UI sees the request (status still `Processing`, queued
+    // jobs marked cancelled) rather than a stale pre-cancel frame.
+    emit_batch_progress(&app, &manager.state).await;
     Ok(())
 }
 

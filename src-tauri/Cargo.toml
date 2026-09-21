@@ -66,6 +66,7 @@ hmac = "0.12"
 hex = "0.4"
 rand = "0.8"
 dotenvy = "0.15"
+sysinfo = "0.39"
 
 [features]
 dev-auth = []

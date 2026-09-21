@@ -645,6 +645,11 @@ pub struct ResolvedJob {
     pub platform_config: Option<PlatformConfig>,
     pub subtitle_path: Option<std::path::PathBuf>,
     pub subtitle_fonts_dir: Option<std::path::PathBuf>,
+    /// FFmpeg `-threads` hint from the Phase 1 `ConcurrencyPlan` (Stage 2.3).
+    /// A hint only, not exact CPU accounting (see Stage 0.3 caveat). `None`
+    /// keeps FFmpeg's own default, preserving pre-Stage-0.3 behaviour for
+    /// non-batch paths (e.g. single-video `convert_to_ratio`).
+    pub threads_per_job: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
