@@ -94,22 +94,23 @@ pub struct ResourceBudget {
 /// `scheduler::classify_job_cost` (Stage 3.2): normal jobs cost 1 unit,
 /// subtitle/Whisper jobs cost 2 units.
 ///
-/// `ffmpeg_threads_per_job` is a hint only (see the Stage 0.3 caveat): it
-/// feeds FFmpeg's `-threads` flag and is not exact CPU accounting, nor a
-/// guarantee of how many OS threads a job will actually consume.
+/// The plan deliberately carries **no per-job FFmpeg thread count**
+/// (architecture_fix Stage 1/2/6): FFmpeg owns its own internal threading and
+/// the production invariant is FFmpeg `-threads AUTO`. AspectShift's only
+/// concurrency responsibility is `total_capacity` — how many independent jobs
+/// may be admitted at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConcurrencyPlan {
     pub mode: ExecutionMode,
     pub total_capacity: usize,
-    pub ffmpeg_threads_per_job: usize,
     pub resource_budget: ResourceBudget,
 }
 
 /// Absolute safety ceiling for any concurrency plan.
 pub const MAX_TOTAL_CAPACITY: usize = 4;
 
-/// Builds the derived fields of a plan (execution mode, per-job FFmpeg thread
-/// hint, resource budget) from a `total_capacity`.
+/// Builds the derived fields of a plan (execution mode, resource budget) from
+/// a `total_capacity`.
 ///
 /// The caller is responsible for the capacity value having passed any policy
 /// decisions (tier table, RAM gate, clamping); this function only derives the
@@ -122,15 +123,6 @@ fn derive_plan_fields(profile: &ResourceProfile, total_capacity: usize) -> Concu
         ExecutionMode::Parallel
     };
 
-    // --- FFmpeg threads per job (hint, not exact guarantee) ---
-    // Reserve 4 logical CPU threads for OS/UI/WebView/Whisper/filesystem.
-    const RESERVED_THREADS: usize = 4;
-    let available_threads = profile
-        .logical_cpu_threads
-        .saturating_sub(RESERVED_THREADS)
-        .max(1);
-    let ffmpeg_threads_per_job = (available_threads / total_capacity).max(1);
-
     // --- Resource budget (for future use) ---
     let resource_budget = ResourceBudget {
         cpu_threads: profile.logical_cpu_threads,
@@ -140,7 +132,6 @@ fn derive_plan_fields(profile: &ResourceProfile, total_capacity: usize) -> Concu
     ConcurrencyPlan {
         mode,
         total_capacity,
-        ffmpeg_threads_per_job,
         resource_budget,
     }
 }
@@ -148,8 +139,9 @@ fn derive_plan_fields(profile: &ResourceProfile, total_capacity: usize) -> Concu
 /// Computes a safe concurrency plan from a system resource profile.
 ///
 /// Uses a fixed CPU tier table (not a dynamic formula) and a RAM gate to
-/// determine `total_capacity`, then calculates a per-job FFmpeg thread hint
-/// with a fixed headroom reservation.
+/// determine `total_capacity`. No per-job FFmpeg thread hint is derived or
+/// emitted (architecture_fix Stage 1/2/6): FFmpeg always runs with its own
+/// internal AUTO threading in production.
 ///
 /// The CPU tier table is provisional; Stage 2.7 benchmarking is expected to
 /// validate or revise these defaults. The hard cap of 4 is a safety ceiling.
@@ -158,13 +150,19 @@ pub fn calculate_safe_concurrency(profile: &ResourceProfile) -> ConcurrencyPlan 
     // TODO: Stage 2.7 — benchmarking will validate or revise these values.
     // Benchmarking may demonstrate that a lower concurrency (potentially 2)
     // is better than allowing the ceiling of 4. Revisit after Stage 2.7.
-    // Stage 2.7 evidence (2026-09-17): benchmarks/phase-2-stage-2.7.md.
+    // Stage 2.7 evidence (2026-09-17, recorded in the roadmap; the one-shot
+    // benchmark record file was removed in the architecture-fix cleanup).
     // Machine Class A (6 threads, RAM-gated to 2) is measured; Class B
     // (higher-end) is pending. On Class A, capacities 2–3 ≈ sequential and
     // capacity 4 was 29–37% faster for the 4-video workloads, so the table
     // stays unchanged provisionally until the two-machine comparison lands.
+    //
+    // Stage 4 fail-safe: a zero/nonsensical CPU observation is treated as
+    // "we don't know the machine", which must resolve to *less* concurrency,
+    // never more. `logical_cpu_threads == 0` therefore maps to Sequential (1).
     let cpu_tier_capacity = match profile.logical_cpu_threads {
-        0..=4 => 1,
+        0 => 1,
+        1..=4 => 1,
         5..=8 => 2,
         9..=16 => 2,
         17..=32 => 3,
@@ -179,7 +177,11 @@ pub fn calculate_safe_concurrency(profile: &ResourceProfile) -> ConcurrencyPlan 
     const FOUR_GB: u64 = 4 * 1024 * 1024 * 1024;
     const EIGHT_GB: u64 = 8 * 1024 * 1024 * 1024;
 
-    let total_capacity = if profile.available_memory_bytes < FOUR_GB {
+    let total_capacity = if profile.available_memory_bytes == 0 {
+        // Stage 4 fail-safe: RAM detection failed/missing → assume the machine
+        // cannot safely host concurrent encodes (Sequential).
+        1
+    } else if profile.available_memory_bytes < FOUR_GB {
         // Unconditional override: force sequential
         1
     } else if profile.available_memory_bytes < EIGHT_GB {
@@ -193,33 +195,6 @@ pub fn calculate_safe_concurrency(profile: &ResourceProfile) -> ConcurrencyPlan 
     derive_plan_fields(profile, total_capacity)
 }
 
-/// Computes a plan whose `total_capacity` is forced to `requested_capacity`,
-/// deriving the mode, per-job FFmpeg thread hint, and resource budget exactly
-/// as the regular planner would for a machine whose tier had resolved to that
-/// capacity.
-///
-/// This is the benchmark/test hook that lets Stage 2.7 measure the real batch
-/// pipeline at capacities 1..=4 on hardware whose natural plan resolves to a
-/// different value (e.g. a machine whose planner yields capacity 2). Only the
-/// capacity input changes; the scheduler itself is never altered.
-///
-/// Safety notes:
-/// * The value is clamped to `1..=MAX_TOTAL_CAPACITY`, so no caller can ever
-///   admit more work than the global ceiling.
-/// * The RAM gate is intentionally **not** applied: the caller is explicitly
-///   overriding the planner's policy decision, and silently re-limiting the
-///   requested value would make the override useless for measurement. This
-///   path is only reachable from tests/benchmarks that opt in via the
-///   `ASPECTSHIFT_BENCH_TOTAL_CAPACITY` environment variable; normal app runs
-///   never read that variable and keep the RAM gate firmly in place.
-pub fn calculate_safe_concurrency_with_capacity(
-    profile: &ResourceProfile,
-    requested_capacity: usize,
-) -> ConcurrencyPlan {
-    let total_capacity = requested_capacity.clamp(1, MAX_TOTAL_CAPACITY);
-    derive_plan_fields(profile, total_capacity)
-}
-
 /// Resolves the concurrency plan that will govern the *next* batch.
 ///
 /// This is the single batch-start planning entry point. It invokes `detect`
@@ -227,32 +202,9 @@ pub fn calculate_safe_concurrency_with_capacity(
 /// a brand-new `ConcurrencyPlan` from it (Stage 1.3 CPU tier → RAM gate → hard
 /// cap). Nothing here caches or reuses any previous observation or plan, so an
 /// observation made for Batch A can never leak into Batch B.
-///
-/// The Stage 2.7 benchmark override (`ASPECTSHIFT_BENCH_TOTAL_CAPACITY`) is
-/// honored here with the same safety semantics the historical `start_batch`
-/// routing had: valid values clamp to `1..=MAX_TOTAL_CAPACITY`; unparseable
-/// values fall back to the standard Stage 1.3 plan. Normal app runs never set
-/// the variable and always take the standard planner path.
 pub fn resolve_batch_start_plan(detect: impl FnOnce() -> ResourceProfile) -> ConcurrencyPlan {
     let resources = detect();
-    match std::env::var("ASPECTSHIFT_BENCH_TOTAL_CAPACITY").ok() {
-        Some(raw) => match raw.parse::<usize>() {
-            Ok(capacity) => {
-                tracing::warn!(
-                    "Benchmark override active: ASPECTSHIFT_BENCH_TOTAL_CAPACITY={capacity}"
-                );
-                calculate_safe_concurrency_with_capacity(&resources, capacity)
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "Ignoring invalid ASPECTSHIFT_BENCH_TOTAL_CAPACITY value {:?}; using standard plan",
-                    raw
-                );
-                calculate_safe_concurrency(&resources)
-            }
-        },
-        None => calculate_safe_concurrency(&resources),
-    }
+    calculate_safe_concurrency(&resources)
 }
 
 /// Detects live system resources and resolves the plan governing the next
@@ -269,12 +221,11 @@ pub fn plan_for_batch_start() -> ConcurrencyPlan {
     let budget = plan.resource_budget;
     tracing::info!(
         "batch-start resource snapshot: logical_cpu_threads={}, available_ram_mb={} \
-         -> total_capacity={} (mode={:?}), ffmpeg_threads_per_job={}",
+         -> total_capacity={} (mode={:?})",
         budget.cpu_threads,
         budget.available_memory_mb,
         plan.total_capacity,
         plan.mode,
-        plan.ffmpeg_threads_per_job,
     );
     plan
 }
@@ -526,7 +477,6 @@ mod tests {
         let plan = ConcurrencyPlan {
             mode: ExecutionMode::Parallel,
             total_capacity: 4,
-            ffmpeg_threads_per_job: 2,
             resource_budget: ResourceBudget {
                 cpu_threads: 8,
                 available_memory_mb: 16384,
@@ -535,7 +485,6 @@ mod tests {
 
         assert_eq!(plan.mode, ExecutionMode::Parallel);
         assert_eq!(plan.total_capacity, 4);
-        assert_eq!(plan.ffmpeg_threads_per_job, 2);
         assert_eq!(plan.resource_budget.cpu_threads, 8);
         assert_eq!(plan.resource_budget.available_memory_mb, 16384);
     }
@@ -754,90 +703,54 @@ mod tests {
         assert_eq!(plan.mode, ExecutionMode::Parallel);
     }
 
-    // ---- FFmpeg thread calculation tests ----
+    // ---- Stage 4 fail-safe: conservative when the machine is unknown ----
+    //
+    // architecture_fix Stage 4: when a resource observation is missing or
+    // nonsensical (0 threads / 0 available RAM), the planner must fall back to
+    // *less* concurrency, never more. These tests pin that unknown
+    // measurements resolve to Sequential (capacity 1) — the same safe result
+    // the tier table and RAM gate already converged on, now explicit and
+    // locked in so a future edit cannot accidentally turn a 0 into a
+    // high-concurrency plan.
 
     #[test]
-    fn ffmpeg_threads_low_cpu_count() {
-        // 1 CPU: available_threads = max(1-4,1)=1, total_capacity=1 => 1/1=1
-        let p = profile(1, 16 * GB);
+    fn zero_cpu_threads_resolves_conservatively() {
+        let p = profile(0, 16 * GB);
         let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
+        assert_eq!(plan.total_capacity, 1);
+        assert_eq!(plan.mode, ExecutionMode::Sequential);
     }
 
     #[test]
-    fn ffmpeg_threads_4_cpus() {
-        // 4 CPUs: available_threads = max(4-4,1)=1, total_capacity=1 => 1/1=1
-        let p = profile(4, 16 * GB);
+    fn zero_available_ram_resolves_conservatively() {
+        let p = profile(16, 0);
         let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
+        assert_eq!(plan.total_capacity, 1);
+        assert_eq!(plan.mode, ExecutionMode::Sequential);
     }
 
     #[test]
-    fn ffmpeg_threads_8_cpus() {
-        // 8 CPUs: available_threads = max(8-4,1)=4, total_capacity=2 => 4/2=2
-        let p = profile(8, 16 * GB);
+    fn missing_ram_and_cpu_never_yield_parallel() {
+        let p = profile(0, 0);
         let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 2);
+        assert_eq!(plan.total_capacity, 1);
+        assert_eq!(plan.mode, ExecutionMode::Sequential);
     }
 
-    #[test]
-    fn ffmpeg_threads_16_cpus() {
-        // 16 CPUs: available_threads = max(16-4,1)=12, total_capacity=2 => 12/2=6
-        let p = profile(16, 16 * GB);
-        let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 6);
-    }
+    // ---- architecture_fix Stage 1/2/6: no per-job FFmpeg thread hint ----
 
     #[test]
-    fn ffmpeg_threads_32_cpus() {
-        // 32 CPUs: available_threads = max(32-4,1)=28, total_capacity=3 => 28/3=9 (floor)
-        let p = profile(32, 16 * GB);
+    fn plan_carries_no_per_job_ffmpeg_thread_hint() {
+        // ConcurrencyPlan owns only *admission* concurrency (a cost-unit
+        // capacity). It deliberately exposes no per-job FFmpeg thread figure
+        // for production to forward to `-threads` (FFmpeg AUTO is the
+        // invariant); the struct has no such field by construction.
+        let p = profile(33, 16 * GB);
         let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 9);
-    }
-
-    #[test]
-    fn ffmpeg_threads_64_cpus() {
-        // 64 CPUs: available_threads = max(64-4,1)=60, total_capacity=4 => 60/4=15
-        let p = profile(64, 16 * GB);
-        let plan = calculate_safe_concurrency(&p);
-        assert_eq!(plan.ffmpeg_threads_per_job, 15);
-    }
-
-    #[test]
-    fn ffmpeg_threads_never_below_1() {
-        // Edge case: very low CPU count with high capacity
-        // 5 CPUs: available_threads = max(5-4,1)=1, total_capacity=2 => 1/2=0 -> min 1
-        let p = profile(5, 16 * GB);
-        let plan = calculate_safe_concurrency(&p);
-        assert!(plan.ffmpeg_threads_per_job >= 1);
-    }
-
-    #[test]
-    fn ffmpeg_threads_higher_concurrency_reduces_per_job() {
-        // Compare 8 CPUs (capacity 2) vs 33 CPUs (capacity 4)
-        let p8 = profile(8, 16 * GB);
-        let p33 = profile(33, 16 * GB);
-        let plan8 = calculate_safe_concurrency(&p8);
-        let plan33 = calculate_safe_concurrency(&p33);
-        // 8 CPUs: 4 threads / 2 = 2 per job
-        // 33 CPUs: 29 threads / 4 = 7 per job
-        // Actually higher concurrency reduces per-job hint relative to total threads,
-        // but the absolute value may be higher due to more CPUs.
-        // The key property: per-job hint is floor(available / capacity)
-        assert_eq!(plan8.ffmpeg_threads_per_job, 2);
-        assert_eq!(plan33.ffmpeg_threads_per_job, 7);
-        // Verify the formula holds
-        let available8 = 8usize.saturating_sub(4).max(1);
-        let available33 = 33usize.saturating_sub(4).max(1);
-        assert_eq!(
-            plan8.ffmpeg_threads_per_job,
-            available8 / plan8.total_capacity
-        );
-        assert_eq!(
-            plan33.ffmpeg_threads_per_job,
-            available33 / plan33.total_capacity
-        );
+        assert_eq!(plan.total_capacity, 4);
+        assert_eq!(plan.mode, ExecutionMode::Parallel);
+        assert_eq!(plan.resource_budget.cpu_threads, 33);
+        assert_eq!(plan.resource_budget.available_memory_mb, 16384);
     }
 
     // ---- Edge case tests ----
@@ -848,7 +761,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 1);
         assert_eq!(plan.mode, ExecutionMode::Sequential);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
     }
 
     #[test]
@@ -857,7 +769,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 1);
         assert_eq!(plan.mode, ExecutionMode::Sequential);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
     }
 
     #[test]
@@ -866,7 +777,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 1);
         assert_eq!(plan.mode, ExecutionMode::Sequential);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
     }
 
     #[test]
@@ -875,7 +785,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 2);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
     }
 
     #[test]
@@ -884,7 +793,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 2);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 2);
     }
 
     #[test]
@@ -893,7 +801,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 2);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 2);
     }
 
     #[test]
@@ -902,7 +809,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 2);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 6);
     }
 
     #[test]
@@ -911,7 +817,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 3);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 4);
     }
 
     #[test]
@@ -920,7 +825,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 3);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 9);
     }
 
     #[test]
@@ -929,7 +833,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 4);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 7);
     }
 
     #[test]
@@ -938,7 +841,6 @@ mod tests {
         let plan = calculate_safe_concurrency(&p);
         assert_eq!(plan.total_capacity, 4);
         assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 24);
     }
 
     // ---- Resource budget tests ----
@@ -961,96 +863,6 @@ mod tests {
         assert_eq!(plan1, plan2);
     }
 
-    // ---- Benchmark capacity override tests (Stage 2.7) ----
-
-    #[test]
-    fn forced_capacity_1_is_sequential() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 1);
-        assert_eq!(plan.total_capacity, 1);
-        assert_eq!(plan.mode, ExecutionMode::Sequential);
-        assert_eq!(plan.ffmpeg_threads_per_job, 2);
-    }
-
-    #[test]
-    fn forced_capacity_2_is_parallel() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 2);
-        assert_eq!(plan.total_capacity, 2);
-        assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
-    }
-
-    #[test]
-    fn forced_capacity_3_is_parallel() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 3);
-        assert_eq!(plan.total_capacity, 3);
-        assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
-    }
-
-    #[test]
-    fn forced_capacity_4_is_parallel() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 4);
-        assert_eq!(plan.total_capacity, 4);
-        assert_eq!(plan.mode, ExecutionMode::Parallel);
-        assert_eq!(plan.ffmpeg_threads_per_job, 1);
-    }
-
-    #[test]
-    fn forced_capacity_clamps_below_1() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 0);
-        assert_eq!(plan.total_capacity, 1);
-        assert_eq!(plan.mode, ExecutionMode::Sequential);
-    }
-
-    #[test]
-    fn forced_capacity_clamps_above_ceiling() {
-        let p = profile(64, 32 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 99);
-        assert_eq!(plan.total_capacity, MAX_TOTAL_CAPACITY);
-        assert_eq!(plan.total_capacity, 4);
-        assert_eq!(plan.mode, ExecutionMode::Parallel);
-    }
-
-    #[test]
-    fn forced_capacity_5_clamps_to_ceiling() {
-        // The smallest value above the safety ceiling must still clamp to 4 —
-        // an off-by-one in the clamp would let an "invalid" override admit
-        // more than the hard ceiling.
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 5);
-        assert_eq!(plan.total_capacity, MAX_TOTAL_CAPACITY);
-        assert_eq!(plan.total_capacity, 4);
-        assert_eq!(plan.mode, ExecutionMode::Parallel);
-    }
-
-    #[test]
-    fn forced_capacity_uses_same_thread_derivation_as_planner() {
-        // 8 CPUs forced to 2 must give the same per-job hint the planner would
-        // produce if its tier had resolved to capacity 2.
-        let p = profile(8, 16 * GB);
-        let forced = calculate_safe_concurrency_with_capacity(&p, 2);
-        let natural = calculate_safe_concurrency(&p);
-        assert_eq!(natural.total_capacity, 2);
-        assert_eq!(
-            forced.ffmpeg_threads_per_job,
-            natural.ffmpeg_threads_per_job
-        );
-        assert_eq!(forced.resource_budget, natural.resource_budget);
-    }
-
-    #[test]
-    fn forced_capacity_keeps_resource_budget_intact() {
-        let p = profile(6, 16 * GB);
-        let plan = calculate_safe_concurrency_with_capacity(&p, 4);
-        assert_eq!(plan.resource_budget.cpu_threads, 6);
-        assert_eq!(plan.resource_budget.available_memory_mb, 16384);
-    }
-
     // ---- Stage 3.1: live RAM gating at batch start ----
     //
     // Scenario A (normal/high RAM), Scenario B (low RAM) and Scenario C (RAM
@@ -1059,31 +871,6 @@ mod tests {
     // C tests exercise the real batch-start seam (`resolve_batch_start_plan`)
     // and prove that consecutive batch starts perform a fresh detection and
     // derive a fresh plan — Batch B never inherits Batch A's RAM state or plan.
-
-    /// Serializes access to the process-global benchmark override env var
-    /// while a Stage 3.1 batch-planning test runs, and restores its previous
-    /// value afterwards so no test leaks the override into another.
-    struct NoBenchOverride(Option<std::ffi::OsString>);
-
-    impl NoBenchOverride {
-        fn acquire() -> Self {
-            let _l = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let previous = std::env::var_os("ASPECTSHIFT_BENCH_TOTAL_CAPACITY");
-            std::env::remove_var("ASPECTSHIFT_BENCH_TOTAL_CAPACITY");
-            NoBenchOverride(previous)
-        }
-    }
-
-    impl Drop for NoBenchOverride {
-        fn drop(&mut self) {
-            match &self.0 {
-                Some(v) => std::env::set_var("ASPECTSHIFT_BENCH_TOTAL_CAPACITY", v),
-                None => std::env::remove_var("ASPECTSHIFT_BENCH_TOTAL_CAPACITY"),
-            }
-        }
-    }
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Scenario A — normal/high available RAM at batch start: the CPU tier is
     /// allowed, subject only to the existing gates.
@@ -1127,8 +914,6 @@ mod tests {
     /// observation from Batch A must never leak into Batch B or C.
     #[test]
     fn scenario_c_batch_b_does_not_inherit_batch_a_ram_state() {
-        let _guard = NoBenchOverride::acquire();
-
         // One provider sequence stands in for the OS across three batch starts.
         // 6 threads -> CPU tier 2; 5 GiB -> < 8 GiB so the RAM gate also caps
         // at 2; 3 GiB -> < 4 GiB forces Sequential; 12 GiB -> >= 8 GiB so the
@@ -1178,8 +963,6 @@ mod tests {
     /// proving the RAM gate itself is recomputed per batch and never sticky.
     #[test]
     fn scenario_c_ram_gate_releases_when_ram_recovers() {
-        let _guard = NoBenchOverride::acquire();
-
         let states = [profile(33, 6 * GB), profile(33, 32 * GB)];
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let detect = move || {
@@ -1206,8 +989,6 @@ mod tests {
     /// plan between calls.
     #[test]
     fn batch_start_resolution_runs_one_fresh_detection_per_call() {
-        let _guard = NoBenchOverride::acquire();
-
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let detect = {
             let calls = calls.clone();
@@ -1234,8 +1015,6 @@ mod tests {
     /// guarantee behind "no stale capacity leaks between batches".
     #[test]
     fn batch_start_plans_are_fully_independent() {
-        let _guard = NoBenchOverride::acquire();
-
         let detect = || profile(6, 12 * GB);
         let batch_a = resolve_batch_start_plan(detect);
         let batch_b = resolve_batch_start_plan(detect);

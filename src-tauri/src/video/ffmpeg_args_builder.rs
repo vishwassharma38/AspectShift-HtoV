@@ -128,8 +128,14 @@ pub fn build_ffmpeg_args(
         args.push(plan.encoding.speed_preset.clone());
     }
 
-    // Thread budget hint for software encoders (Stage 0.3).
-    // This is a hint to FFmpeg's internal threading, not an exact CPU-thread guarantee.
+    // Optional `-threads` override, exposed as a *capability* retained for
+    // non-batch paths and future hardware-specific renders.
+    //
+    // architecture_fix Stage 1/2/6: the parallel-architecture rework removed
+    // the per-job thread hint from `ConcurrencyPlan`, and production always
+    // passes `None` here, so a normal batch render never emits `-threads` and
+    // FFmpeg runs with its own AUTO threading. `Some(...)` is still honored
+    // (the builder deliberately does not know which callers are "batch").
     if let Some(threads) = threads_per_job {
         if threads > 0 {
             args.push("-threads".to_string());

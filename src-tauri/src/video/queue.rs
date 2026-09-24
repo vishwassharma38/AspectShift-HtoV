@@ -47,8 +47,8 @@ impl BatchManager {
     }
 
     /// Creates a manager with an injected disk-space source (Stage 3.3). Tests
-    /// and benchmarks use this to simulate low-disk conditions deterministically;
-    /// production always uses the real system source via [`BatchManager::new`].
+    /// use this to simulate low-disk conditions deterministically; production
+    /// always uses the real system source via [`BatchManager::new`].
     pub fn with_disk_source(
         disk_source: Arc<dyn crate::video::concurrency::DiskSpaceSource>,
     ) -> Self {

@@ -304,12 +304,10 @@ pub async fn start_batch(
     // brand-new plan from it (Stage 1.3 CPU tier + RAM gate + hard cap), then
     // records a concise diagnostic. No resource snapshot, capacity value, or
     // plan is cached or shared between batches — Batch B always re-observes
-    // current RAM before its concurrency plan is finalised. The Stage 2.7
-    // benchmark override (`ASPECTSHIFT_BENCH_TOTAL_CAPACITY`) is read and
-    // honored inside the planner; this call site never touches it.
+    // current RAM before its concurrency plan is finalised. The planner is the
+    // sole source of the plan; this call site never alters it.
     let plan = crate::video::concurrency::plan_for_batch_start();
     let total_capacity = plan.total_capacity;
-    let ffmpeg_threads_per_job = plan.ffmpeg_threads_per_job;
 
     let state_clone = Arc::clone(&manager.state);
     let app_clone = app.clone();
@@ -332,7 +330,6 @@ pub async fn start_batch(
             let state = Arc::clone(&state_clone);
             let app = app_clone.clone();
             let session_id = session_id.clone();
-            let ffmpeg_threads_per_job = ffmpeg_threads_per_job;
             let subtitle_cache = Arc::clone(&subtitle_cache);
             let temp_srt_paths = Arc::clone(&temp_srt_paths);
             let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
@@ -340,7 +337,6 @@ pub async fn start_batch(
                 let state = Arc::clone(&state);
                 let app = app.clone();
                 let session_id = session_id.clone();
-                let ffmpeg_threads_per_job = ffmpeg_threads_per_job;
                 let subtitle_cache = Arc::clone(&subtitle_cache);
                 let temp_srt_paths = Arc::clone(&temp_srt_paths);
                 let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
@@ -356,7 +352,6 @@ pub async fn start_batch(
                         job,
                         token,
                         &session_id,
-                        ffmpeg_threads_per_job,
                         &subtitle_cache,
                         &temp_srt_paths,
                         &temp_subtitle_font_dirs,
@@ -428,7 +423,6 @@ async fn process_batch_job(
     job: BatchJob,
     token: tokio_util::sync::CancellationToken,
     session_id: &str,
-    ffmpeg_threads_per_job: usize,
     subtitle_cache: &Arc<Mutex<HashMap<String, PreparedSubtitle>>>,
     temp_srt_paths: &Arc<Mutex<Vec<PathBuf>>>,
     temp_subtitle_font_dirs: &Arc<Mutex<Vec<PathBuf>>>,
@@ -587,7 +581,7 @@ async fn process_batch_job(
             platform_config: job.output.platform_config.clone(),
             subtitle_path: None,
             subtitle_fonts_dir: None,
-            threads_per_job: Some(ffmpeg_threads_per_job),
+            threads_per_job: None,
         };
 
         let subtitle_plan =
@@ -802,7 +796,7 @@ async fn process_batch_job(
         subtitle_fonts_dir: prepared_subtitle
             .as_ref()
             .and_then(|prepared| prepared.fonts_dir.clone()),
-        threads_per_job: Some(ffmpeg_threads_per_job),
+        threads_per_job: None,
     };
 
     if token.is_cancelled() {

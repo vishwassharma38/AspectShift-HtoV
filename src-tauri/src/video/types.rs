@@ -645,10 +645,14 @@ pub struct ResolvedJob {
     pub platform_config: Option<PlatformConfig>,
     pub subtitle_path: Option<std::path::PathBuf>,
     pub subtitle_fonts_dir: Option<std::path::PathBuf>,
-    /// FFmpeg `-threads` hint from the Phase 1 `ConcurrencyPlan` (Stage 2.3).
-    /// A hint only, not exact CPU accounting (see Stage 0.3 caveat). `None`
-    /// keeps FFmpeg's own default, preserving pre-Stage-0.3 behaviour for
-    /// non-batch paths (e.g. single-video `convert_to_ratio`).
+    /// FFmpeg `-threads` override, exposed as a *capability* only.
+    ///
+    /// Production always sets this to `None` (architecture_fix Stage 1/2/6):
+    /// the parallel-architecture rework removed the per-job thread hint from
+    /// `ConcurrencyPlan`, so batch renders run with FFmpeg's own AUTO threading
+    /// and `-threads` is never emitted. The `Option` remains so non-batch paths
+    /// (e.g. single-video `convert_to_ratio`) and any future hardware-specific
+    /// path can still force a value without changing the builder's shape.
     pub threads_per_job: Option<usize>,
 }
 

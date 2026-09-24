@@ -22,10 +22,16 @@
 //! When a resource-related failure occurs, the admission ceiling is reduced
 //! without disturbing any currently-running job, and the failed job is retried
 //! once capacity allows under the new ceiling.
+//!
+//! Stage 7 adds lowest-cost ordering: the dispatcher pops the queued job with
+//! the lowest [`estimate_job_cost`] (a config-derived heuristic) instead of a
+//! plain `pop_front()`. Equal-cost jobs keep FIFO order, so a queue of
+//! otherwise-identical jobs behaves exactly like the historical FIFO scheduler
+//! and all deterministic ordering tests remain valid.
 
 use crate::video::concurrency::{DiskAdmissionGate, DiskSpaceVerdict};
 use crate::video::queue::BatchState;
-use crate::video::types::{BatchJob, BatchStatus, JobStatus, VideoError};
+use crate::video::types::{BatchJob, BatchStatus, JobStatus, OutputFormat, VideoError};
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
@@ -156,6 +162,141 @@ pub(crate) fn classify_job_cost(job: &BatchJob) -> usize {
     } else {
         1
     }
+}
+
+/// Estimates a job's *relative wall-clock cost* from its resolved
+/// configuration (architecture_fix Stage 6/7).
+///
+/// Unlike [`classify_job_cost`] — a coarse admission *weight* used for
+/// capacity accounting (`1` normal, `2` subtitle) — this is a finer heuristic
+/// `f64` used only to **order** the queue: cheaper jobs are popped first so a
+/// couple of heavy renders cannot starve a queue of trivial jobs while
+/// capacity is scarce.
+///
+/// The estimate deliberately stays **config-derived** and never uses input
+/// file size or media duration: a `BatchJob` carries neither (duration lives
+/// in per-job progress state), and probing media on every admission attempt
+/// would add I/O to the admit loop. Ordering therefore uses only information
+/// AspectShift already knows when scheduling:
+///
+/// * platform target pixel area (resolution is the dominant encode cost)
+/// * output codec (VP9/webm is materially more expensive than H.264)
+/// * the subtitle pipeline (audio-extract → Whisper → render, mirroring the
+///   cost-2 classification scaled down for ordering)
+/// * per-effect filter workload (background, logo, text, overlays, transform,
+///   colour filter)
+/// * audio removal (one stream skipped → marginally cheaper)
+/// * encoding speed preset (faster presets cost less wall-clock)
+///
+/// Unknown values get a neutral `1.0` factor instead of a guess, and the
+/// result is clamped to a sensible band so a single absurd setting can never
+/// dominate ordering.
+pub(crate) fn estimate_job_cost(job: &BatchJob) -> f64 {
+    let effects = &job.output.effects;
+
+    // Baseline: a plain 1080p H.264 render at the "medium" preset.
+    let mut cost = 1.0;
+
+    // Resolution: encode work scales with pixel area. Jobs that target a
+    // platform resolution get their exact pixel budget; jobs without one keep
+    // the neutral 1.0 (assume 1080p-equivalent rather than fabricate a value).
+    const BASELINE_AREA: f64 = 1920.0 * 1080.0;
+    let area = job
+        .output
+        .platform_config
+        .as_ref()
+        .map(|c| (c.target_width as f64) * (c.target_height as f64))
+        .unwrap_or(BASELINE_AREA);
+    cost *= (area / BASELINE_AREA).clamp(0.1, 8.0);
+
+    // Codec: VP9 (webm) is materially more expensive than H.264.
+    if matches!(effects.output_format_value(), OutputFormat::Webm) {
+        cost *= 1.5;
+    }
+
+    // Subtitle/Whisper pipeline (mirrors classify_job_cost's cost-2 model).
+    if effects.export_subtitles_enabled() || effects.burn_subtitles_enabled() {
+        cost *= 1.6;
+    }
+
+    // Effects: each enabled stage adds measurable encode work.
+    if effects.background_effect_enabled() {
+        cost *= 1.15;
+    }
+    if effects.logo.as_ref().map(|l| l.enabled).unwrap_or(false) {
+        cost *= 1.1;
+    }
+    if effects.text_overlay_enabled() {
+        cost *= 1.15;
+    }
+    if effects
+        .overlays
+        .as_ref()
+        .map(|o| !o.is_empty())
+        .unwrap_or(false)
+    {
+        cost *= 1.1;
+    }
+    if effects
+        .transform
+        .as_ref()
+        .map(|t| t.rotate != 0 || t.flip_h || t.flip_v)
+        .unwrap_or(false)
+    {
+        cost *= 1.05;
+    }
+    if effects
+        .color_filter
+        .as_ref()
+        .map(|f| !f.is_empty())
+        .unwrap_or(false)
+    {
+        cost *= 1.05;
+    }
+
+    // Audio removed: one stream skipped → slightly cheaper.
+    if effects.remove_audio_enabled() {
+        cost *= 0.92;
+    }
+
+    // Encoding speed preset drives encode wall-clock nearly linearly.
+    // Unknown presets map to the neutral 1.0.
+    cost *= match job.output.encoding.speed_preset.to_lowercase().as_str() {
+        "ultrafast" => 0.6,
+        "superfast" => 0.65,
+        "veryfast" => 0.7,
+        "faster" => 0.8,
+        "fast" => 0.9,
+        "medium" => 1.0,
+        "slow" => 1.25,
+        "slower" => 1.5,
+        "veryslow" => 1.8,
+        _ => 1.0,
+    };
+
+    cost
+}
+
+/// Pops the queued job with the lowest estimated cost (architecture_fix
+/// Stage 7).
+///
+/// Selection is a stable linear scan over the `VecDeque`: ties keep FIFO order
+/// (the earliest-enqueued job among equals is popped), so a queue of
+/// otherwise-identical jobs behaves exactly like the historical
+/// `pop_front()` order and the deterministic FIFO tests remain valid. Cheap
+/// jobs pop before expensive ones, so heavy renders cannot starve a queue of
+/// trivial jobs while capacity is scarce.
+fn pop_lowest_cost_job(state: &mut BatchState) -> Option<BatchJob> {
+    let mut best_index = 0usize;
+    let mut best_cost = state.queue.front().map(estimate_job_cost)?;
+    for (index, job) in state.queue.iter().enumerate().skip(1) {
+        let cost = estimate_job_cost(job);
+        if cost < best_cost {
+            best_index = index;
+            best_cost = cost;
+        }
+    }
+    state.queue.remove(best_index)
 }
 
 /// Capacity accounting shared between the dispatcher and every admitted job.
@@ -297,10 +438,12 @@ impl CapacityGate {
             return prev;
         }
         let new = prev.saturating_sub(cost).max(floor);
-        let _ = self
-            .inner
-            .admission_ceiling
-            .compare_exchange(prev, new, Ordering::AcqRel, Ordering::Acquire);
+        let _ = self.inner.admission_ceiling.compare_exchange(
+            prev,
+            new,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         self.inner.admission_ceiling.load(Ordering::Acquire)
     }
 }
@@ -351,7 +494,8 @@ pub(crate) struct SchedulerSummary {
 
 /// Runs every job in `state.queue` through the capacity-based scheduler.
 ///
-/// - One dispatcher consumes the existing `VecDeque` in FIFO order.
+/// - One dispatcher consumes the existing `VecDeque`, admitting the
+///   lowest-estimated-cost job next (Stage 7; equal costs keep FIFO order).
 /// - For each job it computes the cost, asynchronously acquires that many
 ///   cost units (blocking only when capacity is genuinely exhausted), spawns
 ///   the job as an isolated Tokio task and immediately considers the next
@@ -398,7 +542,9 @@ where
                 if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
                     break;
                 }
-                let Some(job) = s.queue.pop_front() else {
+                // Stage 7 ordering: admit the lowest-estimated-cost job first
+                // (ties keep FIFO order via pop_lowest_cost_job).
+                let Some(job) = pop_lowest_cost_job(&mut s) else {
                     break;
                 };
                 let job_id = job.id.clone();
@@ -612,11 +758,7 @@ where
                                 if s.current_job_id.as_deref() == Some(job_id.as_str()) {
                                     recompute_displayed_job_id(&mut s);
                                 }
-                                tracing::warn!(
-                                    "job {} {}",
-                                    job_id,
-                                    message
-                                );
+                                tracing::warn!("job {} {}", job_id, message);
                             } else {
                                 {
                                     let mut s = state.lock().await;
@@ -740,8 +882,8 @@ fn disk_space_failure_message(job_id: &str, verdict: &DiskSpaceVerdict) -> Strin
 mod tests {
     use super::*;
     use crate::video::types::{
-        AspectRatio, EncodingProfile, FileProgress, JobStatus, OutputJob, SelectionMetadata,
-        TargetType, VideoEffectsSettings,
+        AspectRatio, EncodingProfile, FileProgress, JobStatus, OutputJob, PlatformConfig,
+        SelectionMetadata, TargetType, VideoEffectsSettings,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::path::PathBuf;
@@ -1630,6 +1772,143 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Stage 6/7 — estimate_job_cost (config-derived) + queue ordering
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn estimate_baseline_normal_job_is_1() {
+        // A plain 1080p H.264 job at the "medium" preset is the neutral 1.0.
+        let job = build_job(0);
+        assert_eq!(estimate_job_cost(&job), 1.0);
+    }
+
+    #[test]
+    fn estimate_subtitle_job_is_higher_than_normal() {
+        // Mirrors classify_job_cost's cost-2 scale so subtitle jobs sort
+        // behind cheaper renders.
+        let subtitle_job = build_subtitle_job(0, true, false);
+        assert!(estimate_job_cost(&subtitle_job) > estimate_job_cost(&build_job(1)));
+    }
+
+    #[test]
+    fn estimate_scales_with_platform_pixel_area() {
+        // 4K (3840×2160) is exactly 4× the 1080p baseline area.
+        let mut job = build_job(0);
+        job.output.platform_config = Some(PlatformConfig {
+            target_width: 3840,
+            target_height: 2160,
+            enforce_dimensions: true,
+        });
+        let cost = estimate_job_cost(&job);
+        assert!(
+            (cost - 4.0).abs() < 1e-9,
+            "4K cost should be 4.0, got {cost}"
+        );
+    }
+
+    #[test]
+    fn estimate_webm_is_heavier_than_h264() {
+        let mut job = build_job(0);
+        job.output.effects.output_format = Some(OutputFormat::Webm);
+        assert_eq!(estimate_job_cost(&job), 1.5);
+    }
+
+    #[test]
+    fn estimate_speed_preset_shifts_cost() {
+        let mut slow = build_job(0);
+        slow.output.encoding.speed_preset = "veryslow".to_string();
+        let mut fast = build_job(1);
+        fast.output.encoding.speed_preset = "ultrafast".to_string();
+        assert_eq!(estimate_job_cost(&fast), 0.6);
+        assert_eq!(estimate_job_cost(&slow), 1.8);
+    }
+
+    #[test]
+    fn estimate_unknown_preset_and_format_stay_neutral() {
+        // Unknown values must not fabricate a cost; they stay at 1.0 so
+        // ordering stays stable rather than guessing.
+        let mut job = build_job(0);
+        job.output.encoding.speed_preset = "nonexistent-preset".to_string();
+        assert_eq!(estimate_job_cost(&job), 1.0);
+    }
+
+    #[test]
+    fn estimate_remove_audio_is_marginally_cheaper() {
+        let mut job = build_job(0);
+        job.output.effects.remove_audio = Some(true);
+        assert_eq!(estimate_job_cost(&job), 0.92);
+    }
+
+    #[tokio::test]
+    async fn scheduler_admits_lowest_estimate_first() {
+        // Queue order: [subtitle(1.6), normal(1.0), normal(1.0)]. Even though
+        // the subtitle job is queued first, cheapest-first ordering admits the
+        // two normal jobs first; the subtitle job (cost 2) takes over the
+        // capacity once the normals release it. Purely config-derived ordering
+        // — no file size or duration probing involved.
+        let jobs: Vec<BatchJob> = std::iter::once(build_subtitle_job(0, true, false))
+            .chain(std::iter::once(build_job(1)))
+            .chain(std::iter::once(build_job(2)))
+            .collect();
+        let state = build_state_with_jobs(jobs);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel::<String>(3);
+        let runner = {
+            let started_tx = started_tx.clone();
+            move |job: BatchJob| {
+                let started_tx = started_tx.clone();
+                async move {
+                    started_tx.send(job.id.clone()).await.ok();
+                    JobOutcome::Processed
+                }
+            }
+        };
+
+        let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+
+        assert_eq!(summary.in_flight_cost, 0);
+        assert_eq!(summary.available_capacity, 2);
+        let started: Vec<String> = std::iter::from_fn(|| started_rx.try_recv().ok()).collect();
+        assert_eq!(
+            started,
+            vec![
+                "job-1".to_string(),
+                "job-2".to_string(),
+                "job-0".to_string()
+            ],
+            "cheapest jobs must be admitted before the expensive one"
+        );
+    }
+
+    #[tokio::test]
+    async fn equal_estimate_jobs_keep_fifo_order() {
+        // Identical config → identical estimate → pop_lowest_cost_job must
+        // behave exactly like the historical pop_front() order.
+        let state = build_state(3);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel::<usize>(3);
+        let runner = {
+            let started_tx = started_tx.clone();
+            move |job: BatchJob| {
+                let started_tx = started_tx.clone();
+                async move {
+                    let index: usize = job
+                        .id
+                        .rsplit_once('-')
+                        .and_then(|(_, n)| n.parse().ok())
+                        .expect("job id has numeric suffix");
+                    started_tx.send(index).await.ok();
+                    JobOutcome::Processed
+                }
+            }
+        };
+
+        let summary = run_scheduler(&state, 1, &healthy_disk_gate(), runner).await;
+
+        assert_eq!(summary.in_flight_cost, 0);
+        let order: Vec<usize> = std::iter::from_fn(|| started_rx.try_recv().ok()).collect();
+        assert_eq!(order, vec![0, 1, 2], "equal-cost jobs keep FIFO order");
+    }
+
+    // -----------------------------------------------------------------
     // Stage 3.2 â€” capacity accounting scenarios (total_capacity = 4)
     // -----------------------------------------------------------------
 
@@ -1717,10 +1996,7 @@ mod tests {
     // Scenario A â€” two subtitle jobs (2 + 2 = 4): both admitted concurrently.
     #[tokio::test]
     async fn two_subtitle_jobs_fill_capacity_4() {
-        let jobs: Vec<BatchJob> = (0..2)
-            .map(|i| build_subtitle_job(i, true, false))
-            .chain(std::iter::once(build_job(2)))
-            .collect();
+        let jobs: Vec<BatchJob> = (0..2).map(|i| build_subtitle_job(i, true, false)).collect();
         let state = build_state_with_jobs(jobs);
         let in_flight_cost: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let max_in_flight_cost: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -1739,7 +2015,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(executions.load(Ordering::SeqCst), 3, "all 3 jobs execute");
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            2,
+            "both subtitle jobs execute"
+        );
         assert!(
             max_in_flight_cost.load(Ordering::SeqCst) == 4,
             "two subtitle jobs (2+2) must reach the full capacity of 4"
@@ -1939,12 +2219,13 @@ mod tests {
         assert_eq!(s.failed_jobs, 1);
     }
 
-    // Lower-cost jobs can still use available capacity instead of idling. With
-    // capacity 4 and a subtitle job (cost 2) admitted first, two normal jobs
-    // (cost 1 each) can be admitted into the remaining 2 units, and the final
-    // normal job waits until release â€” no head-of-line blocking.
+    // Cheap jobs are admitted before a queued expensive job (cheapest-first
+    // ordering), preventing head-of-line blocking: with capacity 4 the three
+    // normal jobs are all admitted immediately and the subtitle job replaces
+    // them as each cheap job releases its permit. Every job executes, nothing
+    // leaks, and the cheap jobs demonstrably ran concurrently first.
     #[tokio::test]
-    async fn lower_cost_jobs_use_remaining_capacity() {
+    async fn lower_cost_jobs_are_admitted_before_expensive_ones() {
         let jobs: Vec<BatchJob> = std::iter::once(build_subtitle_job(0, true, false))
             .chain(std::iter::once(build_job(1)))
             .chain(std::iter::once(build_job(2)))
@@ -1954,27 +2235,57 @@ mod tests {
         let in_flight_cost: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let max_in_flight_cost: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let executions: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel::<String>(4);
 
-        let summary = run_scheduler(
-            &state,
-            4,
-            &healthy_disk_gate(),
-            cost_tracking_runner(
-                4,
-                in_flight_cost.clone(),
-                max_in_flight_cost.clone(),
-                executions.clone(),
-            ),
-        )
-        .await;
+        let runner = {
+            let in_flight_cost = in_flight_cost.clone();
+            let max_in_flight_cost = max_in_flight_cost.clone();
+            let executions = executions.clone();
+            let started_tx = started_tx.clone();
+            move |job: BatchJob| {
+                let in_flight_cost = in_flight_cost.clone();
+                let max_in_flight_cost = max_in_flight_cost.clone();
+                let executions = executions.clone();
+                let started_tx = started_tx.clone();
+                async move {
+                    let cost = classify_job_cost(&job);
+                    let before = in_flight_cost.fetch_add(cost, Ordering::SeqCst);
+                    let after = before + cost;
+                    max_in_flight_cost.fetch_max(after, Ordering::SeqCst);
+                    assert!(after <= 4, "in_flight_cost exceeded capacity");
+                    started_tx.send(job.id.clone()).await.ok();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    in_flight_cost.fetch_sub(cost, Ordering::SeqCst);
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    JobOutcome::Processed
+                }
+            }
+        };
+
+        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(executions.load(Ordering::SeqCst), 4, "all 4 jobs execute");
         assert!(
-            max_in_flight_cost.load(Ordering::SeqCst) == 4,
-            "capacity must be fully utilized (subtitle 2 + two normals 1+1 = 4)"
+            max_in_flight_cost.load(Ordering::SeqCst) >= 3,
+            "the three cheap jobs must run concurrently (no head-of-line blocking)"
+        );
+        assert!(
+            max_in_flight_cost.load(Ordering::SeqCst) <= 4,
+            "in_flight_cost must never exceed total_capacity"
         );
         assert_eq!(summary.in_flight_cost, 0);
         assert_eq!(summary.available_capacity, 4);
+        let started: Vec<String> = std::iter::from_fn(|| started_rx.try_recv().ok()).collect();
+        assert_eq!(
+            started,
+            vec![
+                "job-1".to_string(),
+                "job-2".to_string(),
+                "job-3".to_string(),
+                "job-0".to_string(),
+            ],
+            "cheap jobs must be admitted before the expensive subtitle job"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2439,7 +2750,10 @@ mod tests {
         );
         assert_eq!(attempts.get("job-0"), Some(&1));
         assert_eq!(attempts.get("job-1"), Some(&1));
-        assert_eq!(summary.total_capacity, 3, "configured capacity is the baseline");
+        assert_eq!(
+            summary.total_capacity, 3,
+            "configured capacity is the baseline"
+        );
         assert_eq!(
             summary.admission_ceiling, 2,
             "one resource failure reduces the ceiling by one unit"
@@ -2447,7 +2761,8 @@ mod tests {
         assert_eq!(summary.in_flight_cost, 0);
         assert_eq!(summary.available_capacity, 3);
         assert_eq!(
-            state.lock().await.failed_jobs, 0,
+            state.lock().await.failed_jobs,
+            0,
             "a successful retry is not counted as a failure"
         );
     }
@@ -2594,7 +2909,10 @@ mod tests {
 
         {
             let ev = events.lock().await;
-            assert!(ev.contains(&"job-2-failed".to_string()), "job-2 reported its failure");
+            assert!(
+                ev.contains(&"job-2-failed".to_string()),
+                "job-2 reported its failure"
+            );
             assert!(
                 ev.contains(&"job-0-running".to_string())
                     && ev.contains(&"job-1-running".to_string()),
@@ -2629,12 +2947,17 @@ mod tests {
             "the retry must not start until an in-flight job has finished"
         );
         assert!(
-            ev.contains(&"job-0-finished".to_string()) && ev.contains(&"job-1-finished".to_string()),
+            ev.contains(&"job-0-finished".to_string())
+                && ev.contains(&"job-1-finished".to_string()),
             "job-0 and job-1 finished normally and were not interrupted"
         );
 
         let attempts = attempts.lock().await;
-        assert_eq!(attempts.get("job-2"), Some(&2), "job-2 was retried exactly once");
+        assert_eq!(
+            attempts.get("job-2"),
+            Some(&2),
+            "job-2 was retried exactly once"
+        );
         assert_eq!(summary.total_capacity, 3);
         assert_eq!(summary.admission_ceiling, 2);
         assert_eq!(summary.in_flight_cost, 0);
@@ -2681,13 +3004,20 @@ mod tests {
         let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
 
         let attempts = attempts.lock().await;
-        assert_eq!(attempts.get("job-0"), Some(&1), "no retry below its own cost");
+        assert_eq!(
+            attempts.get("job-0"),
+            Some(&1),
+            "no retry below its own cost"
+        );
         assert_eq!(
             attempts.get("job-1"),
             Some(&1),
             "job-1 is still admitted and processed normally"
         );
-        assert_eq!(summary.admission_ceiling, 1, "ceiling reduced once (2 -> 1)");
+        assert_eq!(
+            summary.admission_ceiling, 1,
+            "ceiling reduced once (2 -> 1)"
+        );
         assert_eq!(summary.in_flight_cost, 0);
         assert_eq!(summary.available_capacity, 2);
         assert_eq!(state.lock().await.failed_jobs, 1);

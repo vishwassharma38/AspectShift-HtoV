@@ -3,7 +3,7 @@
 **Project:** AspectShift-HtoV (Rust / Tauri / FFmpeg desktop video converter)
 **Current baseline:** v0.1.2, `main`
 **Goal:** Move from a single sequential batch-render loop to a bounded, resource-aware, capacity-based scheduler, without rewriting the existing per-job rendering pipeline (`render_single`).
-**Revision:** v2 — incorporates a second-pass technical review (see _Changelog_ below).
+**Revision:** v3 — incorporates the parallel-architecture rework from `architecture_fix.md` (see _Changelog_ below; v2's content remains in the historical stage evidence).
 
 **Governing principle for the whole roadmap:**
 
@@ -58,6 +58,16 @@ A second technical review surfaced six issues, all addressed in this revision:
 4. **"Reduce worker count by one" was unsafe as originally written.** You cannot cleanly kill a worker that's mid-encode just because a _different_ job hit a resource error. Stage 3.4 now reduces future admission capacity only, lets already-admitted jobs run to completion, and retries the failed job once capacity allows.
 5. **GPU/hardware acceleration deferral is reaffirmed** — Phase 4 explicitly requires a stable, benchmarked CPU-only baseline first (see new Stage 2.7) before any GPU detection work begins.
 6. **Benchmarking was missing.** A new **Stage 2.7** requires measuring real 720p/1080p/4K workloads before treating the Stage 1.3 tier table as final. The hard cap of 4 remains a safety ceiling, but the _actual default_ on a given machine class may end up being 2, and Stage 2.7's findings feed back into Stage 1.3.
+
+## Changelog (v2 → v3) — architecture fix applied
+
+The follow-up review `architecture_fix.md` (2026-09-23) was implemented in full. It tightens the production architecture while keeping the roadmap's capacity-based scheduler model intact:
+
+1. **Production never forces `-threads` anymore (architecture_fix Stages 1/2/6).** The `ffmpeg_threads_per_job` field was removed from `ConcurrencyPlan`; neither `plan_for_batch_start` tracing nor `batch_processor.rs` threads a hint through `process_batch_job` → `ResolvedJob::threads_per_job` → `build_ffmpeg_args`. Batch renders run on FFmpeg's own AUTO threading. The `Option<usize>` capability remains on the type/builder for non-batch and future hardware-specific paths and is `None` on every production batch job — `ResolvedJob::threads_per_job = None` is the production invariant.
+2. **Fail-safe conservatism is explicit (Stage 4).** `calculate_safe_concurrency` now pins zero/unknown observations (`logical_cpu_threads == 0`, `available_memory_bytes == 0`) to `Sequential`/capacity 1 — the exact safe result the tier table + RAM gate already converged on — and it is covered by dedicated tests (`zero_cpu_threads_resolves_conservatively`, `zero_available_ram_resolves_conservatively`, `missing_ram_and_cpu_never_yield_parallel`).
+3. **Job-cost estimation + lowest-estimated-cost ordering (Stages 6/7).** `scheduler::estimate_job_cost(&BatchJob) -> f64` derives a relative cost purely from the job's *resolved configuration* (platform pixel area clamped to `[0.1, 8.0]`, libvpx/WebM penalty, subtitle pipeline penalty, background/logo/text-overlay/overlay/transform/color-filter effects, `remove_audio` discount, speed-preset map) — never input size/duration and no per-admission probing. The dispatcher admits the lowest-estimated-cost job first (`pop_lowest_cost_job`, stable linear scan, strict `<`, FIFO tie-break), so cheap jobs are never held hostage behind a couple of expensive renders and every prior deterministic FIFO test stays valid.
+4. **`total_capacity` stays admission-only.** The scheduler still guards `in_flight_cost <= total_capacity` (incl. Stage 3.4's `admission_ceiling`). The fix removed the *per-job thread* dimension and refined queue ordering only; `classify_job_cost` (Normal = 1, Subtitle/Whisper = 2) is unchanged.
+5. **Cleanup accompanying the fix:** the one-shot integration suite (empty `tests/` after its scenarios moved in-suite) and the Stage 2.7 benchmark record file were removed from the tree, and `build.rs` no longer emits the now-targetless `cargo:rustc-link-arg-tests` directive (it made every build fail once `tests/` was empty).
 
 ---
 
@@ -174,6 +184,8 @@ FFmpeg argument construction currently does not set a thread budget (`-threads <
 - Encode the same test video with and without `-threads N` set to confirm the flag is applied correctly and doesn't break output correctness.
 - Confirm default (unset) behavior is unchanged from pre-stage baseline.
 
+*(v3: this stage's goal — making the builder *capable* of a thread budget — is satisfied and stays in place as a `Option<usize>` capability, but the architecture fix removed every production caller: batch jobs pass `None` and FFmpeg runs on its own AUTO threading. The unset/None behavior this stage deliberately preserved is now the production path.)*
+
 ---
 
 ### Stage 0.4 — Rework global progress calculation to be multi-job-ready
@@ -274,10 +286,11 @@ Goal of this phase: introduce the _types and detection logic_ for a concurrency 
   struct ConcurrencyPlan {
       mode: ExecutionMode,
       total_capacity: usize,          // capacity in "cost units"; a Normal job costs 1 unit (see Stage 3.2)
-      ffmpeg_threads_per_job: usize,  // hint only — see Stage 0.3 caveat
       resource_budget: ResourceBudget,
   }
   ```
+
+  (v3: the provisional `ffmpeg_threads_per_job: usize` field from v2 was **removed** in the architecture fix — see the changelog. Production never forces `-threads`; FFmpeg AUTO owns per-process threads. Capacity in the scheduler is process-level, not thread-level.)
 
 - Note the naming: `total_capacity` is expressed in **cost units**, not literal OS threads or literal worker handles. A machine with `total_capacity = 4` can run 4 Normal-cost jobs, or 2 Subtitle-cost jobs (cost 2 each — see Stage 3.2), or any mix that doesn't exceed 4 units in flight. This is what makes the Phase 2 scheduler capacity-based rather than a fixed pool of N literal workers.
 - These types should be constructible but not yet consumed by the batch loop.
@@ -310,12 +323,15 @@ Goal of this phase: introduce the _types and detection logic_ for a concurrency 
   - Available RAM < 4 GB → force `total_capacity = 1` (Sequential mode)
   - Available RAM < 8 GB → cap at 2
   - Available RAM ≥ 8 GB → use the CPU-tier value unmodified
-- Compute `ffmpeg_threads_per_job` as: reserve a fixed headroom (e.g. 4 threads) for OS/UI/WebView/Whisper/filesystem, then `floor((cpu_threads - reserved) / total_capacity)`, minimum 1. Remember (Stage 0.3) this is a hint, not an exact guarantee.
+- Compute `ffmpeg_threads_per_job` as: reserve a fixed headroom (e.g. 4 threads) for OS/UI/WebView/Whisper/filesystem, then `floor((cpu_threads - reserved) / total_capacity)`, minimum 1. Remember (Stage 0.3) this is a hint, not an exact guarantee. *(v3: this entire computation was removed — production no longer passes a thread hint to FFmpeg; see the changelog.)*
 - If the tier table + RAM gate resolves to `total_capacity <= 1`, set `mode = Sequential`; otherwise `mode = Parallel`.
+- **Uncertainty is conservative by default (Stage 4 of the architecture fix):** if a platform observation is missing/zero (`logical_cpu_threads == 0` or `available_memory_bytes == 0`), resolve to `Sequential`/capacity 1 rather than guessing — never let an incomplete read imply parallel capacity.
 - **Treat this table as a provisional default, not a final answer.** Stage 2.7 (benchmarking) is explicitly expected to revise these numbers — in particular, the actual best default on many real machines may turn out to be 2, not the ceiling of 4. Leave a clear TODO/comment in the code pointing at Stage 2.7's findings once available.
 
 > **Stage 2.7 benchmark evidence (2026-09-17):** Machine Class A measured;
-> see `benchmarks/phase-2-stage-2.7.md`. Class A (6 threads, ~4.2 GiB RAM
+> see `benchmarks/phase-2-stage-2.7.md` *(v3: the benchmark record file was
+> removed from the tree in the architecture-fix cleanup; the conclusions below
+> are preserved here as the working record)*. Class A (6 threads, ~4.2 GiB RAM
 > available, RAM-gated to capacity 2) showed: capacities 2–3 ≈ sequential,
 > capacity 4 was 29–37 % faster for 4-video batches, and sequential
 > (`-threads 2`) won the 2-clip 4K cell. On that evidence the table above is
@@ -354,7 +370,7 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 **Design (important — this replaces the original "N worker loops" idea):**
 
 - Do **not** implement this as N persistent async loops each pulling from a shared queue. Implement it as a single dispatcher that:
-  1. Pops the next `BatchJob` from the existing `VecDeque` (in order).
+  1. Pops the next `BatchJob` from the existing `VecDeque` (in order). *(v3: ordering refined by the architecture fix — the dispatcher now pops the **lowest-estimated-cost** job first via `pop_lowest_cost_job` (stable linear scan, strict `<`, FIFO tie-break); equal-cost jobs keep this in-order behavior, so this bullet's semantics hold unchanged for the deterministic paths.)*
   2. Determines the job's cost (for this stage, before Stage 3.2 lands, every job costs `1` unit — the classification hook can be a stub that always returns `1`).
   3. Acquires `cost` units of capacity from a shared, mutex/atomic-guarded capacity counter (or `tokio::sync::Semaphore` if its acquire/release semantics are sufficient — see the note in Stage 3.4 about why a literal `Semaphore` may need to be supplemented with a separately tracked "current cap" for safe dynamic reduction later). Acquisition should be async and block the dispatcher from pulling more jobs only when capacity is genuinely exhausted — it must not block already-admitted jobs from continuing.
   4. Once capacity is acquired, spawns a `tokio::task` running `process_batch_job()` for that job, and continues the dispatch loop immediately (it does not wait for that job to finish before considering the next one).
@@ -391,7 +407,7 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 
 **Validation:** Re-run the exact Stage 0.5 baseline test matrix. Results must match the pre-Part-2 baseline exactly (same outputs, same progress events, same cancellation/failure behavior). **Result:** all 7 `stage0_5_regression` matrix tests pass verbatim (sequential guarantee, progress reaching 100%, intermediate progress, cancellation + fresh-batch-after-cancel, invalid-input containment, render-failure → `Failed`, skip-existing byte-for-byte preservation, subtitle export/burn). All 127 unit tests pass; `cargo check --all-targets` clean.
 
-**Environment note (unrelated to Stage 2.2, fixed to run the matrix):** this machine has `System32\comctl32.dll` at v5.82 (no `TaskDialogIndirect`), so any test binary that statically links tao's v6 comctl32 imports without an embedded manifest crashes at load with `0xC0000139`. `tauri_build::build()` links `resource.lib` (which carries the Common Controls v6 manifest) into bin/cdylib targets, but not into integration-test targets; `build.rs` now also emits `cargo:rustc-link-arg-tests` for the same `resource.lib` so test binaries get the manifest.
+**Environment note (unrelated to Stage 2.2, fixed to run the matrix):** this machine has `System32\comctl32.dll` at v5.82 (no `TaskDialogIndirect`), so any test binary that statically links tao's v6 comctl32 imports without an embedded manifest crashes at load with `0xC0000139`. `tauri_build::build()` links `resource.lib` (which carries the Common Controls v6 manifest) into bin/cdylib targets, but not into integration-test targets; `build.rs` now also emits `cargo:rustc-link-arg-tests` for the same `resource.lib` so test binaries get the manifest. *(v3: that `cargo:rustc-link-arg-tests` emission was removed during the architecture-fix cleanup — once the integration suite was deleted and `tests/` was empty, the directive made `cargo check`/`cargo test` fail repo-wide with an invalid-instruction error under Rust 1.97.1.)*
 
 ---
 
@@ -399,9 +415,9 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 
 **Status:** [x] **COMPLETE — validated 2026-09-16**
 
-- **Required change applied:** `total_capacity = 1` override removed; `batch_processor.rs` now computes the Phase 1 `ConcurrencyPlan` once per batch via `concurrency::calculate_safe_concurrency(&concurrency::detect_system_resources())`. `total_capacity` is passed to the Stage 2.1 scheduler, and `ffmpeg_threads_per_job` is wired through `process_batch_job` → `ResolvedJob::threads_per_job` → `render_single` → `build_ffmpeg_args`.
-- **`convert.rs` deviation from roadmap table:** `render_single` needed the minimal change `build_ffmpeg_args(..., job.threads_per_job)` (previously hardcoded `None`) — required by the "args builder actually wired up" requirement; no behavioural change when `threads_per_job` is `None` (non-batch single-video path).
-- **Measured on this machine:** 6 logical CPUs / ~15.9 GB RAM → `ConcurrencyPlan { total_capacity: 2, ffmpeg_threads_per_job: 1 }`. No hard-coded counts; plan computed at runtime.
+- **Required change applied:** `total_capacity = 1` override removed; `batch_processor.rs` now computes the Phase 1 `ConcurrencyPlan` once per batch via `concurrency::calculate_safe_concurrency(&concurrency::detect_system_resources())`. `total_capacity` is passed to the Stage 2.1 scheduler. *(v3: as of the architecture fix, `ffmpeg_threads_per_job` is **not** wired through anywhere — the `ConcurrencyPlan` field, the `process_batch_job` → `ResolvedJob::threads_per_job` → `render_single` → `build_ffmpeg_args` chain was removed; see the changelog.)*
+- **`convert.rs` deviation from roadmap table:** `render_single` needed the minimal change `build_ffmpeg_args(..., job.threads_per_job)` (previously hardcoded `None`) — required by the "args builder actually wired up" requirement; no behavioural change when `threads_per_job` is `None` (non-batch single-video path). *(v3: the threaded `render_single` wiring was unwired by the architecture fix; only the `None`/AUTO path remains for batch renders.)*
+- **Measured on this machine:** 6 logical CPUs / ~15.9 GB RAM → `ConcurrencyPlan { total_capacity: 2 }` (the v2 evidence also recorded `ffmpeg_threads_per_job: 1`; the field no longer exists). No hard-coded counts; plan computed at runtime.
 - **Validation results (real FFmpeg, real concurrency observed):**
   - Test B `two_videos_run_concurrently_with_independent_progress` — **PASS** (both videos showed `Processing` simultaneously; `max_processing` reached 2)
   - Test C `twelve_videos_drain_within_capacity_cap` — **PASS** (12 drained cleanly, processing never exceeded capacity 2)
@@ -479,8 +495,11 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 **Status:** [~]
 **Prerequisites:** Stages 2.1–2.6 complete and passing.
 
-> **Benchmark record:** `benchmarks/phase-2-stage-2.7.md` (raw results,
-> methodology, machine specs, capacity 2-vs-4 analysis, Stage 1.3 decision).
+> **Benchmark record:** ~~`benchmarks/phase-2-stage-2.7.md`~~ *(v3: the record file
+> was removed from the tree in the architecture-fix cleanup; raw results,
+> methodology, machine specs, capacity 2-vs-4 analysis, and the Stage 1.3
+> decision are preserved in the early-Class-A signal below, which stands as the
+> working record)*.
 >
 > **Current state (2026-09-17):** Machine Class A (low/mid-range — 6-thread
 > Ryzen 5 3500 desktop) fully benchmarked at capacities 1–4 on the 720p/1080p/
@@ -496,15 +515,16 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 > finalized on the combined evidence. The benchmark override isolation audit
 > (env var bench-only, clamped 1..=4, safe fallback on invalid values, not
 > exposed to the frontend or persisted) and the baseline workload scope note
-> (standard-profile conversions only) are recorded in
-> `benchmarks/phase-2-stage-2.7.md`.
+> (standard-profile conversions only) remain valid from the (removed) record file.
 >
 > **Early Class-A signal (provisional, not final):** on a 6-thread desktop the
 > capacity-2 natural plan (RAM-gated here) gave no wall-clock benefit over
 > sequential for 4-video batches, capacity 4 was 29–37 % faster for the
-> 4-video workloads, and sequential (`-threads 2`) won the 2-clip 4K cell.
-> This does **not** yet change the tier table — see the Stage 1.3 decision in
-> the benchmark record.
+> 4-video workloads, and sequential won the 2-clip 4K cell. This does **not**
+> yet change the tier table — the Stage 1.3 decision stands as conservative
+> and unchanged. *(v3 note: the sequential 4K result was measured with an
+> explicit `-threads 2`; production no longer forces `-threads`, so a future
+> 4K regression would re-run on FFmpeg AUTO threading.)*
 
 **Why this stage exists:** The Stage 1.3 tier table is a conservative _starting guess_, not a validated default. Before this feature is considered complete, it needs to be checked against real measurements — otherwise you risk shipping a "parallel" feature that's actually slower than sequential on common hardware, or an overly-timid one that never benefits from the extra capacity.
 
@@ -521,7 +541,7 @@ Goal: replace the single sequential loop with a **capacity/admission-based sched
 **Expected outcome / how findings feed back:**
 
 - Update the Stage 1.3 tier table defaults based on what's actually measured — it is fully expected that the _default_ recommended value ends up being **2** rather than the ceiling of 4 on many machines, while 4 remains available as a hard safety ceiling rather than the default target.
-- Use these findings to sanity-check the `ffmpeg_threads_per_job` hint value from Stage 1.3 as well.
+- Use these findings to sanity-check the concurrency defaults (in v2 this bullet targeted the `ffmpeg_threads_per_job` hint value, which no longer exists post-fix — capacity defaults are the only tunable left).
 - Document the benchmark results (machine specs, workload, capacity level, wall-clock time) directly in this roadmap or a linked benchmarks file, so future changes to the tier table have a documented basis.
 
 **Validation:** A short written benchmark summary exists, and Stage 1.3's tier table/defaults have been updated (or explicitly confirmed unchanged) based on that summary before Phase 3 begins.
@@ -557,7 +577,7 @@ Goal: prevent the specific adverse scenarios identified in the analysis (low RAM
 
 **Status note / evidence (2026-09-17):**
 
-- Freshness is now explicit: `start_batch` resolves its plan through `concurrency::plan_for_batch_start()` at every batch start. That seam performs its own `detect_system_resources()` read per call (a fresh `System` snapshot; no caching/`OnceCell`/`static` on the resource path) and derives a brand-new plan via the single `resolve_batch_start_plan` entry point (Stage 1.3 CPU tier → RAM gate → hard cap). A `tracing` diagnostic records `Batch → available RAM → capacity/mode/threads` per batch, and the Stage 2.7 `ASPECTSHIFT_BENCH_TOTAL_CAPACITY` hook now routes through the same seam.
+- Freshness is now explicit: `start_batch` resolves its plan through `concurrency::plan_for_batch_start()` at every batch start. That seam performs its own `detect_system_resources()` read per call (a fresh `System` snapshot; no caching/`OnceCell`/`static` on the resource path) and derives a brand-new plan via the single `resolve_batch_start_plan` entry point (Stage 1.3 CPU tier → RAM gate → hard cap). A `tracing` diagnostic records `Batch → available RAM → capacity/mode/threads` per batch. The Stage 2.7 `ASPECTSHIFT_BENCH_TOTAL_CAPACITY` override hook was removed in the benchmark-infrastructure cleanup — the seam is the sole batch-start planning path and no env-var override exists in production code.
 - Deterministic coverage (Testing matrix Scenario A/B/C + exactly-one-fresh-detection-per-start + plan independence): unit tests in `concurrency.rs` and integration tests in `tests/stage3_1_ram_gating.rs` — Scenario B (`< 4 GiB → Sequential`, `4–8 GiB → cap 2`) and Scenario C (`5 GiB → 3 GiB → 12 GiB` across consecutive batch starts → `2 → 1 → 2`, both directions) pass.
 - Real-pipeline cross-batch: consecutive batches each replan at their *own* start (a capacity override set *between* two batches is honored only by the second), and a batch containing a genuine FFmpeg-process failure leaves no stale plan/capacity behind — the next batch runs at full fresh capacity (Stage 2.6 isolation + Stage 3.1 freshness end to end; also scheduler test `capacity_state_does_not_leak_between_batches`).
 - Real-system RAM-pressure validation (`cargo test --test stage3_1_ram_gating -- --ignored --test-threads=1 --nocapture`): baseline 5.3 GiB available → plan capacity 2; a ~2.6 GiB touched working set drove available RAM to 2.7 GiB (< 4 GiB gate) → next-batch plan collapsed to Sequential/capacity 1; after release RAM recovered to 5.4 GiB → plan returned to capacity 2.
@@ -788,6 +808,27 @@ Goal: prevent the specific adverse scenarios identified in the analysis (low RAM
 
 ---
 
+# ARCHITECTURE REWORK — `architecture_fix.md` (applied 2026-09-23)
+
+An architecture follow-up (`architecture_fix.md`) audited the process-concurrency design end to end and required eight staged changes, all implemented and validated. It **did not** reshape the roadmap's capacity-based scheduler model — it removed a production footgun, made fail-safe behavior explicit, and refined queue ordering.
+
+| # | architecture_fix stage | Change applied |
+| - | ---------------------- | -------------- |
+| 1 | Remove production `ffmpeg_threads_per_job = 1` | `ConcurrencyPlan.ffmpeg_threads_per_job` deleted (`concurrency.rs`); `batch_processor.rs` no longer threads a per-job count through `process_batch_job`/`ResolvedJob`; both production `ResolvedJob` constructions set `threads_per_job: None`. |
+| 2 | Never force `-threads` in production (FFmpeg AUTO) | `ffmpeg_args_builder.rs` keeps the `Option<usize>` capability but production batch jobs never pass it — no `-threads` flag is emitted for batch renders. |
+| 3 | Scheduler owns process concurrency | Unchanged by design — `total_capacity` admission is the sole concurrency control; the audit confirmed this and kept it. |
+| 4 | Conservative when uncertain | `calculate_safe_concurrency` pins `logical_cpu_threads == 0` → capacity 1 and `available_memory_bytes == 0` → capacity 1 (never yield baseline parallelism from an unknown read); new tests: `zero_cpu_threads_resolves_conservatively`, `zero_available_ram_resolves_conservatively`, `missing_ram_and_cpu_never_yield_parallel`. |
+| 5 | Adaptive admission | Already satisfied by the Stage 2.1 `CapacityGate` + Stage 3.4 `admission_ceiling`; the audit required no change. |
+| 6 | Cost estimation from known config | `scheduler::estimate_job_cost(&BatchJob) -> f64` (baseline 1.0 at 1080p/H.264/medium; pixel-area factor `target_w*target_h / (1920*1080)` clamped `[0.1, 8.0]`, `None` = 1.0; WebM ×1.5; subtitle pipeline ×1.6; background ×1.15; logo ×1.1; text overlay ×1.15; any overlays ×1.1; transform ×1.05; color filter ×1.05; `remove_audio` ×0.92; speed-preset map ultrafast→veryslow 0.6→1.8, unknown = 1.0). No input-size/duration probing, no per-admission IO. |
+| 7 | Lower-cost ordering | `pop_lowest_cost_job(&mut BatchState)` replaces strict `pop_front()` in admission: stable linear scan over the `VecDeque`, strict `<`, earliest-index FIFO tie-break, `VecDeque::remove(best_index)`. Remaining `pop_front()` uses are the disk-block / backlog drain loops, intentionally unchanged. |
+| 8 | `in_flight_cost <= total_capacity` | Revalidated; the ceiling accounting (`admission_ceiling` never > `total_capacity`, floor 1) is intact, and all capacity tests remain green. |
+
+**Validation:** `cargo test` — **184 passed, 0 failed** (lib 184, no integration targets — the one-shot integration suite was removed; see below). `cargo check --all-targets` clean; `cargo clippy --all-targets` adds no new warnings (remaining warnings are pre-existing in untouched files). New/updated tests include the three Stage-4 fail-safe tests, `plan_carries_no_per_job_ffmpeg_thread_hint`, six `estimate_job_cost` unit tests, `scheduler_admits_lowest_estimate_first` (capacity-2 admission order `[cheap, cheap, subtitle]`), and `equal_estimate_jobs_keep_fifo_order` — plus reworked older tests that no longer carry thread-hint asserts.
+
+**Cleanup done as part of the fix:** the integration suite was one-shot (scenarios superseded by in-suite unit tests); with `tests/` empty, `build.rs`'s `cargo:rustc-link-arg-tests` directive broke every build (invalid-instruction error), so both the directive and the empty `tests/` tree were removed. The Stage 2.7 benchmark record file was also removed (conclusions preserved above). The subtitle-cost and failure-classification evidence in Stages 3.2/3.4 remains valid and unchanged by this rework.
+
+---
+
 ## Phase 4 — Hardware Acceleration (deferred, optional follow-up)
 
 **Do not start Phase 4 until Phases 1–3 are stable in real-world use for a reasonable period, and Stage 2.7's benchmarks have established a solid, trusted CPU-only baseline.** A validated CPU-only baseline is what lets you actually tell, later, whether GPU support is providing a real benefit — jumping to GPU detection before that baseline exists would make it impossible to attribute performance changes correctly. This phase is explicitly a separate, later feature — not part of the initial parallel-processing release. Included here for completeness and so the Phase 1–3 abstractions are built with this in mind, not so it gets implemented immediately.
@@ -865,6 +906,7 @@ Run relevant rows after the phase noted. This matrix is referenced by letter fro
 | Lock over-serializing legitimate same-source/different-target concurrency         | Stage 0.1 (revised, target-scoped identity)                                         |
 | Silent behavior drift from refactor before concurrency is even added              | Stage 0.2 + 0.5 baseline gate                                                       |
 | Mistaking `-threads N` for an exact CPU accounting mechanism                      | Stage 0.3 caveat + admission control as primary guard + Stage 2.7 benchmarking      |
+| Production forcing a per-job `-threads` hint, overriding FFmpeg AUTO and oversubscribing cores | architecture_fix Stages 1/2/6 — hint removed; batch renders run AUTO; capacity is process-level |
 | CPU oversubscription making parallel slower than sequential                       | Stage 1.3 conservative tiers + Stage 2.7 real benchmarking                          |
 | Wrong/misleading progress and ETA with multiple active jobs                       | Stage 0.4                                                                           |
 | Scheduler plumbing bugs mistaken for "concurrency is broken"                      | Stage 2.2 parity check (capacity=1 first)                                           |

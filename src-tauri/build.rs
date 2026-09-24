@@ -1,14 +1,9 @@
 fn main() {
     tauri_build::build();
 
-    // tauri_build emits cargo:rustc-link-arg for the resource.lib (which contains the
-    // Windows manifest with Common Controls v6), but that directive only covers bin/cdylib
-    // targets. Integration tests also need the manifest to resolve comctl32 v6 imports
-    // (e.g. TaskDialogIndirect). We re-emit the same resource.lib via the tests variant.
-    if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        let resource_lib = std::path::Path::new(&out_dir).join("resource.lib");
-        if resource_lib.exists() {
-            println!("cargo:rustc-link-arg-tests={}", resource_lib.display());
-        }
-    }
+    // Note: the integration-test `rustc-link-arg-tests` directive for
+    // resource.lib (Windows Common Controls v6 manifest) was removed as part
+    // of the architecture-fix rework, which deleted the `tests/` integration
+    // suite. The bin/cdylib targets still receive the manifest via
+    // tauri_build's own `cargo:rustc-link-arg`.
 }
