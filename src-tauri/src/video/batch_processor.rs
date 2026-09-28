@@ -569,20 +569,16 @@ async fn process_batch_job(
                 }
             };
 
-        let subtitle_job = crate::video::types::ResolvedJob {
-            id: "subtitle-layout-job".to_string(),
-            session_id: session_id.clone(),
-            input_path: input_path.clone(),
-            output_path: String::new(),
-            alt_output_path: None,
-            ratio: job.output.ratio.clone(),
-            encoding: job.output.encoding.clone(),
-            effects: job.output.effects.clone(),
-            platform_config: job.output.platform_config.clone(),
-            subtitle_path: None,
-            subtitle_fonts_dir: None,
-            threads_per_job: None,
-        };
+        // Layout-only job for subtitle measurement: never rendered, so no
+        // encoding resolution applies. Uses the baseline encoding directly.
+        let subtitle_job = crate::video::types::ResolvedJob::for_layout(
+            "subtitle-layout-job".to_string(),
+            input_path.clone(),
+            job.output.ratio.clone(),
+            job.output.encoding.clone(),
+            job.output.effects.clone(),
+            job.output.platform_config.clone(),
+        );
 
         let subtitle_plan =
             match crate::video::preset_adapter::create_render_plan_resolved(&subtitle_job) {
@@ -780,23 +776,48 @@ async fn process_batch_job(
         }
     }
 
-    let resolved_job = crate::video::types::ResolvedJob {
-        id: job_id.clone(),
-        session_id: session_id.clone(),
-        input_path: input_path.clone(),
-        output_path: job.resolved_output_path.clone(),
-        alt_output_path: job.alt_output_path.clone(),
-        ratio: job.output.ratio.clone(),
-        encoding: job.output.encoding.clone(),
-        effects: job.output.effects.clone(),
-        platform_config: job.output.platform_config.clone(),
-        subtitle_path: prepared_subtitle
+    // Authoritative boundary: Rust validates the baseline, resolves the
+    // effective encoding from the transient overrides, and derives re-encode
+    // intent. Frontend-supplied `force_reencode` is ignored. Invalid encoding
+    // input fails this job before any FFmpeg process can start.
+    let resolved_job = match crate::video::types::ResolvedJob::resolve_for_render(
+        job_id.clone(),
+        session_id.clone(),
+        input_path.clone(),
+        job.resolved_output_path.clone(),
+        job.alt_output_path.clone(),
+        &job.output,
+        prepared_subtitle
             .as_ref()
             .map(|prepared| prepared.path.clone()),
-        subtitle_fonts_dir: prepared_subtitle
+        prepared_subtitle
             .as_ref()
             .and_then(|prepared| prepared.fonts_dir.clone()),
-        threads_per_job: None,
+        None,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            let failure_class = classify_video_error(&e);
+            let failure = e.to_string();
+            {
+                let mut s = state.lock().await;
+                if let Some(p) = s.job_progress.get_mut(&job_id) {
+                    p.status = JobStatus::Failed(failure.clone());
+                    let _ = app.emit("batch://file-status", p.clone());
+                }
+                if !matches!(failure_class, FailureClass::ResourceRelated) {
+                    s.failed_jobs += 1;
+                }
+            }
+            emit_batch_progress(app, state).await;
+            if matches!(failure_class, FailureClass::ResourceRelated) {
+                return JobOutcome::ClassifiedFailed {
+                    message: failure,
+                    failure_class,
+                };
+            }
+            return JobOutcome::Processed;
+        }
     };
 
     if token.is_cancelled() {

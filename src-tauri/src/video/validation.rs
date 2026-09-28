@@ -1,51 +1,20 @@
+use crate::video::encoding::{validate_baseline_profile, validate_encoding_overrides};
 use crate::video::types::{
     EncodingProfile, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
     SubtitleOverlaySettings, TextFontStyle, TextLayerSettings, VideoEffectsSettings, VideoError,
 };
 use std::collections::HashSet;
 
-const SPEED_PRESETS: &[&str] = &[
-    "ultrafast",
-    "superfast",
-    "veryfast",
-    "faster",
-    "fast",
-    "medium",
-    "slow",
-    "slower",
-    "veryslow",
-];
-
-const QUALITY_PRESETS: &[&str] = &["draft", "standard", "high"];
+// Canonical encoding semantics (quality levels, speed presets, bitrate rules)
+// live in `video::encoding`; this module delegates so the two cannot drift
+// apart.
 
 fn is_hex_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 pub fn validate_encoding_profile(encoding: &EncodingProfile) -> Result<(), VideoError> {
-    if encoding.crf > 51 {
-        return Err(VideoError::InvalidInput(
-            "encoding.crf must be between 0 and 51".to_string(),
-        ));
-    }
-
-    let quality = encoding.quality_preset.trim().to_ascii_lowercase();
-    if !QUALITY_PRESETS.contains(&quality.as_str()) {
-        return Err(VideoError::InvalidInput(format!(
-            "Unsupported qualityPreset: {}",
-            encoding.quality_preset
-        )));
-    }
-
-    let speed = encoding.speed_preset.trim().to_ascii_lowercase();
-    if !SPEED_PRESETS.contains(&speed.as_str()) {
-        return Err(VideoError::InvalidInput(format!(
-            "Unsupported speedPreset: {}",
-            encoding.speed_preset
-        )));
-    }
-
-    validate_audio_bitrate(&encoding.audio_bitrate)
+    validate_baseline_profile(encoding)
 }
 
 pub fn validate_preset(preset: &PlatformPreset) -> Result<(), VideoError> {
@@ -268,8 +237,11 @@ pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
         ));
     }
 
-    // 1. Encoding Bounds
+    // 1. Encoding Bounds: canonical baseline plus transient overrides.
+    // Both must validate so an invalid render request fails before any
+    // ResolvedJob can be constructed (resolution itself re-validates).
     validate_encoding_profile(&job.encoding)?;
+    validate_encoding_overrides(&job.encoding_overrides)?;
     // 2. Video Effects Bounds
     validate_effects(&job.effects)?;
 
@@ -318,21 +290,7 @@ fn validate_platform_ratio(
     Ok(())
 }
 
-fn validate_audio_bitrate(bitrate: &str) -> Result<(), VideoError> {
-    let raw = bitrate.trim().to_ascii_lowercase();
-    let numeric = raw.strip_suffix('k').ok_or_else(|| {
-        VideoError::InvalidInput("encoding.audioBitrate must use 'k' suffix, e.g. 128k".to_string())
-    })?;
-    let parsed = numeric.parse::<u32>().map_err(|_| {
-        VideoError::InvalidInput("encoding.audioBitrate must be numeric, e.g. 128k".to_string())
-    })?;
-    if !(32..=512).contains(&parsed) {
-        return Err(VideoError::InvalidInput(
-            "encoding.audioBitrate must be between 32k and 512k".to_string(),
-        ));
-    }
-    Ok(())
-}
+
 
 #[cfg(test)]
 mod tests {

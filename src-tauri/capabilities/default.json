@@ -41,6 +41,8 @@
       "get_all_aspect_ratio_targets",
       "save_preset",
       "delete_preset",
+      "get_encoding_metadata",
+      "resolve_encoding_preview",
       "get_dependency_state",
       "rescan_dependencies",
       "install_dependency",

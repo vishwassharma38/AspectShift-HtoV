@@ -2,6 +2,7 @@ pub mod batch_processor;
 pub mod concurrency;
 pub mod config;
 pub mod convert;
+pub mod encoding;
 pub mod ffmpeg;
 pub mod ffmpeg_args_builder;
 pub mod filter_builder;
@@ -111,20 +112,15 @@ pub async fn compute_preview_layout(
         }
     }
 
-    let fake_job = crate::video::types::ResolvedJob {
-        id: "preview-job".to_string(),
-        session_id: "preview-session".to_string(),
-        input_path: String::new(),
-        output_path: String::new(),
-        alt_output_path: None,
-        ratio: request.ratio,
-        encoding: crate::video::types::EncodingProfile::standard(),
-        effects: request.effects,
-        platform_config: request.platform_config,
-        subtitle_path: None,
-        subtitle_fonts_dir: None,
-        threads_per_job: None,
-    };
+    // Layout-only job: never rendered, so no encoding resolution applies.
+    let fake_job = crate::video::types::ResolvedJob::for_layout(
+        "preview-job".to_string(),
+        String::new(),
+        request.ratio,
+        crate::video::types::EncodingProfile::standard(),
+        request.effects,
+        request.platform_config,
+    );
 
     let plan =
         preset_adapter::create_render_plan_resolved(&fake_job).map_err(StructuredError::from)?;
@@ -170,20 +166,21 @@ pub async fn convert_to_ratio(
     .to_string_lossy()
     .to_string();
 
-    let resolved_job = crate::video::types::ResolvedJob {
-        id: "single-job".to_string(),
-        session_id: "single-session".to_string(),
-        input_path: input,
+    // Authoritative boundary: Rust validates the baseline, resolves the
+    // effective encoding from the transient overrides, and derives
+    // re-encode intent. Frontend-supplied `force_reencode` is ignored.
+    let resolved_job = crate::video::types::ResolvedJob::resolve_for_render(
+        "single-job".to_string(),
+        "single-session".to_string(),
+        input,
         output_path,
-        alt_output_path: Some(alt_output_path),
-        ratio: job.ratio,
-        encoding: job.encoding,
-        effects: job.effects,
-        platform_config: job.platform_config,
-        subtitle_path: None,
-        subtitle_fonts_dir: None,
-        threads_per_job: None,
-    };
+        Some(alt_output_path),
+        &target.job,
+        None,
+        None,
+        None,
+    )
+    .map_err(StructuredError::from)?;
 
     convert::render_single(&app, resolved_job, None, None)
         .await

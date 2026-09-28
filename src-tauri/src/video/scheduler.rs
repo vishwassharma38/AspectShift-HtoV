@@ -968,6 +968,7 @@ mod tests {
                 id: format!("out-{}", index),
                 ratio: AspectRatio::Ratio9x16,
                 encoding: EncodingProfile::standard(),
+                encoding_overrides: crate::video::encoding::EncodingOverrides::baseline(),
                 effects: effects(),
                 platform_config: None,
                 selection: SelectionMetadata {
@@ -975,6 +976,7 @@ mod tests {
                     source_id: "test-source".into(),
                     label: "test".into(),
                 },
+                force_reencode: false,
             },
             resolved_output_path: format!("output-{}_9x16.mp4", index),
             alt_output_path: None,

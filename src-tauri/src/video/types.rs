@@ -617,10 +617,26 @@ pub struct SelectionMetadata {
 pub struct OutputJob {
     pub id: String,
     pub ratio: AspectRatio,
+    /// Canonical baseline encoding (the selected preset's tuned values).
+    ///
+    /// This is NOT the effective render encoding. Rust resolves the effective
+    /// profile at the render boundary via
+    /// [`crate::video::encoding::resolve_effective_encoding`] using
+    /// `encoding_overrides` below.
     pub encoding: EncodingProfile,
+    /// Transient session intent. Empty means pure preset baseline.
+    #[serde(default)]
+    pub encoding_overrides: crate::video::encoding::EncodingOverrides,
     pub effects: VideoEffectsSettings,
     pub platform_config: Option<PlatformConfig>,
     pub selection: SelectionMetadata,
+    /// Legacy intake, ignored by render construction.
+    ///
+    /// Re-encode intent is derived in Rust from `encoding_overrides` via
+    /// [`crate::video::encoding::has_explicit_encoding_intent`]. This field is
+    /// retained so older payloads still deserialize; nothing may trust it.
+    #[serde(default)]
+    pub force_reencode: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -645,6 +661,10 @@ pub struct ResolvedJob {
     pub platform_config: Option<PlatformConfig>,
     pub subtitle_path: Option<std::path::PathBuf>,
     pub subtitle_fonts_dir: Option<std::path::PathBuf>,
+    /// Derived in Rust from the resolved `EncodingOverrides` (never trusted
+    /// from frontend intake). When `true`, the `-c copy` passthrough is
+    /// prohibited even if the input geometry would otherwise allow it.
+    pub force_reencode: bool,
     /// FFmpeg `-threads` override, exposed as a *capability* only.
     ///
     /// Production always sets this to `None` (architecture_fix Stage 1/2/6):
@@ -654,6 +674,79 @@ pub struct ResolvedJob {
     /// (e.g. single-video `convert_to_ratio`) and any future hardware-specific
     /// path can still force a value without changing the builder's shape.
     pub threads_per_job: Option<usize>,
+}
+
+impl ResolvedJob {
+    /// Authoritative render-boundary constructor (Issues #1/#4/#7).
+    ///
+    /// Runs `validate → resolve effective encoding → derive re-encode intent`
+    /// so no render job can reach the pipeline without Rust-side resolution.
+    /// The incoming `OutputJob.force_reencode` is deliberately ignored and
+    /// recomputed from `encoding_overrides`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_for_render(
+        job_id: String,
+        session_id: String,
+        input_path: String,
+        output_path: String,
+        alt_output_path: Option<String>,
+        output: &OutputJob,
+        subtitle_path: Option<std::path::PathBuf>,
+        subtitle_fonts_dir: Option<std::path::PathBuf>,
+        threads_per_job: Option<usize>,
+    ) -> Result<Self, VideoError> {
+        crate::video::validation::validate_output_job(output)?;
+        let effective = crate::video::encoding::resolve_effective_encoding(
+            &output.encoding,
+            &output.encoding_overrides,
+        )?;
+        let force_reencode =
+            crate::video::encoding::has_explicit_encoding_intent(&output.encoding_overrides);
+        Ok(Self {
+            id: job_id,
+            session_id,
+            input_path,
+            output_path,
+            alt_output_path,
+            ratio: output.ratio.clone(),
+            encoding: effective,
+            effects: output.effects.clone(),
+            platform_config: output.platform_config.clone(),
+            subtitle_path,
+            subtitle_fonts_dir,
+            force_reencode,
+            threads_per_job,
+        })
+    }
+
+    /// Layout-only constructor for preview/subtitle measurement.
+    ///
+    /// Never rendered: no validation, no resolution, `force_reencode` is
+    /// always `false`. Keeps layout paths from reusing render construction.
+    pub fn for_layout(
+        id: String,
+        input_path: String,
+        ratio: AspectRatio,
+        encoding: EncodingProfile,
+        effects: VideoEffectsSettings,
+        platform_config: Option<PlatformConfig>,
+    ) -> Self {
+        Self {
+            id,
+            session_id: String::new(),
+            input_path,
+            output_path: String::new(),
+            alt_output_path: None,
+            ratio,
+            encoding,
+            effects,
+            platform_config,
+            subtitle_path: None,
+            subtitle_fonts_dir: None,
+            force_reencode: false,
+            threads_per_job: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -1069,6 +1162,140 @@ mod tests {
         let reloaded: SubtitleOverlaySettings =
             serde_json::from_str(&saved).expect("overlay should deserialize");
         assert_eq!(reloaded, overlay);
+    }
+
+    #[test]
+    fn render_boundary_resolves_baseline_plus_overrides_and_derives_intent() {
+        use super::{EncodingProfile, OutputJob, ResolvedJob, SelectionMetadata};
+        use crate::video::encoding::{EncodingOverrides, QualityAuthority};
+
+        let baseline = EncodingProfile {
+            crf: 18,
+            quality_preset: "high".to_string(),
+            speed_preset: "slow".to_string(),
+            audio_bitrate: "192k".to_string(),
+        };
+        let output = OutputJob {
+            id: "out-1".to_string(),
+            ratio: super::AspectRatio::Ratio9x16,
+            encoding: baseline,
+            encoding_overrides: EncodingOverrides {
+                crf: Some(28),
+                quality_preset: Some("balanced".to_string()),
+                quality_authority: QualityAuthority::ManualCrf,
+                ..Default::default()
+            },
+            effects: serde_json::from_str("{}").expect("default effects"),
+            platform_config: None,
+            selection: SelectionMetadata {
+                source_type: super::TargetType::AspectRatio,
+                source_id: "ratio9x16".to_string(),
+                label: "9:16".to_string(),
+            },
+            // Legacy intake must be ignored: overrides carry intent, so the
+            // derived value is true even though this says false.
+            force_reencode: false,
+        };
+        let resolved = ResolvedJob::resolve_for_render(
+            "job-1".to_string(),
+            "session-1".to_string(),
+            "in.mp4".to_string(),
+            "out.mp4".to_string(),
+            None,
+            &output,
+            None,
+            None,
+            None,
+        )
+        .expect("valid render request must resolve");
+        assert_eq!(resolved.encoding.crf, 28);
+        assert_eq!(resolved.encoding.quality_preset, "balanced");
+        assert_eq!(resolved.encoding.speed_preset, "slow");
+        assert!(resolved.force_reencode);
+    }
+
+    #[test]
+    fn render_boundary_without_overrides_keeps_baseline_and_passthrough() {
+        use super::{EncodingProfile, OutputJob, ResolvedJob, SelectionMetadata};
+        use crate::video::encoding::EncodingOverrides;
+
+        let output = OutputJob {
+            id: "out-2".to_string(),
+            ratio: super::AspectRatio::Ratio9x16,
+            encoding: EncodingProfile::standard(),
+            encoding_overrides: EncodingOverrides::baseline(),
+            effects: serde_json::from_str("{}").expect("default effects"),
+            platform_config: None,
+            selection: SelectionMetadata {
+                source_type: super::TargetType::AspectRatio,
+                source_id: "ratio9x16".to_string(),
+                label: "9:16".to_string(),
+            },
+            // A stale `true` here must not force re-encode on its own.
+            force_reencode: true,
+        };
+        let resolved = ResolvedJob::resolve_for_render(
+            "job-2".to_string(),
+            "session-1".to_string(),
+            "in.mp4".to_string(),
+            "out.mp4".to_string(),
+            None,
+            &output,
+            None,
+            None,
+            None,
+        )
+        .expect("baseline request must resolve");
+        assert_eq!(resolved.encoding, EncodingProfile::standard());
+        assert!(!resolved.force_reencode);
+    }
+
+    #[test]
+    fn render_boundary_rejects_invalid_overrides_before_any_job() {
+        use super::{EncodingProfile, OutputJob, ResolvedJob, SelectionMetadata};
+        use crate::video::encoding::{EncodingOverrides, QualityAuthority};
+
+        let output = OutputJob {
+            id: "out-3".to_string(),
+            ratio: super::AspectRatio::Ratio9x16,
+            encoding: EncodingProfile::standard(),
+            encoding_overrides: EncodingOverrides {
+                quality_preset: Some("ultra".to_string()),
+                quality_authority: QualityAuthority::QualityPreset,
+                ..Default::default()
+            },
+            effects: serde_json::from_str("{}").expect("default effects"),
+            platform_config: None,
+            selection: SelectionMetadata {
+                source_type: super::TargetType::AspectRatio,
+                source_id: "ratio9x16".to_string(),
+                label: "9:16".to_string(),
+            },
+            force_reencode: false,
+        };
+        assert!(ResolvedJob::resolve_for_render(
+            "job-3".to_string(),
+            "session-1".to_string(),
+            "in.mp4".to_string(),
+            "out.mp4".to_string(),
+            None,
+            &output,
+            None,
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn legacy_output_job_without_overrides_still_deserializes() {
+        use super::OutputJob;
+        let job: OutputJob = serde_json::from_str(
+            r#"{"id":"o","ratio":"ratio9x16","encoding":{"crf":18,"qualityPreset":"high","speedPreset":"slow","audioBitrate":"192k"},"effects":{},"platformConfig":null,"selection":{"sourceType":"platform","sourceId":"youtube","label":"YouTube"}}"#,
+        )
+        .expect("legacy job should load");
+        assert_eq!(job.encoding.crf, 18);
+        assert!(!job.force_reencode);
     }
 
     #[test]

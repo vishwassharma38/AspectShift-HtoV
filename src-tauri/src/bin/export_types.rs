@@ -9,6 +9,10 @@ use aspectshift_htov_lib::dependency_manager::{
 };
 use aspectshift_htov_lib::subtitles::positioning::SubtitleLayoutMetrics;
 use aspectshift_htov_lib::video::{
+    encoding::{
+        CodecCapability, EncodingMetadata, EncodingOverrides, EncodingPreviewRequest,
+        EncodingPreviewResponse, QualityAuthority, QualityLevelMeta,
+    },
     ffmpeg::VideoProgress,
     render_layout::{PreviewFitMode, PreviewRenderLayout},
     types::{
@@ -28,6 +32,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let types = TypeCollection::default()
         .register::<AspectRatio>()
         .register::<EncodingProfile>()
+        .register::<QualityAuthority>()
+        .register::<EncodingOverrides>()
+        .register::<QualityLevelMeta>()
+        .register::<CodecCapability>()
+        .register::<EncodingMetadata>()
+        .register::<EncodingPreviewRequest>()
+        .register::<EncodingPreviewResponse>()
         .register::<OutputFormat>()
         .register::<LogoPosition>()
         .register::<PlatformConfig>()

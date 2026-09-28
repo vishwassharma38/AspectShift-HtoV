@@ -27,6 +27,9 @@ import type {
   CustomPreset,
   DependencyId,
   DependencyInstallEvent,
+  EncodingMetadata,
+  EncodingOverrides,
+  EncodingPreviewResponse,
   EncodingProfile,
   FileProgress,
   FileReadiness,
@@ -38,6 +41,7 @@ import type {
   PlatformPreset,
   PreviewLayoutRequest,
   PreviewRenderLayout,
+  QualityAuthority,
   SelectionMetadata,
   SubtitleOverlaySettings,
   TargetType,
@@ -164,11 +168,85 @@ interface AppNotification {
 }
 
 // ── Constants ────────────────────────────────────────────────
-const DEFAULT_ENCODING: EncodingProfile = {
-  crf: 18,
+// Fallback defaults used only before backend metadata arrives. The canonical
+// encoding semantics (quality levels, speed/bitrate options, default profile)
+// come from `get_encoding_metadata`; Rust owns them (see
+// `src-tauri/src/video/encoding.rs`). This fallback mirrors
+// `EncodingProfile::standard()` and must not be extended with copied logic.
+const FALLBACK_DEFAULT_ENCODING: EncodingProfile = {
+  crf: 23,
   qualityPreset: "standard",
   speedPreset: "medium",
   audioBitrate: "128k",
+};
+
+const FALLBACK_SPEED_PRESETS: readonly string[] = [
+  "ultrafast",
+  "superfast",
+  "veryfast",
+  "faster",
+  "fast",
+  "medium",
+  "slow",
+  "slower",
+  "veryslow",
+];
+
+const FALLBACK_AUDIO_BITRATES: readonly string[] = [
+  "64k",
+  "96k",
+  "128k",
+  "160k",
+  "192k",
+  "256k",
+  "320k",
+  "384k",
+];
+
+// Pre-metadata fallback for the quality dropdown only. Canonical data comes
+// from `get_encoding_metadata`; this mirrors its shape for first paint.
+const FALLBACK_QUALITY_LEVELS: readonly {
+  name: string;
+  representativeCrf: number;
+}[] = [
+  { name: "poor", representativeCrf: 48 },
+  { name: "draft", representativeCrf: 41 },
+  { name: "very_low", representativeCrf: 38 },
+  { name: "low", representativeCrf: 33 },
+  { name: "balanced", representativeCrf: 28 },
+  { name: "standard", representativeCrf: 23 },
+  { name: "good", representativeCrf: 21 },
+  { name: "high", representativeCrf: 18 },
+  { name: "very_high", representativeCrf: 14 },
+  { name: "lossless", representativeCrf: 0 },
+];
+
+function qualityLabel(name: string): string {
+  return name
+    .split("_")
+    .map((part) =>
+      part.length > 0 ? part.charAt(0).toUpperCase() + part.slice(1) : part,
+    )
+    .join(" ");
+}
+
+// ── Session-only encoding overrides ─────────────────────────
+// Quality Preset and CRF slider are two controls over ONE quality dimension:
+// exactly one may be authoritative at a time. The most recently explicitly
+// interacted-with quality control wins; speed/audio are independent.
+// Strictly in-memory (React state only): never persisted. The overrides cross
+// IPC as `OutputJob.encodingOverrides` alongside the selected *baseline*
+// profile; Rust resolves the effective encoding and derives re-encode intent.
+// The frontend never resolves effective encoding itself. Fresh launch starts
+// with no overrides.
+type ManualEncodingOverrides = EncodingOverrides;
+
+const EMPTY_ENCODING_OVERRIDES: EncodingOverrides = {
+  qualityPreset: null,
+  crf: null,
+  speedPreset: null,
+  audioBitrate: null,
+  qualityAuthority: "baseline" as QualityAuthority,
 };
 
 const DEFAULT_EFFECTS: VideoEffectsSettings = {
@@ -213,28 +291,6 @@ export const RATIO_DISPLAY: Record<AspectRatio, string> = {
   ratio16x9: "16:9",
 };
 
-const SPEED_PRESETS = [
-  "ultrafast",
-  "superfast",
-  "veryfast",
-  "faster",
-  "fast",
-  "medium",
-  "slow",
-  "slower",
-  "veryslow",
-] as const;
-
-const AUDIO_BITRATE_CANDIDATES = [
-  "64k",
-  "96k",
-  "128k",
-  "160k",
-  "192k",
-  "256k",
-  "320k",
-  "384k",
-] as const;
 const DEFAULT_PREVIEW_VOLUME = 20;
 const ONBOARDING_STORAGE_KEY = "aspectshift.hasCompletedOnboarding";
 const SKIPPED_DEPENDENCY_PROMPT_KEY = "aspectshift.skippedDependencyPrompt";
@@ -612,8 +668,28 @@ export default function App() {
   const [displayPresets, setDisplayPresets] = useState<DisplayPreset[]>([]);
 
   // Settings State
-  const [encodingState, setEncodingState] =
-    useState<EncodingProfile>(DEFAULT_ENCODING);
+  // Displayed effective encoding. Authoritative value always comes from the
+  // backend `resolve_encoding_preview` command (production resolution rules);
+  // the frontend never computes it locally.
+  const [encodingState, setEncodingState] = useState<EncodingProfile>(
+    FALLBACK_DEFAULT_ENCODING,
+  );
+  // Applicability warnings from the preview resolver (Issues #5/#6).
+  const [encodingPreviewWarnings, setEncodingPreviewWarnings] = useState<
+    string[]
+  >([]);
+  // Canonical encoding semantics from Rust. Null until loaded; option lists
+  // below fall back to the small local fallbacks meanwhile.
+  const [encodingMetadata, setEncodingMetadata] =
+    useState<EncodingMetadata | null>(null);
+  // Session-only field-level overrides (user intent). Baseline authority =
+  // no manual overrides yet. In-memory React state only — never persisted,
+  // cleared on app restart. Sent as `OutputJob.encodingOverrides` with the
+  // selected baseline; Rust resolves the effective encoding.
+  const [manualEncodingOverrides, setManualEncodingOverrides] =
+    useState<ManualEncodingOverrides>({ ...EMPTY_ENCODING_OVERRIDES });
+  const defaultEncoding: EncodingProfile =
+    encodingMetadata?.defaultEncoding ?? FALLBACK_DEFAULT_ENCODING;
   const [effectsState, setEffectsState] =
     useState<VideoEffectsSettings>(DEFAULT_EFFECTS);
   const textOverlay = useMemo<ResolvedTextOverlaySettings>(
@@ -2377,19 +2453,104 @@ export default function App() {
       .catch(() => setPreviewLayout(null));
   }, [orientation, previewLayoutRequest]);
 
-  // Sync encoding when a platform preset becomes the active selection
+  // Canonical baseline for the active selection (preset's tuned values, not
+  // the effective render encoding). Stable identity while the selection and
+  // preset stores are unchanged, so the preview effect below does not loop.
+  const activeBaseline: EncodingProfile = useMemo(() => {
+    if (activeSelection?.type === "aspectRatio") {
+      return (
+        aspectRatioTargets.find((x) => x.ratio === activeSelection.id)
+          ?.encoding ?? defaultEncoding
+      );
+    }
+    if (activeSelection?.type === "preset") {
+      const p = platformPresets.find((x) => x.id === activeSelection.id);
+      if (p) return p.encoding;
+      const cp = customPresets.find((x) => x.id === activeSelection.id);
+      if (cp) return cp.encoding;
+    }
+    return defaultEncoding;
+  }, [
+    activeSelection,
+    platformPresets,
+    customPresets,
+    aspectRatioTargets,
+    defaultEncoding,
+  ]);
+
+  // Backend-backed encoding preview (Issue #2). Displayed values are the
+  // production resolution of baseline + overrides, computed by Rust with the
+  // same rules as rendering. Debounced so continuous CRF slider movement does
+  // not flood IPC; discrete controls request an immediate refresh with their
+  // locally computed next overrides.
+  const previewSeqRef = useRef(0);
+  const previewTimerRef = useRef<number | null>(null);
+  const runEncodingPreview = useCallback(
+    (
+      baseline: EncodingProfile,
+      overrides: ManualEncodingOverrides,
+      outputFormat: string,
+      removeAudio: boolean,
+    ) => {
+      const seq = ++previewSeqRef.current;
+      invoke<EncodingPreviewResponse>("resolve_encoding_preview", {
+        request: { baseline, overrides, outputFormat, removeAudio },
+      })
+        .then((res) => {
+          if (previewSeqRef.current !== seq) return;
+          setEncodingState(res.effective);
+          setEncodingPreviewWarnings(res.warnings);
+        })
+        .catch(() => {});
+    },
+    [],
+  );
+  const scheduleEncodingPreview = useCallback(
+    (
+      baseline: EncodingProfile,
+      overrides: ManualEncodingOverrides,
+      outputFormat: string,
+      removeAudio: boolean,
+      immediate: boolean,
+    ) => {
+      if (previewTimerRef.current !== null) {
+        window.clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      if (immediate) {
+        runEncodingPreview(baseline, overrides, outputFormat, removeAudio);
+        return;
+      }
+      previewTimerRef.current = window.setTimeout(() => {
+        previewTimerRef.current = null;
+        runEncodingPreview(baseline, overrides, outputFormat, removeAudio);
+      }, 120);
+    },
+    [runEncodingPreview],
+  );
   useEffect(() => {
-    if (!activeSelection || activeSelection.type !== "preset") return;
-    const p = platformPresets.find((x) => x.id === activeSelection.id);
-    if (p) {
-      setEncodingState(deepClone(p.encoding));
-      return;
-    }
-    const cp = customPresets.find((x) => x.id === activeSelection.id);
-    if (cp) {
-      setEncodingState(deepClone(cp.encoding));
-    }
-  }, [activeSelection, platformPresets, customPresets]);
+    scheduleEncodingPreview(
+      activeBaseline,
+      manualEncodingOverrides,
+      effectsState.outputFormat ?? "mp4",
+      !!effectsState.removeAudio,
+      false,
+    );
+  }, [
+    activeBaseline,
+    manualEncodingOverrides,
+    effectsState.outputFormat,
+    effectsState.removeAudio,
+    scheduleEncodingPreview,
+  ]);
+  useEffect(
+    () => () => {
+      if (previewTimerRef.current !== null) {
+        window.clearTimeout(previewTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // ── Theme ──────────────────────────────────────────────────
   useEffect(() => {
@@ -2412,6 +2573,7 @@ export default function App() {
     loadConfig();
     loadPresets();
     loadAspectRatioTargets();
+    loadEncodingMetadata();
     invoke<AppDepsState>("get_dependency_state")
       .then((state) => {
         setDepsState(state);
@@ -2586,7 +2748,9 @@ export default function App() {
       clearNotification();
       setLastInputDir(null);
       setEffectsState(DEFAULT_EFFECTS);
-      setEncodingState(DEFAULT_ENCODING);
+      setManualEncodingOverrides({ ...EMPTY_ENCODING_OVERRIDES });
+      setEncodingState(defaultEncoding);
+      setEncodingPreviewWarnings([]);
       setSelectionHistory([]);
       setSelectedRatios([]);
       setSelectedPresetIds([]);
@@ -2865,6 +3029,17 @@ export default function App() {
     }
   };
 
+  // Canonical encoding semantics from Rust (Issue #2). Controls render from
+  // this; the frontend keeps no copy of quality/speed/bitrate rules.
+  const loadEncodingMetadata = async () => {
+    try {
+      const meta = await invoke<EncodingMetadata>("get_encoding_metadata");
+      setEncodingMetadata(meta);
+    } catch (e) {
+      addLog(`Failed to load encoding metadata: ${errorMessage(e)}`, "error");
+    }
+  };
+
   // ── Handlers ───────────────────────────────────────────────
 
   const handlePickFile = async () => {
@@ -3126,8 +3301,17 @@ export default function App() {
     }
 
     const normalizedEffects = deepClone(normalizeEffects(effectsState));
+    // Snapshot of transient intent. Rust is the final authority: it validates
+    // the baseline, resolves the effective encoding from these overrides, and
+    // derives re-encode intent (Issues #1/#4). The frontend never sends a
+    // pre-resolved profile.
+    const encodingOverridesSnapshot: EncodingOverrides = {
+      ...manualEncodingOverrides,
+    };
 
-    // Build targets from platform presets
+    // Build targets from selected presets.
+    // Each preset supplies its canonical baseline encoding; transient
+    // overrides travel alongside. All target kinds share this contract.
     const platformTargets: OutputJob[] = selectedPresetIds.flatMap(
       (id): OutputJob[] => {
         const p = platformPresets.find((x) => x.id === id);
@@ -3139,6 +3323,7 @@ export default function App() {
               id: generateId(),
               ratio: p.ratio,
               encoding: deepClone(p.encoding),
+              encodingOverrides: encodingOverridesSnapshot,
               effects: normalizedEffects,
               platformConfig: p.platformConfig ?? null,
               selection: {
@@ -3155,6 +3340,7 @@ export default function App() {
               id: generateId(),
               ratio: cp.ratio,
               encoding: deepClone(cp.encoding),
+              encodingOverrides: encodingOverridesSnapshot,
               effects: normalizedEffects,
               platformConfig: null,
               selection: {
@@ -3169,14 +3355,17 @@ export default function App() {
       },
     );
 
-    // Build targets from aspect ratio selections
+    // Build targets from aspect ratio selections — same baseline + overrides
+    // contract as preset targets.
     const ratioTargets: OutputJob[] = selectedRatios.map((ratio) => {
       const target = aspectRatioTargets.find((t) => t.ratio === ratio);
       const label = RATIO_DISPLAY[ratio] ?? ratio;
+      const baseline = target?.encoding ?? defaultEncoding;
       return {
         id: generateId(),
         ratio,
-        encoding: deepClone(target?.encoding ?? DEFAULT_ENCODING),
+        encoding: deepClone(baseline),
+        encodingOverrides: encodingOverridesSnapshot,
         effects: normalizedEffects,
         platformConfig: null,
         selection: {
@@ -3250,6 +3439,10 @@ export default function App() {
             "ratio9x16")
           : (selectedRatios[0] ?? "ratio9x16");
 
+    // Snapshot semantics (Issue #8): a custom preset stores the complete
+    // effective configuration exactly as displayed when saved. It keeps no
+    // parent-preset reference, so later changes to built-in presets never
+    // mutate it. Transient overrides themselves are not persisted.
     const p: CustomPreset = {
       id: Date.now().toString(),
       name: newPresetName.trim(),
@@ -3322,8 +3515,24 @@ export default function App() {
         ? batchFiles[0]
         : inputFile || undefined;
   const outputDirLabel = outputDir || "No output selected";
+  // Option lists come from backend metadata (Issue #2), unioned with any
+  // baseline values actually in use so the current selection always exists.
+  const speedPresetOptions = useMemo(
+    () => encodingMetadata?.speedPresets ?? [...FALLBACK_SPEED_PRESETS],
+    [encodingMetadata],
+  );
+  // Worst-first order preserves the previous dropdown arrangement.
+  const qualityLevelOptions = useMemo(
+    () =>
+      encodingMetadata
+        ? [...encodingMetadata.qualityLevels].reverse()
+        : [...FALLBACK_QUALITY_LEVELS],
+    [encodingMetadata],
+  );
   const audioBitrateOptions = useMemo(() => {
-    const values = new Set<string>(AUDIO_BITRATE_CANDIDATES);
+    const values = new Set<string>(
+      encodingMetadata?.audioBitrateOptions ?? [...FALLBACK_AUDIO_BITRATES],
+    );
     values.add(encodingState.audioBitrate);
     for (const p of platformPresets) values.add(p.encoding.audioBitrate);
     for (const p of customPresets) values.add(p.encoding.audioBitrate);
@@ -3333,7 +3542,12 @@ export default function App() {
       if (ak === bk) return a.localeCompare(b);
       return ak - bk;
     });
-  }, [encodingState.audioBitrate, platformPresets, customPresets]);
+  }, [
+    encodingMetadata,
+    encodingState.audioBitrate,
+    platformPresets,
+    customPresets,
+  ]);
 
   const previewCandidates = useMemo(() => {
     if (folderPreviewFiles.length > 0) return folderPreviewFiles;
@@ -4284,17 +4498,40 @@ export default function App() {
                     <label className="input-label">Quality Preset</label>
                     <select
                       className="input select"
-                      value={encodingState.qualityPreset}
-                      onChange={(e) =>
-                        setEncodingState({
-                          ...encodingState,
-                          qualityPreset: e.target.value,
-                        })
+                      value={
+                        manualEncodingOverrides.qualityAuthority ===
+                          "qualityPreset" &&
+                        manualEncodingOverrides.qualityPreset
+                          ? manualEncodingOverrides.qualityPreset
+                          : encodingState.qualityPreset
                       }
+                      onChange={(e) => {
+                        // Quality Preset becomes the active quality authority;
+                        // any stale manual CRF no longer controls the render.
+                        // Rust maps the selection to its representative CRF.
+                        const qualityPreset = e.target.value;
+                        const next: ManualEncodingOverrides = {
+                          ...manualEncodingOverrides,
+                          qualityPreset,
+                          crf: null,
+                          qualityAuthority:
+                            "qualityPreset" as QualityAuthority,
+                        };
+                        setManualEncodingOverrides(next);
+                        scheduleEncodingPreview(
+                          activeBaseline,
+                          next,
+                          effectsState.outputFormat ?? "mp4",
+                          !!effectsState.removeAudio,
+                          true,
+                        );
+                      }}
                     >
-                      <option value="draft">Draft</option>
-                      <option value="standard">Standard</option>
-                      <option value="high">High</option>
+                      {qualityLevelOptions.map((q) => (
+                        <option key={q.name} value={q.name}>
+                          {qualityLabel(q.name)}
+                        </option>
+                      ))}
                     </select>
 
                     <div className="slider-row mt-4">
@@ -4304,45 +4541,82 @@ export default function App() {
                         type="range"
                         min="0"
                         max="51"
-                        value={encodingState.crf}
-                        onChange={(e) =>
-                          setEncodingState({
-                            ...encodingState,
-                            crf: parseInt(e.target.value),
-                          })
+                        value={
+                          manualEncodingOverrides.qualityAuthority ===
+                            "manualCrf" &&
+                          manualEncodingOverrides.crf != null
+                            ? manualEncodingOverrides.crf
+                            : encodingState.crf
                         }
+                        onChange={(e) => {
+                          // CRF slider becomes the active quality authority.
+                          // The dropdown label is derived by Rust (preview);
+                          // the stored override label is cleared so no stale
+                          // value leaks through. Preview refresh is debounced.
+                          const crf = parseInt(e.target.value);
+                          if (!Number.isFinite(crf)) return;
+                          setManualEncodingOverrides((prev) => ({
+                            ...prev,
+                            crf,
+                            qualityPreset: null,
+                            qualityAuthority:
+                              "manualCrf" as QualityAuthority,
+                          }));
+                        }}
                       />
-                      <span className="slider-value">{encodingState.crf}</span>
+                      <span className="slider-value">
+                        {manualEncodingOverrides.qualityAuthority ===
+                          "manualCrf" && manualEncodingOverrides.crf != null
+                          ? manualEncodingOverrides.crf
+                          : encodingState.crf}
+                      </span>
                     </div>
 
                     <label className="input-label mt-4">Speed Preset</label>
                     <select
                       className="input select"
-                      value={encodingState.speedPreset}
-                      onChange={(e) =>
-                        setEncodingState({
-                          ...encodingState,
-                          speedPreset: e.target.value,
-                        })
+                      value={
+                        manualEncodingOverrides.speedPreset ??
+                        encodingState.speedPreset
                       }
+                      disabled={
+                        (effectsState.outputFormat ?? "mp4") === "webm"
+                      }
+                      onChange={(e) => {
+                        const speedPreset = e.target.value;
+                        setManualEncodingOverrides((prev) => ({
+                          ...prev,
+                          speedPreset,
+                        }));
+                      }}
                     >
-                      {SPEED_PRESETS.map((s) => (
+                      {speedPresetOptions.map((s) => (
                         <option key={s} value={s}>
                           {s.charAt(0).toUpperCase() + s.slice(1)}
                         </option>
                       ))}
                     </select>
+                    {(effectsState.outputFormat ?? "mp4") === "webm" && (
+                      <p className="text-xs text-muted">
+                        Speed preset is not applicable to VP9/WebM.
+                      </p>
+                    )}
 
                     <label className="input-label mt-4">Audio Bitrate</label>
                     <select
                       className="input select"
-                      value={encodingState.audioBitrate}
-                      onChange={(e) =>
-                        setEncodingState({
-                          ...encodingState,
-                          audioBitrate: e.target.value,
-                        })
+                      value={
+                        manualEncodingOverrides.audioBitrate ??
+                        encodingState.audioBitrate
                       }
+                      disabled={!!effectsState.removeAudio}
+                      onChange={(e) => {
+                        const audioBitrate = e.target.value;
+                        setManualEncodingOverrides((prev) => ({
+                          ...prev,
+                          audioBitrate,
+                        }));
+                      }}
                     >
                       {audioBitrateOptions.map((bitrate) => (
                         <option key={bitrate} value={bitrate}>
@@ -4350,6 +4624,19 @@ export default function App() {
                         </option>
                       ))}
                     </select>
+                    {!!effectsState.removeAudio && (
+                      <p className="text-xs text-muted">
+                        Audio bitrate has no effect while Remove Audio is
+                        enabled. Your selection is preserved.
+                      </p>
+                    )}
+                    {encodingPreviewWarnings.length > 0 && (
+                      <div className="text-xs text-muted">
+                        {encodingPreviewWarnings.map((w) => (
+                          <p key={w}>{w}</p>
+                        ))}
+                      </div>
+                    )}
 
                     <div className="settings-group">
                       <div className="settings-group-title">Output Format</div>

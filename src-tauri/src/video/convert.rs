@@ -1,5 +1,6 @@
 use crate::subtitles::srt_writer::write_srt_for_input;
 use crate::subtitles::whisper_runner::transcribe_to_segments;
+use crate::video::encoding::is_passthrough_allowed;
 use crate::video::ffmpeg::run_ffmpeg;
 use crate::video::ffmpeg_args_builder::build_ffmpeg_args;
 use crate::video::filter_builder::{build_filter_graph, validate_preset_consistency};
@@ -331,10 +332,37 @@ pub async fn render_single(
     // I'll update RenderPlan to take the necessary fields.
     let plan = create_render_plan_resolved(&job)?;
 
+    // Observability (§21): what the user selected (post-resolution) and
+    // whether explicit session intent forces re-encoding.
+    info!(
+        "render_single job={} resolved encoding: crf={} qualityPreset={} speedPreset={} audioBitrate={} force_reencode={}",
+        job_id,
+        plan.encoding.crf,
+        plan.encoding.quality_preset,
+        plan.encoding.speed_preset,
+        plan.encoding.audio_bitrate,
+        job.force_reencode,
+    );
+
+    // Applicability diagnostics (Issues #5/#6): the renderer stays correct by
+    // omitting inapplicable flags; these logs explain the omission.
+    if temp_output_path_str.to_lowercase().ends_with(".webm") {
+        info!(
+            "render_single job={} speed preset '{}' is not applicable to VP9/WebM; no -preset will be emitted",
+            job_id, plan.encoding.speed_preset,
+        );
+    }
+    if plan.effects.remove_audio_enabled() {
+        info!(
+            "render_single job={} audio bitrate '{}' has no effect while remove-audio is enabled (-an)",
+            job_id, plan.encoding.audio_bitrate,
+        );
+    }
+
     // 7. Consistency Validation
     validate_preset_consistency(&plan).map_err(VideoError::InvalidInput)?;
 
-    // 8. Passthrough Check
+    // 8. Passthrough Check (Route B: explicit encoding intent blocks `-c copy`)
     let current_ratio = orientation.display_width as f32 / orientation.display_height as f32;
     let target_ratio = job.ratio.get_ratio();
     let ratio_diff = (current_ratio - target_ratio).abs() / target_ratio;
@@ -345,15 +373,27 @@ pub async fn render_single(
         false
     };
 
-    if orientation.is_vertical
-        && ratio_diff < 0.02
-        && !job.effects.background_effect_enabled()
-        && !job.effects.remove_audio_enabled()
-        && !job.effects.burn_subtitles_enabled()
-        && !job.effects.text_overlay_enabled()
-        && plan.logo.is_none()
-        && !has_transform
-    {
+    let passthrough_allowed = is_passthrough_allowed(
+        orientation.is_vertical,
+        ratio_diff,
+        job.effects.background_effect_enabled(),
+        job.effects.remove_audio_enabled(),
+        job.effects.burn_subtitles_enabled(),
+        job.effects.text_overlay_enabled(),
+        plan.logo.is_some(),
+        has_transform,
+        job.force_reencode,
+    );
+    info!(
+        "render_single job={} passthrough_allowed={} (vertical={} ratio_diff={:.4} force_reencode={})",
+        job_id,
+        passthrough_allowed,
+        orientation.is_vertical,
+        ratio_diff,
+        job.force_reencode,
+    );
+
+    if passthrough_allowed {
         let args = ["-i", input, "-c", "copy", "-y", &temp_output_path_str];
         run_ffmpeg(
             app,
@@ -399,6 +439,8 @@ pub async fn render_single(
         subtitle_fonts_dir,
         job.threads_per_job,
     );
+    // Observability (§21): exact FFmpeg invocation for this render.
+    info!("render_single job={} ffmpeg args: {:?}", job_id, args_vec);
     let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
 
     let ffmpeg_res = run_ffmpeg(

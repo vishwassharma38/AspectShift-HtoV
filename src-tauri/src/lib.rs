@@ -172,7 +172,9 @@ pub fn run() {
             video::presets::get_builtin_platform_presets,
             video::presets::get_all_aspect_ratio_targets,
             video::presets::save_preset,
-            video::presets::delete_preset
+            video::presets::delete_preset,
+            video::encoding::get_encoding_metadata,
+            video::encoding::resolve_encoding_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -122,6 +122,18 @@ export type BatchStatus = "idle" | "processing" | "cancelled" | "completed" | "f
 
 export type BuildChannel = "stable" | "beta" | "nightly" | "oss";
 
+/**
+ *  Per-container encoder capabilities backing the FFmpeg builder's
+ *  conditional flags (`supports_crf`/`supports_preset`).
+ */
+export type CodecCapability = {
+	outputFormat: string,
+	videoCodec: string,
+	audioCodec: string,
+	supportsCrf: boolean,
+	supportsPreset: boolean,
+};
+
 export type ConversionRequestDTO = {
 	input: string,
 	outputDir: string,
@@ -172,6 +184,56 @@ export type DependencyScanSource = "first_launch" | "manual" | "weekly" | "post_
 export type DependencyScanStatus = "not_scanned" | "scanning" | "scan_completed" | "error";
 
 export type DependencyStatus = { status: "missing" } | { status: "installed" } | { status: "invalid"; message: string } | { status: "corrupted"; message: string } | { status: "ready" };
+
+/**
+ *  Canonical encoding semantics for UI consumers.
+ * 
+ *  The frontend must render controls from this instead of maintaining its own
+ *  copies of quality levels, speed lists, or bitrate lists.
+ */
+export type EncodingMetadata = {
+	qualityLevels: QualityLevelMeta[],
+	speedPresets: string[],
+	audioBitrateOptions: string[],
+	codecCapabilities: CodecCapability[],
+	defaultEncoding: EncodingProfile,
+};
+
+/**
+ *  Transient session-level encoding overrides (user intent).
+ * 
+ *  Not persisted; not part of saved presets. Crosses the IPC boundary inside
+ *  `OutputJob.encoding_overrides` so Rust can resolve the effective encoding
+ *  itself. The frontend never sends a pre-resolved profile as authority.
+ */
+export type EncodingOverrides = {
+	qualityPreset: string | null,
+	crf: number | null,
+	speedPreset: string | null,
+	audioBitrate: string | null,
+	qualityAuthority: QualityAuthority,
+};
+
+/**
+ *  Preview request: user intent plus the render settings that affect control
+ *  applicability (output format, audio removal).
+ */
+export type EncodingPreviewRequest = {
+	baseline: EncodingProfile,
+	overrides: EncodingOverrides,
+	outputFormat?: string | null,
+	removeAudio?: boolean | null,
+};
+
+/**
+ *  Preview response: effective values plus non-fatal applicability warnings.
+ * 
+ *  Warnings never fail the render; they explain why a control has no effect.
+ */
+export type EncodingPreviewResponse = {
+	effective: EncodingProfile,
+	warnings: string[],
+};
 
 export type EncodingProfile = {
 	crf: number,
@@ -238,10 +300,28 @@ export type OutputFormat = "mp4" | "mov" | "webm";
 export type OutputJob = {
 	id: string,
 	ratio: AspectRatio,
+	/**
+	 *  Canonical baseline encoding (the selected preset's tuned values).
+	 * 
+	 *  This is NOT the effective render encoding. Rust resolves the effective
+	 *  profile at the render boundary via
+	 *  [`crate::video::encoding::resolve_effective_encoding`] using
+	 *  `encoding_overrides` below.
+	 */
 	encoding: EncodingProfile,
+	// Transient session intent. Empty means pure preset baseline.
+	encodingOverrides?: EncodingOverrides,
 	effects: VideoEffectsSettings,
 	platformConfig: PlatformConfig | null,
 	selection: SelectionMetadata,
+	/**
+	 *  Legacy intake, ignored by render construction.
+	 * 
+	 *  Re-encode intent is derived in Rust from `encoding_overrides` via
+	 *  [`crate::video::encoding::has_explicit_encoding_intent`]. This field is
+	 *  retained so older payloads still deserialize; nothing may trust it.
+	 */
+	forceReencode?: boolean,
 };
 
 export type PlatformConfig = {
@@ -280,6 +360,39 @@ export type PreviewRenderLayout = {
 	logoWidth: number | null,
 	logoGap: number | null,
 	subtitle: SubtitleLayoutMetrics,
+};
+
+/**
+ *  Which quality control currently governs the effective CRF.
+ * 
+ *  - `Baseline`: no session quality override; the built-in preset's own CRF
+ *    (or its quality's mapping at selection time) applies.
+ *  - `QualityPreset`: the user explicitly changed Quality Preset last; the
+ *    effective CRF is the mapping for the selected quality name.
+ *  - `ManualCrf`: the user explicitly moved the CRF slider last; the
+ *    effective CRF is the stored manual value regardless of the displayed
+ *    quality name.
+ */
+export type QualityAuthority = 
+// No explicit quality interaction this session.
+"baseline" | 
+// Quality Preset dropdown was most recently interacted with.
+"qualityPreset" | 
+// CRF slider was most recently interacted with.
+"manualCrf";
+
+/**
+ *  One quality level with its representative CRF and the CRF band it owns.
+ * 
+ *  Bands are derived from [`QUALITY_LEVELS`] with midpoint boundaries
+ *  `floor((rep_i + rep_{i+1}) / 2)` — the same rule as [`quality_for_crf`] —
+ *  so metadata can never disagree with resolution.
+ */
+export type QualityLevelMeta = {
+	name: string,
+	representativeCrf: number,
+	minCrf: number,
+	maxCrf: number,
 };
 
 // POST /api/refresh - request body sent from the desktop app to the license server.
