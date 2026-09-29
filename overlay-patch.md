@@ -1232,31 +1232,211 @@ Automatic subtitle layout behavior is not unintentionally changed by the freefor
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
 > **Status:** Implemented (Phase 3 only; Phases 4–6 not started)
-> **Implementation Summary:** Removed the accidental viewport text box from
-> the freeform-only `getTextLayerStyle` in `src/components/VideoCanvas.tsx`:
-> deleted `maxWidth: "100%"` and `overflowWrap: "anywhere"`, changed
-> `whiteSpace: "pre-wrap"` to `"pre"`. Long freeform text now sizes to its
-> natural content width and clips at the canvas frame instead of wrapping to
-> the viewport; explicit newlines are preserved. Nothing else changed.
-> **Files/Areas Changed:** `src/components/VideoCanvas.tsx` (3 declarations
-> in one function + comment), `scripts/verify-phase3-text-layout.mjs` (new
-> regression check).
-> **Issues Encountered:** Manual-subtitle `maxWidth: calc(100% - margins)`
-> deliberately left in place: it is a margin-derived safe-area cap owned by
-> the subtitle path (not the `100%` viewport box), has no `overflowWrap`,
-> and altering subtitle wrapping is the top Phase 3 scope boundary. Whether
-> manual subtitles should overflow-and-clip like freeform text is flagged
-> for a later phase (roadmap: "potentially", not required).
-> **Validation Performed:** `node scripts/verify-phase3-text-layout.mjs`
-> passes (freeform unconstrained + `pre`, style path pure, canvas clip kept,
-> subtitle layout byte-identical); Phase 2 + Phase 1 scripts pass;
-> `cargo test --lib` 211/211 pass (no Rust files touched); `tsc --noEmit`
-> clean for touched files (2 pre-existing `App.tsx` timer-typing errors,
-> file untouched); negative control confirmed the new checks fail on
-> pre-change code.
-> **Notes:** Renderer already breaks only at explicit `\N` (no ASS width
-> constraint found), so no renderer change was needed; `textAlign`,
-> `direction`, `unicodeBidi`, drag bounds, font floors, and validation untouched.
+> **Implementation Summary:** Removed the accidental viewport text box from the freeform-only `getTextLayerStyle` in `src/components/VideoCanvas.tsx`: deleted `maxWidth: "100%"` and `overflowWrap: "anywhere"`, changed `whiteSpace: "pre-wrap"` to `"pre"`. The freeform text element now uses its natural content width instead of an implicit viewport width, while explicit newlines remain explicit. The video-frame container retains `overflow: hidden` for clipping.
+> **Files/Areas Changed:** `src/components/VideoCanvas.tsx` (three freeform declarations/comment); `scripts/verify-phase3-text-layout.mjs` (new regression check).
+> **Issues Encountered:** Manual-subtitle `maxWidth: calc(100% - margins)` was deliberately left in place because it belongs to the subtitle safe-area layout rather than the freeform text path. This is appropriate for Phase 3 scope. Whether manual subtitles should eventually use freeform overflow-and-clip semantics remains a separate product/design decision and must not be assumed during Phase 4.
+> **Validation Performed:** `node scripts/verify-phase3-text-layout.mjs` passes; Phase 2 and Phase 1 regression scripts pass; `cargo test --lib` passes 211/211; TypeScript validation has the same two pre-existing `App.tsx` timer-typing errors reported in earlier phases; negative-control checks confirmed the Phase 3 assertions fail against the pre-change implementation.
+> **Notes:** No Rust files, persisted schema, backend validation/clamping, font-size floors, drag bounds, or automatic subtitle layout were modified.
+
+### Phase 3 — ChatGPT Editorial Audit
+
+**Review basis:** OpenCode/Muse Spark 1.3 Phase 3 audit plus inspection of the current Experimental branch implementation.
+
+**Overall assessment:** **PASS.** Phase 3 is correctly implemented and appropriately scoped. No corrective implementation pass is required before moving to Phase 4.
+
+#### 1. What Phase 3 got right
+
+- The freeform text path in `getTextLayerStyle` no longer has `maxWidth: "100%"`.
+- The freeform path no longer has `overflowWrap: "anywhere"`.
+- Freeform text now uses `whiteSpace: "pre"`, which preserves explicit newlines without introducing automatic wrapping caused by the preview viewport.
+- The video-frame container still owns `overflow: "hidden"`, preserving the intended separation between overlay geometry and frame visibility.
+- The freeform style path remains a pure style transformation; Phase 2's state-mutation removal was not reintroduced.
+- Automatic/manual subtitle layout remains a separate path. Its margin-derived `maxWidth` remains intact and was correctly excluded from this phase.
+- Phase 4 backend clamping/validation and Phase 5 font-size behavior were not pulled forward.
+- Drag bounds remain untouched. That is correct because interaction constraints are a separate policy from CSS text wrapping/layout constraints.
+
+#### 2. Important audit correction: the Phase 3 test is structural, not behavioral
+
+The new `verify-phase3-text-layout.mjs` regression script is valuable, but it primarily proves source-level invariants: freeform wrapping declarations are absent; `whiteSpace` is `"pre"`; the style path does not call overlay state writers; and the frame clipping declaration remains present.
+
+It does **not** actually mount the React component in a browser, measure a long line, or capture rendered pixels.
+
+Therefore future documentation must not describe this test as proving end-to-end visual clipping or natural-width browser behavior. The accurate claim is:
+
+> The implementation establishes and structurally verifies the CSS/layout invariants required for natural-width, no-automatic-wrap freeform text. Browser-rendered behavior remains suitable for later behavioral/visual regression coverage.
+
+This is not a Phase 3 failure. It is simply a precision requirement for future audits.
+
+#### 3. Important audit correction: do not call subtitle verification “byte-identical”
+
+The audit's phrase “subtitle layout byte-identical” is stronger than the test evidence supports.
+
+The regression script checks the relevant subtitle declarations and confirms that the Phase 3 freeform edit did not introduce/remove the targeted wrapping declarations in that path. It does not perform a literal byte-for-byte comparison against the pre-Phase-3 source.
+
+Use the more precise wording:
+
+> “Subtitle layout declarations relevant to Phase 3 remain unchanged.”
+
+This distinction matters because future audits should clearly separate structural assertions from historical file-diff comparisons.
+
+#### 4. Renderer wording should remain conservative
+
+The audit says the renderer “already breaks only at explicit `\\N`.” No renderer change was necessary for Phase 3, and that is the important conclusion.
+
+Do not turn this into a broad guarantee that browser and libass wrapping semantics are identical. Browser text layout and libass remain separate rendering systems, and Phase 6 explicitly exists to address realistic parity expectations.
+
+For Phase 3, the correct statement is:
+
+> No renderer change was required because the accidental viewport wrapping being removed was owned by the freeform preview CSS path.
+
+#### 5. Do not reopen drag bounds during Phase 3
+
+The current drag limits remain a separate interaction policy. Their presence does not contradict the Phase 3 requirement to remove viewport-driven text wrapping.
+
+Phase 4 should separately trace whether drag bounds prevent users from entering/storing off-canvas coordinates. If they do, that is an interaction/input policy question rather than evidence that Phase 3 was incomplete.
+
+Do not retroactively broaden Phase 3 to remove them.
+
+#### 6. Manual-subtitle max-width is intentionally deferred
+
+The remaining `maxWidth: calc(100% - margins)` in the manual subtitle path is an intentional safe-area constraint, not the accidental freeform `max-width: 100%` constraint removed in this phase.
+
+Do not remove it automatically in Phase 4.
+
+Before changing manual-subtitle behavior, explicitly decide whether manual subtitles are meant to follow freeform overflow-and-clip semantics or remain a margin-wrapped subtitle product concept. The current roadmap says this is potentially relevant later, not a Phase 4 requirement.
+
+#### 7. Phase 3 did not prove end-to-end off-canvas geometry
+
+The successful Phase 3 implementation does **not** mean values such as `x = -0.1` can already be entered, persisted, rendered, and clipped end-to-end.
+
+The remaining known barriers are still intentionally present:
+
+- frontend normalization can clamp coordinates;
+- drag interaction can constrain coordinates;
+- backend validation still enforces 0..1 for relevant fields;
+- backend renderer paths still contain 0..1 clamps; and
+- ASS coordinate conversion still needs the signed-coordinate fix identified in earlier notes.
+
+Therefore Phase 3 should be described as removing the **preview text-layout constraint**, not as completing arbitrary off-canvas overlay support.
+
+#### 8. Required Phase 4 carry-forward
+
+Phase 4 must inspect the complete coordinate lifecycle rather than deleting only visible `.clamp(0.0, 1.0)` calls.
+
+For free-positioned overlays, the intended lifecycle is:
+
+```text
+finite off-canvas x/y
+  -> editor state
+  -> normalization
+  -> persistence
+  -> backend validation
+  -> renderer conversion
+  -> signed video-space coordinates
+  -> frame clipping
+```
+
+The required coordinate rule remains:
+
+```text
+finite x/y       -> valid
+NaN / Infinity   -> invalid
+outside [0,1]    -> valid
+```
+
+Only the relevant free-positioned coordinate fields should change. Do not weaken unrelated numeric validation.
+
+#### 9. Critical Phase 4 signed-coordinate warning
+
+The existing ASS path must be audited before removing its clamp.
+
+The current conceptual path is:
+
+```rust
+to_video_x(x, width).round() as u32
+to_video_y(y, height).round() as u32
+```
+
+That representation is incompatible with negative video-space positions.
+
+**Do not merely remove the 0..1 clamp while retaining an unsigned conversion.**
+
+For example:
+
+```text
+x = -0.10
+video width = 1080
+
+videoX = -108
+```
+
+The serialized renderer coordinate must remain negative rather than being converted to an unsigned value.
+
+A signed integer representation after rounding, or another representation that preserves negative coordinates correctly, is acceptable. The invariant is what matters:
+
+> **Negative canonical coordinates must remain negative through video-space conversion and ASS serialization.**
+
+This should be treated as a Phase 4 correctness requirement, not an optional cleanup.
+
+#### 10. Recommended Phase 4 validation matrix
+
+Before declaring Phase 4 complete, validate at least:
+
+```text
+x = -0.10, y = 0.50
+x =  1.10, y = 0.50
+x =  0.50, y = -0.10
+x =  0.50, y = 1.10
+x =  0.50, y = 0.50
+```
+
+For the off-canvas cases, verify:
+
+```text
+state accepts value
+normalization preserves value
+save/load preserves value
+backend validation accepts finite value
+renderer receives the same canonical meaning
+negative video coordinates remain negative
+visible output is clipped by the video frame
+```
+
+For the centered case, verify the existing center anchor remains unchanged.
+
+Also keep automatic subtitle behavior under a separate regression check.
+
+#### 11. Phase 3 final editorial conclusion
+
+Phase 3 is complete.
+
+The key architectural improvement is now:
+
+```text
+canonical geometry
+       ↓
+freeform preview
+       ↓
+natural text width
+       ↓
+video frame clips visibility
+```
+
+rather than:
+
+```text
+canonical geometry
+       ↓
+viewport-derived text box
+       ↓
+automatic wrapping
+```
+
+The implementation should therefore be left unchanged.
+
+**Next phase:** Phase 4 — Remove Backend Clamping.
+
+The main Phase 4 risk is no longer the preview CSS. It is ensuring that finite off-canvas coordinates survive **every** state/validation/rendering boundary, especially signed negative coordinates in the ASS writer.
 
 ---
 
