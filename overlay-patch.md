@@ -1,5 +1,239 @@
 # Overlay Patch Roadmap
 
+## 0. ChatGPT Notes
+
+### Purpose of This Section
+
+This section is the editorial audit channel between ChatGPT and the implementation agent.
+
+After each phase implementation and OpenCode/Muse Spark audit run, ChatGPT reviews:
+- the implementation audit produced by OpenCode/Muse Spark;
+- the current Experimental branch and relevant code changes;
+- the roadmap and previously recorded constraints; and
+- inconsistencies, omissions, risks, or architectural details that should be known before the next phase.
+
+ChatGPT then records findings, corrections, clarifications, and implementation guidance here.
+
+**OpenCode/Muse Spark should read this section before beginning the next phase.**
+
+These notes are not a replacement for the roadmap. They are an editorial review layer intended to confirm whether the previous phase satisfied its scope, correct misleading or incomplete audit statements, identify code paths for later phases, preserve decisions, and prevent later phases from contradicting earlier findings.
+
+Each phase should be treated as independently auditable. A phase reported as implemented does not mean its behavioral objective has been proven end-to-end.
+
+---
+
+### Phase 1 — ChatGPT Editorial Audit
+
+**Review basis:** OpenCode/Muse Spark 1.3 Phase 1 audit plus inspection of the experimental branch implementation.
+
+**Overall assessment:** Phase 1 is a sound and appropriately scoped centralization pass. The new geometry helpers establish a much clearer shared semantic layer, the existing center-anchor model was preserved, and the added tests cover the important mathematical properties of the new layer. The implementation also correctly avoided prematurely performing the Phase 2–6 behavior changes.
+
+However, Phase 1 is **centralization only**, not proof that off-canvas geometry already works end-to-end. The branch still contains downstream normalization, validation, drag, and renderer boundaries that intentionally preserve the old 0..1 behavior.
+
+#### 1. What Phase 1 got right
+
+- `src/utils/overlayGeometry.ts` and `src-tauri/src/video/overlay_geometry.rs` establish explicit video-space normalized semantics.
+- The helpers are pure transformations and do not themselves clamp or mutate state.
+- Finite-value semantics are clearly documented: finite values outside [0,1] are conceptually valid; NaN and infinities are not.
+- Center anchoring is preserved consistently: preview `translate(-50%, -50%)`, ASS center alignment, and FFmpeg logo `overlay_w/2` / `overlay_h/2`.
+- The frontend verification script and Rust tests cover center, origin/unit positions, off-canvas math, resolution independence, finite guards, and drag-delta inversion.
+- The implementation correctly leaves frame-containment behavior for later phases instead of mixing all phases into one change.
+- The Phase 1 helper layer is small enough to be useful rather than becoming an unnecessary abstraction.
+
+#### 2. Important correction: canonical helpers accepting outside [0,1] is not yet an end-to-end property
+
+The new geometry helpers accept outside-[0,1] values, but the application still rejects or clamps them elsewhere.
+
+Relevant remaining boundaries include:
+
+- `src/utils/textOverlay.ts`: `normalizeTextLayer()` still clamps x/y to 0..1.
+- `src/utils/subtitleOverlay.ts`: `normalizeSubtitleOverlay()` still clamps x/y to 0..1.
+- `src-tauri/src/video/validation.rs` still rejects text-layer, manual-subtitle, and logo x/y outside 0..1.
+- `src-tauri/src/video/filter_builder.rs` still clamps manual logo coordinates before creating the FFmpeg expression.
+- `src-tauri/src/subtitles/ass_writer.rs` still clamps manual subtitle/text coordinates before converting them to video pixels.
+- `VideoCanvas.tsx` still contains drag bounds based on overlay dimensions and `Math.max/Math.min` containment logic.
+- The state-mutating preview containment logic identified by the roadmap remains a later-phase concern.
+
+Therefore, do not describe the current Experimental branch as already supporting arbitrary finite persisted overlay positions. It supports those values at the canonical helper layer only.
+
+#### 3. Critical Phase 4 hazard: ASS position values must remain signed
+
+There is an important downstream issue that should be explicitly tracked before Phase 4 removes the backend clamps.
+
+In `src-tauri/src/subtitles/ass_writer.rs`, the current conversion is conceptually:
+
+```
+to_video_x(x, width).round() as u32
+to_video_y(y, height).round() as u32
+```
+
+That is harmless while x/y are clamped to 0..1. It is not sufficient once negative canonical coordinates become valid. A negative video-space coordinate must remain negative when written into ASS `\\pos(...)`.
+
+**Do not simply remove the clamp and leave the `as u32` cast in place.** A negative coordinate would be lost/saturated rather than represented correctly.
+
+Phase 4 must therefore review the ASS coordinate representation and ensure negative video-space positions survive conversion and serialization. A signed integer representation after rounding, or another representation appropriate to the ASS writer, can be used; the exact type is an implementation decision. The invariant is that negative coordinates must remain negative.
+
+This is a correctness requirement, not merely a cleanup detail.
+
+#### 4. Do not confuse validation with the canonical geometry layer
+
+When Phase 4 changes the 0..1 validation policy, do it deliberately and narrowly.
+
+The intended coordinate rule is:
+
+```
+x/y:
+  finite -> valid
+  NaN/Infinity -> invalid
+  outside [0,1] -> valid
+```
+
+This applies only to free-positioned overlay geometry. Do not weaken unrelated bounds such as opacity, blur sigma, font size, scale, outline width, platform dimensions, or other safety constraints.
+
+Do not replace every 0..1 validation rule in `validation.rs` with a generic finite check. Coordinate fields must be changed selectively.
+
+#### 5. Frontend normalization is a real persistence/state boundary
+
+`normalizeTextLayer()` and `normalizeSubtitleOverlay()` currently turn out-of-range coordinates back into 0..1. An off-canvas value can therefore be destroyed before it reaches the backend.
+
+The desired lifecycle is:
+
+```
+off-canvas value
+  -> preview
+  -> save
+  -> reload
+  -> same off-canvas value
+```
+
+Phase 2–4 work must trace the full lifecycle of x/y, not merely the final FFmpeg or ASS call site.
+
+The key question is: **Can a finite off-canvas coordinate enter the editor, survive normalization/state updates, survive persistence, reach the renderer, and remain geometrically unchanged?**
+
+#### 6. Drag behavior must remain distinct from coordinate transformation
+
+The new `previewDeltaToCanonical()` helper is correct as a mathematical inverse of preview scale. `VideoCanvas.tsx` still applies drag containment bounds after calculating that delta. That is expected for Phase 1.
+
+Later work must preserve this distinction:
+
+```
+delta conversion = geometry transformation
+drag bounds = interaction policy
+```
+
+Phase 2 should remove or redesign the frame-containment policy where required; it should not remove legitimate pointer behavior such as pointer capture, click-vs-drag thresholds, or selection behavior.
+
+#### 7. Be precise with the phrase "bit-for-bit"
+
+The Phase 1 audit says behavior was preserved "bit-for-bit". That is reasonable for the migrated arithmetic while existing clamps remain in place, but it should not be interpreted as proof of byte-identical behavior across the entire application.
+
+A safer interpretation is: Phase 1 preserves the existing behavior at migrated call sites because the new helpers encode the same arithmetic and the old clamps remain at those call sites.
+
+Future audits should distinguish arithmetic equivalence, application behavior equivalence, end-to-end behavior, and persistence/renderer behavior.
+
+#### 8. Phase 1 tests are good, but they test the geometry layer more than the application
+
+The seven Rust tests plus the Node verification script appropriately prove:
+
+- canonical -> preview transformation;
+- canonical -> video transformation;
+- mathematical representation of values outside [0,1];
+- finite guards; and
+- drag-delta inversion.
+
+They do not yet prove:
+
+- off-canvas state survives normalization;
+- off-canvas state survives persistence;
+- preview leaves it unchanged;
+- backend validation accepts it;
+- ASS serializes negative coordinates correctly;
+- FFmpeg receives unclamped logo coordinates; or
+- long freeform text avoids accidental wrapping.
+
+Those are later-phase responsibilities. Keep this distinction explicit so future audits do not overstate what Phase 1 proved.
+
+#### 9. Subtitle scope remains important
+
+Phase 1 routes manual subtitle positioning through the canonical geometry helpers while leaving automatic subtitle layout untouched. That is acceptable provided later phases continue to distinguish manual/freeform subtitle positioning from automatic subtitle layout.
+
+Do not let the generic word "subtitle" become a reason to remove safe-area, margin, wrapping, or bottom-center behavior from automatic subtitles.
+
+#### 10. Phase 2 must verify actual state mutation before deleting/refactoring helpers
+
+When Phase 2 starts:
+
+1. inspect every `clampTextToFrame` call site;
+2. identify exactly which behavior mutates canonical x/y;
+3. separate that behavior from legitimate measurement/interaction responsibilities;
+4. remove only the state-mutating frame-containment behavior; and
+5. add a regression test proving an intentionally off-canvas position remains unchanged after preview rendering and resizing.
+
+The invariant is not "the function no longer exists." The invariant is: **rendering the preview does not rewrite canonical overlay geometry.**
+
+#### 11. Phase 3 should be careful about "no wrapping"
+
+For freeform text, accidental viewport-driven wrapping should be removed. However, do not infer that `white-space: pre` alone solves preview/output parity in every case. Browser text layout and ASS/libass layout remain different rendering systems.
+
+The immediate Phase 3 target is specifically: the preview viewport must not become an implicit text-box width.
+
+The long-term explicit wrapping model remains a separate product feature.
+
+#### 12. Recommended validation sequence for Phases 2–4
+
+Before considering Phases 2–4 complete, test representative freeform positions including:
+
+```
+x = -0.10, y = 0.50
+x =  1.10, y = 0.50
+x =  0.50, y = -0.10
+x =  0.50, y = 1.10
+```
+
+For each case, verify:
+
+```
+1. editor state accepts it
+2. normalization does not clamp it
+3. preview does not rewrite it
+4. save/load preserves it
+5. backend validation accepts it
+6. renderer receives the same canonical meaning
+7. negative ASS coordinates remain negative
+8. visible output is clipped by the frame rather than repositioned
+```
+
+For x = 0.5, y = 0.5, verify the existing center anchor remains unchanged.
+
+For automatic subtitles, verify the existing bottom-center/safe-area behavior separately so freeform changes do not regress it.
+
+#### 13. Phase gate remains unchanged
+
+Phase 1 is complete as a centralization phase. Do not start Phase 5 merely because the geometry helpers exist.
+
+The intended sequence remains:
+
+```
+Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> validation -> Phase 5
+```
+
+Phase 5 must continue to preserve persisted `fontSize` semantics. No `fontScale` migration should be introduced into the geometry work.
+
+#### 14. Editorial conclusion for Phase 1
+
+Phase 1 is structurally on the right track and does what this phase was supposed to do: it gives the project a shared vocabulary and shared transformation layer for overlay position.
+
+The main point to carry forward is that **the canonical layer is now centralized, but the application is not yet canonical end-to-end**. The remaining normalization, validation, interaction bounds, and renderer serialization boundaries are exactly where the next phases need to concentrate.
+
+The most important technical warning for future implementation is the ASS signed-coordinate issue:
+
+> **When Phase 4 removes the 0..1 clamp, do not leave off-canvas ASS coordinates flowing through an unsigned integer conversion.**
+
+Treat that as a required Phase 4 correctness check.
+
+---
+
+
 ## 1. Problem / Bug Context
 
 AspectShift-HtoV is experiencing overlay-related preview/output inconsistencies that are not isolated UI glitches. The identified bugs are symptoms of how overlay geometry is currently represented and translated between the editor preview and the final renderer.
