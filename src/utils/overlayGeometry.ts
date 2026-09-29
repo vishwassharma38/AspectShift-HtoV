@@ -25,10 +25,12 @@
  * videoPx   = canonical * videoFrameSize
  * ```
  *
- * Later phases remove frame-containment clamps (preview `clampTextToFrame` /
- * drag limits, backend `.clamp(0, 1)`) and accidental wrapping so the frame
- * becomes a clipping boundary instead of a geometry boundary. Phase 1 only
- * centralizes the transformation; existing clamps stay where they are.
+ * Phase 2 removed the automatic preview mutation (`clampTextToFrame`), so
+ * rendering or resizing the preview no longer rewrites canonical `x/y`.
+ * Remaining frame-containment boundaries (drag limits, normalization and
+ * validation clamps, backend `.clamp(0, 1)`) and accidental wrapping belong
+ * to later phases; the frame becomes a pure clipping boundary only once
+ * those are addressed.
  */
 
 export interface CanonicalOverlayPosition {

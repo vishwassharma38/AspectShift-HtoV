@@ -597,42 +597,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     }
   }, [editingLayerId, textOverlay.layers]);
 
-  const clampTextToFrame = useCallback(() => {
-    const frame = canvasBoxRef.current;
-    const current = textOverlayStateRef.current;
-    if (!frame) return;
-    const frameRect = frame.getBoundingClientRect();
-    if (frameRect.width <= 0 || frameRect.height <= 0) return;
-
-    let changed = false;
-    const layers = current.layers.map((layer) => {
-      const element = textOverlayRefs.current[layer.id];
-      if (!element || !layer.enabled) return layer;
-      const textRect = element.getBoundingClientRect();
-      const minX = Math.min(0.5, textRect.width / (2 * frameRect.width));
-      const minY = Math.min(0.5, textRect.height / (2 * frameRect.height));
-      const x = Math.max(minX, Math.min(1 - minX, layer.x));
-      const y = Math.max(minY, Math.min(1 - minY, layer.y));
-      if (Math.abs(x - layer.x) <= 0.0005 && Math.abs(y - layer.y) <= 0.0005) {
-        return layer;
-      }
-      changed = true;
-      return { ...layer, x, y };
-    });
-    if (changed) {
-      applyTextOverlay({ ...current, layers });
-    }
-  }, [applyTextOverlay]);
-
-  useLayoutEffect(() => {
-    clampTextToFrame();
-  }, [
-    clampTextToFrame,
-    canvasSize.width,
-    canvasSize.height,
-    textOverlay.layers,
-  ]);
-
   const handleTextPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, layer: ResolvedTextLayerSettings) => {
       if (editingLayerId || event.button !== 0) return;

@@ -1136,12 +1136,31 @@ Off-canvas overlay positions remain valid and stable.
 
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
-> **Status:**
-> **Implementation Summary:**
-> **Files/Areas Changed:**
-> **Issues Encountered:**
-> **Validation Performed:**
-> **Notes:**
+> **Status:** Implemented (Phase 2 only; Phases 3–6 not started)
+> **Implementation Summary:** Removed the automatic preview state mutation:
+> deleted `clampTextToFrame` and its `useLayoutEffect` caller from
+> `src/components/VideoCanvas.tsx`, so rendering the preview or resizing the
+> preview window no longer rewrites canonical text-overlay `x/y`. No other
+> behavior was changed; drag, typing, selection, and editing update paths are
+> intact, as are all Phase 1 geometry helpers.
+> **Files/Areas Changed:** `src/components/VideoCanvas.tsx` (36-line deletion
+> of helper + effect caller), `src/utils/overlayGeometry.ts` (doc comment now
+> records Phase 2 removal), `scripts/verify-phase2-no-mutation.mjs` (new
+> regression check).
+> **Issues Encountered:** None blocking. Note: off-canvas values now survive
+> the preview path but are still clamped at other boundaries intentionally
+> left for later phases (frontend normalize clamps, drag limits, backend
+> validation + `.clamp(0.0, 1.0)`); end-to-end off-canvas rendering therefore
+> still requires Phases 3–4.
+> **Validation Performed:** `node scripts/verify-phase2-no-mutation.mjs`
+> passes (8 effect bodies scanned, no overlay-state writers; user-driven
+> paths confirmed present); `node scripts/verify-phase1-geometry.mjs`
+> passes (Phase 1 intact); `cargo test --lib` 211/211 pass (no Rust files
+> touched); `tsc --noEmit` clean for touched files (2 pre-existing `App.tsx`
+> timer-typing errors, file untouched); negative control confirmed the new
+> check fails on pre-change code.
+> **Notes:** See `clampTextToFrame` Review in the Phase 2 implementation
+> audit/report for the responsibility analysis and remaining-clamp inventory.
 
 ---
 
