@@ -1,3 +1,4 @@
+use crate::video::overlay_geometry::{overlay_center_x_expression, overlay_center_y_expression};
 use crate::video::preset_adapter::RenderPlan;
 use crate::video::render_layout::{calculate_render_layout, PreviewFitMode};
 use crate::video::types::{LogoPosition, OrientationInfo, VideoTransform};
@@ -140,9 +141,13 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
     // Stage 2: Logo Overlay (Optional)
     if let Some(logo) = &plan.logo {
         let (x, y) = if logo.manual_position {
+            // Phase 1: canonical video-space position → overlay expression
+            // via the shared geometry layer. Center anchor
+            // (`-overlay_w/2`) preserved. The legacy frame clamp is
+            // preserved here; its removal belongs to Phase 4.
             (
-                format!("main_w*{:.6}-overlay_w/2", logo.x.clamp(0.0, 1.0)),
-                format!("main_h*{:.6}-overlay_h/2", logo.y.clamp(0.0, 1.0)),
+                overlay_center_x_expression(logo.x.clamp(0.0, 1.0)),
+                overlay_center_y_expression(logo.y.clamp(0.0, 1.0)),
             )
         } else {
             match logo.position {

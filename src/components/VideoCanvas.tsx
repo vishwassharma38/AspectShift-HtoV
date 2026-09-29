@@ -33,6 +33,10 @@ import {
   resolveSubtitleOverlay,
   type ResolvedSubtitleOverlaySettings,
 } from "../utils/subtitleOverlay";
+import {
+  previewDeltaToCanonical,
+  toPreviewPercent,
+} from "../utils/overlayGeometry";
 
 interface VideoCanvasProps {
   videoSrc: string;
@@ -348,8 +352,14 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     };
 
     if (effects.logo.manualPosition) {
-      style.left = `${(effects.logo.x ?? 0.5) * 100}%`;
-      style.top = `${(effects.logo.y ?? 0.5) * 100}%`;
+      // Phase 1: canonical video-space position → preview percent.
+      // Center anchor (`translate(-50%, -50%)`) preserved; no clamp change.
+      const logoPreview = toPreviewPercent({
+        x: effects.logo.x ?? 0.5,
+        y: effects.logo.y ?? 0.5,
+      });
+      style.left = `${logoPreview.xPercent}%`;
+      style.top = `${logoPreview.yPercent}%`;
       style.transform = "translate(-50%, -50%)";
     } else {
       switch (position) {
@@ -430,13 +440,23 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       onLogoChange?.({
         ...effects.logo,
         manualPosition: true,
+        // Phase 1: screen-px drag delta → canonical delta. Drag limits
+        // preserved; limit removal belongs to Phase 2.
         x: Math.max(
           drag.minX,
-          Math.min(drag.maxX, drag.startX + deltaX / drag.frameWidth),
+          Math.min(
+            drag.maxX,
+            drag.startX +
+              previewDeltaToCanonical(deltaX, drag.frameWidth),
+          ),
         ),
         y: Math.max(
           drag.minY,
-          Math.min(drag.maxY, drag.startY + deltaY / drag.frameHeight),
+          Math.min(
+            drag.maxY,
+            drag.startY +
+              previewDeltaToCanonical(deltaY, drag.frameHeight),
+          ),
         ),
       });
     },
@@ -658,13 +678,21 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }
       if (!drag.moved) return;
       event.preventDefault();
+      // Phase 1: screen-px drag delta → canonical delta. Drag limits
+      // preserved; limit removal belongs to Phase 2.
       const x = Math.max(
         drag.minX,
-        Math.min(drag.maxX, drag.startX + deltaX / drag.frameWidth),
+        Math.min(
+          drag.maxX,
+          drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth),
+        ),
       );
       const y = Math.max(
         drag.minY,
-        Math.min(drag.maxY, drag.startY + deltaY / drag.frameHeight),
+        Math.min(
+          drag.maxY,
+          drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight),
+        ),
       );
       updateTextLayer(drag.layerId, { x, y });
     },
@@ -693,10 +721,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     const outlineWidth = layer.outlineEnabled
       ? Math.max(0, layer.outlineWidth * targetScale)
       : 0;
+    // Phase 1: canonical video-space position → preview percent.
+    // Center anchor preserved; wrapping/typography untouched (Phase 3/5).
+    const textPreview = toPreviewPercent({ x: layer.x, y: layer.y });
     return {
       position: "absolute",
-      left: `${layer.x * 100}%`,
-      top: `${layer.y * 100}%`,
+      left: `${textPreview.xPercent}%`,
+      top: `${textPreview.yPercent}%`,
       transform: "translate(-50%, -50%)",
       maxWidth: "100%",
       color: layer.color,
@@ -798,13 +829,21 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       event.preventDefault();
       updateSubtitleOverlay({
         manualPosition: true,
+        // Phase 1: screen-px drag delta → canonical delta. Drag limits and
+        // auto-subtitle margin layout preserved (Phases 2/3 scope).
         x: Math.max(
           drag.minX,
-          Math.min(drag.maxX, drag.startX + deltaX / drag.frameWidth),
+          Math.min(
+            drag.maxX,
+            drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth),
+          ),
         ),
         y: Math.max(
           drag.minY,
-          Math.min(drag.maxY, drag.startY + deltaY / drag.frameHeight),
+          Math.min(
+            drag.maxY,
+            drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight),
+          ),
         ),
       });
     },
@@ -839,12 +878,20 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     const style: React.CSSProperties = {
       position: "absolute",
       ...(subtitleOverlay.manualPosition
-        ? {
-            left: `${subtitleOverlay.x * 100}%`,
-            top: `${subtitleOverlay.y * 100}%`,
-            transform: "translate(-50%, -50%)",
-            maxWidth: `calc(100% - ${marginH * 2}px)`,
-          }
+        ? (() => {
+            // Phase 1: canonical video-space position → preview percent.
+            // Center anchor preserved; auto-subtitle margin layout untouched.
+            const manualPreview = toPreviewPercent({
+              x: subtitleOverlay.x,
+              y: subtitleOverlay.y,
+            });
+            return {
+              left: `${manualPreview.xPercent}%`,
+              top: `${manualPreview.yPercent}%`,
+              transform: "translate(-50%, -50%)",
+              maxWidth: `calc(100% - ${marginH * 2}px)`,
+            };
+          })()
         : {
             bottom: marginV,
             left: marginH,

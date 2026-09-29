@@ -7,6 +7,7 @@ pub mod ffmpeg;
 pub mod ffmpeg_args_builder;
 pub mod filter_builder;
 pub mod lock;
+pub mod overlay_geometry;
 pub mod paths;
 pub mod preset_adapter;
 pub mod presets;

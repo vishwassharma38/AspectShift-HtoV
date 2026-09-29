@@ -1,4 +1,5 @@
 use crate::subtitles::SubtitleSegment;
+use crate::video::overlay_geometry::{to_video_x, to_video_y};
 use crate::video::types::VideoError;
 use std::fs;
 use std::path::Path;
@@ -101,8 +102,11 @@ pub fn write_ass(
         let end = format_ass_timestamp(segment.end_ms);
         let text = segment.text.trim().replace('\n', "\\N");
         let text = if let Some((x, y)) = style.position {
-            let position_x = (x.clamp(0.0, 1.0) * style.play_res_x as f32).round() as u32;
-            let position_y = (y.clamp(0.0, 1.0) * style.play_res_y as f32).round() as u32;
+            // Phase 1: canonical video-space position → video pixels via the
+            // shared geometry layer. The legacy frame clamp is preserved
+            // here; its removal belongs to Phase 4.
+            let position_x = to_video_x(x.clamp(0.0, 1.0), style.play_res_x).round() as u32;
+            let position_y = to_video_y(y.clamp(0.0, 1.0), style.play_res_y).round() as u32;
             format!(
                 "{{\\an{}\\pos({position_x},{position_y})}}{text}",
                 style.alignment
@@ -184,8 +188,11 @@ pub fn write_text_overlays_ass(
 
     let end = format_ass_timestamp(duration_ms.max(10));
     for (index, (text, style, x, y)) in layers.iter().enumerate() {
-        let position_x = (x.clamp(0.0, 1.0) * style.play_res_x as f32).round() as u32;
-        let position_y = (y.clamp(0.0, 1.0) * style.play_res_y as f32).round() as u32;
+        // Phase 1: canonical video-space position → video pixels via the
+        // shared geometry layer. Center anchor (`\an5`) preserved. The legacy
+        // frame clamp is preserved here; its removal belongs to Phase 4.
+        let position_x = to_video_x(x.clamp(0.0, 1.0), style.play_res_x).round() as u32;
+        let position_y = to_video_y(y.clamp(0.0, 1.0), style.play_res_y).round() as u32;
         body.push_str(&format!(
             "Dialogue: {index},0:00:00.00,{end},{},,0,0,0,,{{\\an5\\pos({position_x},{position_y})}}{}\n",
             style.name,
