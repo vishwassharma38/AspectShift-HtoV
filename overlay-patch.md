@@ -1702,6 +1702,110 @@ The implementation has a clear boundary between exact logical geometry and unavo
 > should first classify against the seven mismatch types before touching
 > geometry.
 
+#### Phase 6 Test Validation — Tests 6.1–6.9 (TEST-ONLY phase)
+
+> Test types used below: **behavioral** (executes real code), **structural**
+> (asserts source invariants), **renderer-level** (invokes real FFmpeg/libass
+> output), **browser-level** (mounts/renders React/CSS — none available),
+> **visual** (compares screenshots — none available). Structural checks never
+> prove rendered pixels; renderer checks never prove browser rendering.
+>
+> ### Test 6.1 — Centered overlay — PASS (behavioral)
+> `scripts/verify-tests-6-1-6-7.mjs`: x=0.5,y=0.5,fontSize=48 normalizes and
+> reloads unchanged; preview resolves to 50%/50%; renderer resolves to
+> (960,540) on 1920×1080; 48×0.5 preview scale = 24. Limitation: renderer
+> numbers are conversion math; frame-centering of real ink is proven
+> separately by the 6.9 renderer script (measured center-x 542.5 vs 540).
+>
+> ### Test 6.2 — Negative X — PASS (behavioral + renderer-level)
+> Chain suite: x=-0.1 survives normalize → JSON save/load → preview fraction
+> (-10%) → renderer value (-192 on 1920 wide, negativity asserted). Rust ASS
+> tests assert the same values serialize as `\pos(-192,540)`. Rendered-geometry
+> script renders pos(-162,960) on 1080×1920 with real libass: ink touches the
+> left edge (x=0) with width 13px vs 345px fully visible — clipped, not
+> repositioned. Limitation: browser-side clipping of the preview div is
+> structural only (`overflow:hidden` declaration verified).
+>
+> ### Test 6.3 — X > 1 — PASS (behavioral + renderer-level)
+> Chain suite: x=1.1 survives normalize → save/load → preview (110%) →
+> renderer (2112 on 1920 wide, signed-32-bit asserted, no unsigned wrap).
+> Rendered-geometry script renders pos(1188,960): ink touches the right edge
+> (1077 vs 1080 within 4px AA tolerance) with width 59px vs 345px.
+>
+> ### Test 6.4 — Preview resizing — PASS (behavioral math + frozen state)
+> Same canonical overlay at 800px vs 1200px preview widths: px ratio exactly
+> 1.5, normalized fractions identical, frozen canonical x/y/fontSize
+> unchanged. Render-triggered non-mutation additionally locked by the Phase 2
+> structural script. Limitation: no mounted component exists, so this is
+> mathematical invariance plus effect-scan proof, not a runtime resize test.
+>
+> ### Test 6.5 — Long freeform text — PASS (behavioral data path)
+> 120-char single line and explicit-`\n` text survive normalize and JSON
+> round-trip verbatim. No-wrap/clip rendering locked structurally (Phase 3
+> script: `white-space:pre`, no maxWidth/overflowWrap, canvas clip).
+> Limitation: browser-measured wrapping untested (no browser harness).
+>
+> ### Test 6.6 — Persistence — PASS (behavioral, real JSON path)
+> x=-0.15,y=1.10 round-trips through `JSON.stringify/parse` + normalize
+> unchanged for text layers and manual subtitles.
+>
+> ### Test 6.7 — Preview/output parity — PASS (behavioral)
+> x=0.75: outputX/outputWidth = 0.75 exactly on 1920 wide; preview fraction
+> ≈0.75 within 1e-6. (Raw preview px vs output px never compared: different
+> coordinate environments by design.)
+>
+> ### Test 6.8 — Existing overlay-related tests — KEEP/UPDATE/ADD audited
+> KEEP (all pass): Rust lib suite 216/216; node scripts P1–P6 unmodified;
+> `verify-text-style-matrix.ps1` re-ran PASS (40/40 bundled font faces render
+> distinctly with real FFmpeg); `verify-text-style-preview.html` kept but not
+> executable here (requires a real browser for document.fonts/canvas).
+> UPDATE (already done in Phase 4, not this phase): the two validation tests
+> that encoded the obsolete `[0,1]` boundary were rewritten to the finite-only
+> rule; nothing was deleted to make the suite pass. ADD (this phase):
+> `verify-tests-6-1-6-7.mjs`, `verify-rendered-geometry.ps1`. No test asserts
+> drag min/max (interaction policy, not canonical geometry) — correctly so.
+>
+> ### Test 6.9 — Golden visual regression — PARTIAL (renderer proven, preview blocked)
+> Renderer half IMPLEMENTED: `verify-rendered-geometry.ps1` renders the
+> representative case (1080×1920, "I love this", x=-0.15, fontSize=96) plus
+> center/right/size cases with the bundled FFmpeg + bundled Fira Sans and
+> asserts geometry (center 542.5≈540; clipped edges touch frame; clipped
+> widths « full width; 96 > 48 monotonic) with AA tolerance. Clamp-regression
+> discriminators (visible extent <100px from the clipped edge) catch
+> simulated clamp-to-0/1 renders (175px/910px extents fail them).
+> Preview-screenshot half BLOCKED — infrastructure gap: no headless browser
+> runner (no Playwright/puppeteer/selenium in package.json), no screenshot
+> comparator, no fixture-video pipeline (synthesized lavfi sources suffice
+> for renderer tests but not for the Tauri WebView preview). A future suite
+> needs exactly those three pieces plus geometric (never pixel-identity)
+> assertions. No fabricated source-string "golden test" was created.
+>
+> ### Regression Results
+> Phase 1 regression: PASS. Phase 2 regression: PASS. Phase 3 regression:
+> PASS. Phase 4 regression: PASS. Phase 5 regression: PASS. Phase 6 tests:
+> PASS (6.1–6.8 behavioral/structural/renderer; 6.9 partial as above). Rust:
+> 216/216 pass. TypeScript: clean for touched areas (2 pre-existing App.tsx
+> timer-typing errors, untouched file). Formatting: touched files clean
+> (remaining `cargo fmt` diffs pre-existing in encoding.rs/validation.rs).
+>
+> ### Test Classification
+> Behavioral: chain suite 6.1–6.7 (real normalize/JSON/helpers), Rust 216
+> (real validation/ASS/filter logic), rendered-geometry PS (real FFmpeg).
+> Structural: P2/P3/P5/P6 source scans, fontScale/correction guards.
+> Browser: none (gap documented). Renderer: ASS serialization tests +
+> rendered-geometry renders. Visual: none (gap documented).
+>
+> ### Issues / Limitations
+> Could not genuinely test: browser-measured wrapping/clipping/resize (no
+> harness); preview-vs-output screenshot comparison (no harness); full
+> end-to-end Tauri render (needs app runtime + media fixtures). Everything
+> else in 6.1–6.8 is behaviorally or renderer-level proven as labeled.
+>
+> ### Scope Check
+> No production behavior changed (test scripts + docs only); no schema
+> migration; no geometry-semantics change; no correction factors; no
+> fontScale; no subtitle/drag redesign; no Phase 7 work.
+
 ---
 
 ## 6. Validation and Regression Requirements
