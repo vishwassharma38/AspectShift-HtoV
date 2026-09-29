@@ -24,9 +24,10 @@
 //! videoPx   = canonical * videoFrameSize     (here)
 //! ```
 //!
-//! Frame-containment clamps (preview `clampTextToFrame`/drag limits, backend
-//! `.clamp(0.0, 1.0)`) are **preserved** by call sites for now and belong to
-//! Phases 2–4. This module itself never clamps.
+//! Frame-containment boundaries that remain are interaction or product
+//! policy, not geometry: drag limits, unrelated numeric validation (opacity,
+//! font size, scale), and automatic-subtitle margin layout. The video frame
+//! clips visibility; it never bounds these coordinates.
 
 /// A canonical overlay coordinate is valid only when finite.
 pub fn is_finite_coordinate(value: f32) -> bool {

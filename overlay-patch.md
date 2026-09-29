@@ -1497,12 +1497,36 @@ Values outside the visible frame remain valid, persist through rendering, and ar
 
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
-> **Status:**
-> **Implementation Summary:**
-> **Files/Areas Changed:**
-> **Issues Encountered:**
-> **Validation Performed:**
-> **Notes:**
+> **Status:** Implemented (Phase 4 only; Phases 5–6 not started)
+> **Implementation Summary:** Traced the full coordinate lifecycle and
+> relaxed every frame-as-geometry-boundary enforcement for free-positioned
+> overlays: frontend normalize (`textOverlay`, `subtitleOverlay`,
+> `normalizeLogo`) now accepts any finite x/y with fallback only for
+> non-finite input; backend `validation.rs` logo/text/subtitle x/y checks
+> are finite-only; ASS writer clamps removed with `as u32` → `as i32` so
+> negatives stay negative; logo FFmpeg expressions unclamped (already
+> signed-capable). Center anchors, drag limits, auto-subtitle layout,
+> wrapping, font scaling, and all unrelated validation untouched.
+> **Files/Areas Changed:** `src/utils/textOverlay.ts`,
+> `src/utils/subtitleOverlay.ts`, `src/App.tsx` (normalizeLogo),
+> `src-tauri/src/video/validation.rs` (3 field pairs + 3 tests),
+> `src-tauri/src/subtitles/ass_writer.rs` (2 sites + 2 tests),
+> `src-tauri/src/video/filter_builder.rs` (logo site + new test module),
+> `src-tauri/src/video/overlay_geometry.rs` + `src/utils/overlayGeometry.ts`
+> (doc updates only), `scripts/verify-phase4-lifecycle.mjs` (new).
+> **Issues Encountered:** Borrowed `&f32` loop variables in
+> `write_text_overlays_ass` needed explicit dereference for the `f32`
+> helpers (compile error, fixed). No scope conflicts: persistence and
+> deserialization needed no changes (direct JSON, no range checks).
+> **Validation Performed:** `cargo test --lib` 216/216 pass (211 existing
+> incl. 2 rewritten validation tests + 5 new); all 4 node verify scripts
+> pass (P1–P3 unchanged behavior confirmed); `tsc --noEmit` clean for
+> touched files (2 pre-existing `App.tsx` timer errors); touched Rust files
+> fmt-clean; negative controls confirmed new checks fail on pre-change code.
+> **Notes:** Remaining `[0,1]` enforcements are interaction/product policy
+> by design: drag min/max bounds, opacity/scale/font-size/gap/alpha ranges,
+> auto-subtitle margins, manual-subtitle preview maxWidth (deferred product
+> decision per Phase 3 audit).
 
 ---
 

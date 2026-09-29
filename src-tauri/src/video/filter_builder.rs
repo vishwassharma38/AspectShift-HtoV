@@ -141,13 +141,13 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
     // Stage 2: Logo Overlay (Optional)
     if let Some(logo) = &plan.logo {
         let (x, y) = if logo.manual_position {
-            // Phase 1: canonical video-space position → overlay expression
-            // via the shared geometry layer. Center anchor
-            // (`-overlay_w/2`) preserved. The legacy frame clamp is
-            // preserved here; its removal belongs to Phase 4.
+            // Phase 4: canonical video-space position → overlay expression.
+            // Center anchor (`-overlay_w/2`) preserved. No geometry clamp:
+            // the expression is signed, so off-canvas centers stay
+            // off-canvas and the frame clips visibility.
             (
-                overlay_center_x_expression(logo.x.clamp(0.0, 1.0)),
-                overlay_center_y_expression(logo.y.clamp(0.0, 1.0)),
+                overlay_center_x_expression(logo.x),
+                overlay_center_y_expression(logo.y),
             )
         } else {
             match logo.position {
@@ -180,6 +180,65 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
     }
 
     filter_stages.join(";")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_filter_graph;
+    use crate::video::preset_adapter::RenderPlan;
+    use crate::video::types::{
+        AspectRatio, EncodingProfile, LogoPosition, LogoPreset, OrientationInfo,
+        VideoEffectsSettings,
+    };
+
+    fn plan_with_manual_logo(x: f32, y: f32) -> (RenderPlan, OrientationInfo) {
+        let effects: VideoEffectsSettings =
+            serde_json::from_str("{}").expect("default effects should deserialize");
+        let plan = RenderPlan {
+            ratio: AspectRatio::Ratio9x16,
+            encoding: EncodingProfile::standard(),
+            effects,
+            platform_config: None,
+            logo: Some(LogoPreset {
+                path: "logo.png".to_string(),
+                position: LogoPosition::BottomRight,
+                opacity: 1.0,
+                gap: 20,
+                scale: 0.15,
+                manual_position: true,
+                x,
+                y,
+            }),
+        };
+        let orientation = OrientationInfo {
+            width: 1920,
+            height: 1080,
+            rotation: 0,
+            is_vertical: false,
+            display_width: 1920,
+            display_height: 1080,
+        };
+        (plan, orientation)
+    }
+
+    #[test]
+    fn manual_logo_keeps_center_anchor_at_frame_center() {
+        let (plan, orientation) = plan_with_manual_logo(0.5, 0.5);
+        let graph = build_filter_graph(&plan, &orientation);
+        assert!(graph.contains("main_w*0.500000-overlay_w/2"));
+        assert!(graph.contains("main_h*0.500000-overlay_h/2"));
+    }
+
+    #[test]
+    fn manual_logo_preserves_signed_off_canvas_coordinates() {
+        // Phase 4: off-canvas centers stay off-canvas in the signed FFmpeg
+        // expression; the frame clips visibility instead of the clamp
+        // moving the overlay back inside.
+        let (plan, orientation) = plan_with_manual_logo(-0.2, 1.1);
+        let graph = build_filter_graph(&plan, &orientation);
+        assert!(graph.contains("main_w*-0.200000-overlay_w/2"));
+        assert!(graph.contains("main_h*1.100000-overlay_h/2"));
+    }
 }
 
 pub fn validate_preset_consistency(plan: &RenderPlan) -> Result<(), String> {

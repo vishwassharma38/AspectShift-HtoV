@@ -219,6 +219,19 @@ function clampFinite(
     : fallback;
 }
 
+/**
+ * Phase 4: free-positioned overlay coordinates accept any finite value.
+ * The video frame clips visibility instead of bounding geometry, so x/y
+ * are validated as finite (NaN/Infinity fall back) but never clamped.
+ */
+function finiteOr(
+  value: number | null | undefined,
+  fallback: number,
+): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 export function normalizeTextLayer(
   layer?: Partial<TextLayerSettings> | null,
   index = 0,
@@ -234,8 +247,8 @@ export function normalizeTextLayer(
       ? resolved.color
       : DEFAULT_TEXT_LAYER.color,
     opacity: clampFinite(resolved.opacity, 0, 1, DEFAULT_TEXT_LAYER.opacity),
-    x: clampFinite(resolved.x, 0, 1, DEFAULT_TEXT_LAYER.x),
-    y: clampFinite(resolved.y, 0, 1, DEFAULT_TEXT_LAYER.y),
+    x: finiteOr(resolved.x, DEFAULT_TEXT_LAYER.x),
+    y: finiteOr(resolved.y, DEFAULT_TEXT_LAYER.y),
     outlineColor: /^#[0-9a-f]{6}$/i.test(resolved.outlineColor)
       ? resolved.outlineColor
       : DEFAULT_TEXT_LAYER.outlineColor,

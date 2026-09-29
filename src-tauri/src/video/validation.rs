@@ -71,14 +71,16 @@ pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError
                 "effects.logo.gap is too large".to_string(),
             ));
         }
-        if !logo.x.is_finite() || !(0.0..=1.0).contains(&logo.x) {
+        // Phase 4: free-positioned logo coordinates accept any finite value.
+        // The video frame clips visibility instead of bounding geometry.
+        if !logo.x.is_finite() {
             return Err(VideoError::InvalidInput(
-                "effects.logo.x must be between 0.0 and 1.0".to_string(),
+                "effects.logo.x must be a finite number".to_string(),
             ));
         }
-        if !logo.y.is_finite() || !(0.0..=1.0).contains(&logo.y) {
+        if !logo.y.is_finite() {
             return Err(VideoError::InvalidInput(
-                "effects.logo.y must be between 0.0 and 1.0".to_string(),
+                "effects.logo.y must be a finite number".to_string(),
             ));
         }
     }
@@ -124,14 +126,15 @@ fn validate_subtitle_overlay(subtitle: &SubtitleOverlaySettings) -> Result<(), V
             "{prefix}.opacity must be between 0.0 and 1.0"
         )));
     }
-    if !subtitle.x.is_finite() || !(0.0..=1.0).contains(&subtitle.x) {
+    // Phase 4: free-positioned subtitle coordinates accept any finite value.
+    if !subtitle.x.is_finite() {
         return Err(VideoError::InvalidInput(format!(
-            "{prefix}.x must be between 0.0 and 1.0"
+            "{prefix}.x must be a finite number"
         )));
     }
-    if !subtitle.y.is_finite() || !(0.0..=1.0).contains(&subtitle.y) {
+    if !subtitle.y.is_finite() {
         return Err(VideoError::InvalidInput(format!(
-            "{prefix}.y must be between 0.0 and 1.0"
+            "{prefix}.y must be a finite number"
         )));
     }
     if !is_hex_color(&subtitle.color) {
@@ -183,14 +186,15 @@ fn validate_text_layer(text: &TextLayerSettings, index: usize) -> Result<(), Vid
             "{prefix}.opacity must be between 0.0 and 1.0"
         )));
     }
-    if !text.x.is_finite() || !(0.0..=1.0).contains(&text.x) {
+    // Phase 4: free-positioned text coordinates accept any finite value.
+    if !text.x.is_finite() {
         return Err(VideoError::InvalidInput(format!(
-            "{prefix}.x must be between 0.0 and 1.0"
+            "{prefix}.x must be a finite number"
         )));
     }
-    if !text.y.is_finite() || !(0.0..=1.0).contains(&text.y) {
+    if !text.y.is_finite() {
         return Err(VideoError::InvalidInput(format!(
-            "{prefix}.y must be between 0.0 and 1.0"
+            "{prefix}.y must be a finite number"
         )));
     }
     if !is_hex_color(&text.color) {
@@ -322,7 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn text_overlay_rejects_out_of_range_values() {
+    fn text_overlay_accepts_off_canvas_but_rejects_non_finite() {
+        // Phase 4: the frame clips visibility instead of bounding geometry,
+        // so finite off-canvas coordinates validate; only non-finite values
+        // and unrelated bounds (e.g. fontSize) are rejected.
         let mut effects = default_effects();
         effects
             .text_overlay
@@ -330,9 +337,16 @@ mod tests {
             .push(crate::video::types::TextLayerSettings {
                 id: "layer-1".to_string(),
                 x: 1.1,
+                y: -0.1,
                 ..crate::video::types::TextLayerSettings::default()
             });
-        let error = validate_effects(&effects).expect_err("invalid x must fail");
+        assert!(
+            validate_effects(&effects).is_ok(),
+            "finite off-canvas x/y must validate"
+        );
+
+        effects.text_overlay.layers[0].x = f32::NAN;
+        let error = validate_effects(&effects).expect_err("NaN x must fail");
         assert!(error.to_string().contains("textOverlay.layers[0].x"));
 
         effects.text_overlay.layers[0].x = 0.5;
@@ -342,17 +356,49 @@ mod tests {
     }
 
     #[test]
-    fn subtitle_overlay_rejects_out_of_range_values() {
+    fn subtitle_overlay_accepts_off_canvas_but_rejects_non_finite() {
+        // Phase 4: same finite-only rule for free-positioned subtitles.
         let mut effects = default_effects();
+        effects.subtitle_overlay.manual_position = true;
+        effects.subtitle_overlay.x = -0.1;
+        effects.subtitle_overlay.y = 1.1;
+        assert!(
+            validate_effects(&effects).is_ok(),
+            "finite off-canvas subtitle x/y must validate"
+        );
+
+        effects.subtitle_overlay.x = f32::INFINITY;
+        let error = validate_effects(&effects).expect_err("infinite x must fail");
+        assert!(error.to_string().contains("subtitleOverlay.x"));
+
+        effects.subtitle_overlay.x = 0.5;
         effects.subtitle_overlay.font_size = Some(241);
         let error = validate_effects(&effects).expect_err("invalid subtitle size must fail");
         assert!(error.to_string().contains("subtitleOverlay.fontSize"));
+    }
 
-        effects.subtitle_overlay.font_size = Some(48);
-        effects.subtitle_overlay.manual_position = true;
-        effects.subtitle_overlay.x = -0.1;
-        let error = validate_effects(&effects).expect_err("invalid subtitle x must fail");
-        assert!(error.to_string().contains("subtitleOverlay.x"));
+    #[test]
+    fn logo_accepts_off_canvas_but_rejects_non_finite() {
+        // Phase 4: same finite-only rule for manual logo coordinates.
+        let mut effects = default_effects();
+        effects.logo = Some(crate::video::types::LogoOptions {
+            enabled: true,
+            path: Some("logo.png".to_string()),
+            manual_position: true,
+            x: -0.2,
+            y: 1.2,
+            ..crate::video::types::LogoOptions::default()
+        });
+        assert!(
+            validate_effects(&effects).is_ok(),
+            "finite off-canvas logo x/y must validate"
+        );
+
+        if let Some(logo) = effects.logo.as_mut() {
+            logo.x = f32::NAN;
+        }
+        let error = validate_effects(&effects).expect_err("NaN logo x must fail");
+        assert!(error.to_string().contains("effects.logo.x"));
     }
 
     #[test]

@@ -27,10 +27,12 @@
  *
  * Phase 2 removed the automatic preview mutation (`clampTextToFrame`), so
  * rendering or resizing the preview no longer rewrites canonical `x/y`.
- * Remaining frame-containment boundaries (drag limits, normalization and
- * validation clamps, backend `.clamp(0, 1)`) and accidental wrapping belong
- * to later phases; the frame becomes a pure clipping boundary only once
- * those are addressed.
+ * Phase 4 removed the geometry clamps along the state → normalization →
+ * validation → renderer path, so finite off-canvas values survive as signed
+ * video-space coordinates and the frame clips visibility. Remaining
+ * boundaries (drag limits, unrelated numeric validation such as opacity /
+ * font size / scale, automatic-subtitle margin layout) are interaction or
+ * product policy, not geometry.
  */
 
 export interface CanonicalOverlayPosition {

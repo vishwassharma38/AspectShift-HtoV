@@ -409,9 +409,11 @@ function uiFlipsToTransform(
 
 function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
   if (!logo || !logo.enabled || !logo.path) return null;
-  const clampLogoPosition = (value: number | null | undefined) => {
+  // Phase 4: free-positioned logo coordinates accept any finite value.
+  // The video frame clips visibility instead of bounding geometry.
+  const finiteLogoPosition = (value: number | null | undefined) => {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0.5;
+    return Number.isFinite(numeric) ? numeric : 0.5;
   };
   return {
     enabled: true,
@@ -421,8 +423,8 @@ function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
     scale: Number(logo.scale),
     path: logo.path,
     manualPosition: !!logo.manualPosition,
-    x: clampLogoPosition(logo.x),
-    y: clampLogoPosition(logo.y),
+    x: finiteLogoPosition(logo.x),
+    y: finiteLogoPosition(logo.y),
   };
 }
 

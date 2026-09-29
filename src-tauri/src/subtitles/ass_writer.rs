@@ -102,11 +102,11 @@ pub fn write_ass(
         let end = format_ass_timestamp(segment.end_ms);
         let text = segment.text.trim().replace('\n', "\\N");
         let text = if let Some((x, y)) = style.position {
-            // Phase 1: canonical video-space position → video pixels via the
-            // shared geometry layer. The legacy frame clamp is preserved
-            // here; its removal belongs to Phase 4.
-            let position_x = to_video_x(x.clamp(0.0, 1.0), style.play_res_x).round() as u32;
-            let position_y = to_video_y(y.clamp(0.0, 1.0), style.play_res_y).round() as u32;
+            // Phase 4: canonical video-space position → signed video pixels.
+            // No geometry clamp: off-canvas values stay off-canvas and the
+            // frame clips visibility. Signed `i32` preserves negatives.
+            let position_x = to_video_x(x, style.play_res_x).round() as i32;
+            let position_y = to_video_y(y, style.play_res_y).round() as i32;
             format!(
                 "{{\\an{}\\pos({position_x},{position_y})}}{text}",
                 style.alignment
@@ -188,11 +188,11 @@ pub fn write_text_overlays_ass(
 
     let end = format_ass_timestamp(duration_ms.max(10));
     for (index, (text, style, x, y)) in layers.iter().enumerate() {
-        // Phase 1: canonical video-space position → video pixels via the
-        // shared geometry layer. Center anchor (`\an5`) preserved. The legacy
-        // frame clamp is preserved here; its removal belongs to Phase 4.
-        let position_x = to_video_x(x.clamp(0.0, 1.0), style.play_res_x).round() as u32;
-        let position_y = to_video_y(y.clamp(0.0, 1.0), style.play_res_y).round() as u32;
+        // Phase 4: canonical video-space position → signed video pixels.
+        // Center anchor (`\an5`) preserved. No geometry clamp: off-canvas
+        // values stay off-canvas and the frame clips visibility.
+        let position_x = to_video_x(*x, style.play_res_x).round() as i32;
+        let position_y = to_video_y(*y, style.play_res_y).round() as i32;
         body.push_str(&format!(
             "Dialogue: {index},0:00:00.00,{end},{},,0,0,0,,{{\\an5\\pos({position_x},{position_y})}}{}\n",
             style.name,
@@ -278,6 +278,7 @@ mod tests {
         let cases = [
             ("this is text one", "this is text one"),
             ("Add Text", "Add Text"),
+            ("I love you Akari", "I love you Akari"),
             ("It's 10:30, Vish!", "It's 10:30, Vish!"),
             ("100% ready", "100% ready"),
             ("hello: world", "hello: world"),
@@ -298,6 +299,70 @@ mod tests {
         }
         assert!(!content.contains("enotxet"));
         assert!(!content.contains("this is text oneAdd Text"));
+    }
+
+    #[test]
+    fn text_overlay_ass_preserves_signed_off_canvas_positions() {
+        // Phase 4: off-canvas centers must serialize as signed video-space
+        // coordinates (never clamped, never wrapped as unsigned).
+        // Default PlayRes is 1920x1080: -0.1*1920 = -192, 1.1*1920 = 2112.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_offcanvas_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(
+            &path,
+            &[("Left", &style, -0.1, 0.5), ("Right", &style, 1.1, 0.5)],
+            5_000,
+        )
+        .expect("off-canvas text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("\\pos(-192,540)"));
+        assert!(content.contains("\\pos(2112,540)"));
+        assert!(
+            !content.contains("4294967"),
+            "negative coordinates must not wrap as unsigned"
+        );
+    }
+
+    #[test]
+    fn subtitle_ass_manual_position_preserves_signed_off_canvas() {
+        // Phase 4: same signed-coordinate requirement for manual subtitles.
+        // -0.1*1920 = -192, 1.1*1080 = 1188.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_subtitle_offcanvas_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            font_name: "Fira Sans".to_string(),
+            alignment: 5,
+            play_res_x: 1920,
+            play_res_y: 1080,
+            position: Some((-0.1, 1.1)),
+            ..AssStyle::default()
+        };
+        let segments = vec![SubtitleSegment {
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "Hello".to_string(),
+            words: Vec::new(),
+        }];
+
+        write_ass(&path, &segments, &style).expect("subtitle ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("\\an5\\pos(-192,1188)"));
+        assert!(
+            !content.contains("4294967"),
+            "negative coordinates must not wrap as unsigned"
+        );
     }
 
     #[test]
