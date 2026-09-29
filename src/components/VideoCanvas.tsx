@@ -686,14 +686,16 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       ? Math.max(0, layer.outlineWidth * targetScale)
       : 0;
     // Phase 1: canonical video-space position → preview percent.
-    // Center anchor preserved; wrapping/typography untouched (Phase 3/5).
+    // Phase 3: no viewport-imposed text box. The element sizes to its
+    // natural content width and the canvas frame clips it; explicit
+    // newlines are preserved via `pre` without automatic wrapping.
+    // Center anchor preserved; typography untouched (Phase 5).
     const textPreview = toPreviewPercent({ x: layer.x, y: layer.y });
     return {
       position: "absolute",
       left: `${textPreview.xPercent}%`,
       top: `${textPreview.yPercent}%`,
       transform: "translate(-50%, -50%)",
-      maxWidth: "100%",
       color: layer.color,
       opacity: layer.opacity,
       fontFamily: TEXT_FONT_FAMILIES[layer.fontStyle],
@@ -724,8 +726,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       textAlign: "center",
       direction: "ltr",
       unicodeBidi: "plaintext",
-      whiteSpace: "pre-wrap",
-      overflowWrap: "anywhere",
+      whiteSpace: "pre",
       WebkitTextStroke:
         outlineWidth > 0
           ? `${outlineWidth}px ${layer.outlineColor}`

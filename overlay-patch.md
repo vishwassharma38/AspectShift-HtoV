@@ -1231,12 +1231,32 @@ Automatic subtitle layout behavior is not unintentionally changed by the freefor
 
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
-> **Status:**
-> **Implementation Summary:**
-> **Files/Areas Changed:**
-> **Issues Encountered:**
-> **Validation Performed:**
-> **Notes:**
+> **Status:** Implemented (Phase 3 only; Phases 4–6 not started)
+> **Implementation Summary:** Removed the accidental viewport text box from
+> the freeform-only `getTextLayerStyle` in `src/components/VideoCanvas.tsx`:
+> deleted `maxWidth: "100%"` and `overflowWrap: "anywhere"`, changed
+> `whiteSpace: "pre-wrap"` to `"pre"`. Long freeform text now sizes to its
+> natural content width and clips at the canvas frame instead of wrapping to
+> the viewport; explicit newlines are preserved. Nothing else changed.
+> **Files/Areas Changed:** `src/components/VideoCanvas.tsx` (3 declarations
+> in one function + comment), `scripts/verify-phase3-text-layout.mjs` (new
+> regression check).
+> **Issues Encountered:** Manual-subtitle `maxWidth: calc(100% - margins)`
+> deliberately left in place: it is a margin-derived safe-area cap owned by
+> the subtitle path (not the `100%` viewport box), has no `overflowWrap`,
+> and altering subtitle wrapping is the top Phase 3 scope boundary. Whether
+> manual subtitles should overflow-and-clip like freeform text is flagged
+> for a later phase (roadmap: "potentially", not required).
+> **Validation Performed:** `node scripts/verify-phase3-text-layout.mjs`
+> passes (freeform unconstrained + `pre`, style path pure, canvas clip kept,
+> subtitle layout byte-identical); Phase 2 + Phase 1 scripts pass;
+> `cargo test --lib` 211/211 pass (no Rust files touched); `tsc --noEmit`
+> clean for touched files (2 pre-existing `App.tsx` timer-typing errors,
+> file untouched); negative control confirmed the new checks fail on
+> pre-change code.
+> **Notes:** Renderer already breaks only at explicit `\N` (no ASS width
+> constraint found), so no renderer change was needed; `textAlign`,
+> `direction`, `unicodeBidi`, drag bounds, font floors, and validation untouched.
 
 ---
 
