@@ -1641,12 +1641,66 @@ The implementation has a clear boundary between exact logical geometry and unavo
 
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
-> **Status:**
-> **Implementation Summary:**
-> **Files/Areas Changed:**
-> **Issues Encountered:**
-> **Validation Performed:**
-> **Notes:**
+> **Status:** Implemented (Phase 6 only; audit + parity regression coverage, no
+> implementation changes required — per the roadmap, a clean audit with
+> targeted tests is preferable to artificial work. Note on titling: the
+> prompt's audit template is headed "ChatGPT Editorial Audit", but that
+> heading is ChatGPT's editorial channel (Phases 1 & 3 pattern), so this
+> implementation audit is recorded here instead, covering every requested
+> section.)
+> **Implementation Summary:** Traced both lifecycles end to end and verified
+> the implementation already satisfies Phase 6: both engines receive
+> equivalent logical geometry (`canonical × frame`, center-anchored, signed,
+> unclamped, pure font scaling) with no correction factors. No code changes
+> were necessary; the deliverable is `scripts/verify-phase6-parity.mjs`
+> locking position/scale/anchor/clipping/resize/newline parity plus
+> no-correction/no-migration guards.
+> **Renderer Boundary:** Canonical geometry owned by the app (normalized x/y,
+> center anchor, video-space fontSize, frame-relative positioning, frame as
+> clip, pure scale semantics). Browser CSS and ASS/libass are two visual
+> implementations of it; they receive the same numbers, not identical pixels.
+> **Geometry Parity:** 5×5 canonical matrix (x,y in {0,0.5,1,-0.1,1.1})
+> yields identical fractions on portrait-preview, portrait-video, and
+> landscape-video frames; absolute spot-checks (-0.1@1080→-108,
+> 1.1@1080→1188) match the Rust ASS tests' `\pos` values.
+> **Position / Scale / Anchor Verification:** Anchors co-verified —
+> `translate(-50%,-50%)` + ASS `\an5` + `-overlay_w/2`; scale via
+> `toPreviewFontSize` (48×0.5=24, 4×0.5=2); resize gives proportional px
+> with identical fractions and frozen canonical state.
+> **Clipping Verification:** Preview `overflow:hidden` retained; no
+> coordinate clamp remains in `ass_writer.rs`/`filter_builder.rs`; geometry
+> is never repositioned at the boundary on either side.
+> **Typography Differences Classified:** Renderer-specific (documented, not
+> modified): per-style line-height (0.95/1.05/1.15), letter-spacing
+> (0.04/0.03), `-webkit-text-stroke` vs ASS outline, font synthesis vs real
+> faces, ASS `Spacing=0`, baseline/glyph rasterization. Geometry-critical and
+> aligned: x/y, anchor, fontSize meaning/scale, PlayRes, frame clip.
+> Subtitle metrics (`positioning.rs` area/portrait model) feed both sides
+> from one function — parity by construction.
+> **Magic Correction Audit:** Searched overlay/rendering code for
+> 0.937/0.95/1.04/1.05-style constants and `fontSize ±/*` products: zero
+> correction factors exist. Only `fontSize * 0.04/0.03` (documented
+> letter-spacing style) found; scheduler `1.05` cost factors and CSS
+> `scale(0.95)` animations are unrelated systems. No `fontScale` identifier
+> anywhere in the frontend.
+> **Subtitle Regression:** Auto layout, margins, manual positioning, PlayRes
+> semantics, signed coordinates, and preview scaling all untouched and green
+> (P3 subtitle checks + ASS/subtitle Rust tests pass).
+> **Phase 1–5 Regression:** All five verify scripts pass unmodified;
+> `cargo test --lib` 216/216.
+> **Tests:** New `verify-phase6-parity.mjs` (behavioral matrix + structural
+> guards; negative control proves guards bite). Existing suites unchanged.
+> Structural tests assert source invariants, not rendered pixels — no
+> screenshot suite built, per prompt §14.
+> **Issues Encountered:** None blocking. Minor: fixed mojibake in the new
+> script's header comment before finalizing.
+> **Scope Check:** No schema, fontScale, subtitle/drag/typography redesign,
+> renderer rewrite, correction factors, or unrelated-system changes. Diff is
+> exactly one new script file.
+> **Notes:** Residual preview/output box differences now trace only to the
+> classified renderer-specific typography above; any future drift report
+> should first classify against the seven mismatch types before touching
+> geometry.
 
 ---
 
