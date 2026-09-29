@@ -35,6 +35,7 @@ import {
 } from "../utils/subtitleOverlay";
 import {
   previewDeltaToCanonical,
+  toPreviewFontSize,
   toPreviewPercent,
 } from "../utils/overlayGeometry";
 
@@ -681,7 +682,9 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
 
   const getTextLayerStyle = useCallback((layer: ResolvedTextLayerSettings): React.CSSProperties => {
     const isEditing = editingLayerId === layer.id;
-    const fontSize = Math.max(8, layer.fontSize * targetScale);
+    // Phase 5: pure mathematical scale of the canonical video-space font
+    // size. No minimum floor: tiny canonical sizes stay tiny in preview.
+    const fontSize = toPreviewFontSize(layer.fontSize, targetScale);
     const outlineWidth = layer.outlineEnabled
       ? Math.max(0, layer.outlineWidth * targetScale)
       : 0;
@@ -689,7 +692,8 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     // Phase 3: no viewport-imposed text box. The element sizes to its
     // natural content width and the canvas frame clips it; explicit
     // newlines are preserved via `pre` without automatic wrapping.
-    // Center anchor preserved; typography untouched (Phase 5).
+    // Center anchor preserved; remaining typography (line height, letter
+    // spacing, outline rendering) untouched — Phase 6 scope.
     const textPreview = toPreviewPercent({ x: layer.x, y: layer.y });
     return {
       position: "absolute",
@@ -830,9 +834,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   const subtitleStyle = useMemo(() => {
     if (!previewLayout) return null;
     const subtitleScale = Math.max(0.001, canvasSize.height / previewLayout.subtitle.playResY);
-    const fontSize =
-      (subtitleOverlay.fontSize ?? previewLayout.subtitle.fontSize) *
-      subtitleScale;
+    // Phase 5: pure mathematical scale of the resolved video-space font
+    // size (explicit override or backend layout metric). No minimum floor.
+    // Subtitle layout (margins, auto positioning) untouched.
+    const fontSize = toPreviewFontSize(
+      subtitleOverlay.fontSize ?? previewLayout.subtitle.fontSize,
+      subtitleScale,
+    );
     const marginV = previewLayout.subtitle.marginV * subtitleScale;
     const marginH = previewLayout.subtitle.marginH * subtitleScale;
     const outlineWidth =
@@ -865,7 +873,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       textAlign: "center",
       color: subtitleOverlay.color,
       opacity: subtitleOverlay.opacity,
-      fontSize: Math.max(12, fontSize),
+      fontSize,
       fontWeight: subtitleOverlay.bold ? 700 : 400,
       fontStyle: subtitleOverlay.italic ? "italic" : "normal",
       fontFamily: TEXT_FONT_FAMILIES[subtitleOverlay.fontStyle],

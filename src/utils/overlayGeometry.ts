@@ -137,3 +137,19 @@ export function previewDeltaToCanonical(
 ): number {
   return deltaPx / framePx;
 }
+
+/**
+ * Phase 5: canonical video-space font size → preview pixels.
+ *
+ * Pure scale with no minimum floor: `previewFontSize = canonicalFontSize ×
+ * previewScale`. The persisted `fontSize` keeps its existing meaning and
+ * units (video-space px); only this derived representation changes with the
+ * preview size. Canonical state is never mutated — pass numbers in, get a
+ * number out.
+ */
+export function toPreviewFontSize(
+  canonicalFontSize: number,
+  previewScale: number,
+): number {
+  return canonicalFontSize * previewScale;
+}

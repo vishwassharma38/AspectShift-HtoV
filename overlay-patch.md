@@ -1572,12 +1572,30 @@ Changing preview window size changes only screen representation and not logical 
 
 #### OpenCode/Muse Spark 1.3 Implementation Audit
 
-> **Status:**
-> **Implementation Summary:**
-> **Files/Areas Changed:**
-> **Issues Encountered:**
-> **Validation Performed:**
-> **Notes:**
+> **Status:** Implemented (Phase 5 only; Phase 6 not started)
+> **Implementation Summary:** Added `toPreviewFontSize(canonicalFontSize,
+> previewScale)` to `src/utils/overlayGeometry.ts` (pure multiplication, no
+> floor) and routed both preview style paths through it: freeform text
+> (`layer.fontSize × targetScale`, replacing `Math.max(8, …)`) and subtitles
+> (resolved video-space size × subtitleScale, replacing `Math.max(12, …)`).
+> Persisted `fontSize` semantics, units, validation, backend metrics, and all
+> Phase 1–4 invariants untouched.
+> **Files/Areas Changed:** `src/utils/overlayGeometry.ts` (new helper),
+> `src/components/VideoCanvas.tsx` (2 call sites + comments),
+> `scripts/verify-phase5-font-scaling.mjs` (new).
+> **Issues Encountered:** None blocking. Subtitle floor removed under the
+> roadmap's explicit `Math.max(12, …)` listing (same bug class as text);
+> subtitle layout/margins/ASS metrics untouched. Tiny text is now harder to
+> click/drag — accepted per roadmap as UI limitation, no hitbox layer exists
+> yet (documented, not solved).
+> **Validation Performed:** New script passes (Tests A–F incl. 4×0.5=2 and
+> frozen-state purity); P1–P4 scripts pass; `cargo test --lib` 216/216 (no
+> Rust touched); `tsc` clean for touched files (2 pre-existing App.tsx
+> errors); negative control fails on pre-change code.
+> **Notes:** Remaining `Math.max` uses classified legitimate: volume
+> normalization, drag min/max policy, `Math.max(0, outline…)` non-negativity
+> guard, `Math.max(0.001, subtitleScale)` pre-layout guard. Typography parity
+> (line-height, letter-spacing, metrics) is Phase 6 scope.
 
 ---
 
