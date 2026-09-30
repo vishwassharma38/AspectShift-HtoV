@@ -22,6 +22,11 @@ pub struct AssStyle {
     pub play_res_y: u32,
     pub play_res_x: u32,
     pub position: Option<(f32, f32)>,
+    /// Horizontal inter-character spacing in script pixels. Mirrors the
+    /// preview `letterSpacing` for the styles that use it; 0 otherwise.
+    /// Previously hardcoded to 0, which dropped minimal/cyberpunk/gaming
+    /// spacing in the export.
+    pub spacing: f32,
 }
 
 impl Default for AssStyle {
@@ -44,7 +49,26 @@ impl Default for AssStyle {
             play_res_y: 1080,
             play_res_x: 1920,
             position: None,
+            spacing: 0.0,
         }
+    }
+}
+
+/// Formats an ASS float column (Spacing/Outline/Shadow) without trailing
+/// noise: whole numbers stay `0`/`3`, fractional values keep up to 2
+/// decimals (`1.92`). libass parses both forms.
+fn format_ass_float(value: f32) -> String {
+    if !value.is_finite() {
+        return "0".to_string();
+    }
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded == rounded.round() {
+        format!("{}", rounded as i32)
+    } else {
+        format!("{rounded:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -74,7 +98,7 @@ pub fn write_ass(
     body.push_str("[V4+ Styles]\n");
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     body.push_str(&format!(
-        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,0,0,1,{},{},{},20,20,{},1\n\n",
+        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},0,1,{},{},{},20,20,{},1\n\n",
         style.name,
         style.font_name,
         style.font_size,
@@ -85,6 +109,7 @@ pub fn write_ass(
         if style.italic { -1 } else { 0 },
         if style.underline { -1 } else { 0 },
         if style.strikethrough { -1 } else { 0 },
+        format_ass_float(style.spacing),
         style.outline,
         style.shadow,
         style.alignment,
@@ -160,12 +185,17 @@ pub fn write_text_overlays_ass(
         .unwrap_or((1920, 1080));
     body.push_str(&format!("PlayResX: {}\n", play_res_x));
     body.push_str(&format!("PlayResY: {}\n", play_res_y));
-    body.push_str("ScaledBorderAndShadow: yes\n\n");
+    body.push_str("ScaledBorderAndShadow: yes\n");
+    // Match the freeform preview (`white-space: pre`): explicit `\N` breaks
+    // lines, but long lines clip at the frame instead of auto-wrapping.
+    // Subtitle output (`write_ass`) intentionally keeps the default smart
+    // wrapping because auto subtitles rely on it.
+    body.push_str("WrapStyle: 2\n\n");
     body.push_str("[V4+ Styles]\n");
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     for (_, style, _, _) in layers {
         body.push_str(&format!(
-            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,0,0,1,{},{},5,0,0,0,1\n",
+            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},0,1,{},{},5,0,0,0,1\n",
             style.name,
             style.font_name,
             style.font_size,
@@ -176,6 +206,7 @@ pub fn write_text_overlays_ass(
             if style.italic { -1 } else { 0 },
             if style.underline { -1 } else { 0 },
             if style.strikethrough { -1 } else { 0 },
+            format_ass_float(style.spacing),
             style.outline,
             style.shadow,
         ));
@@ -231,6 +262,69 @@ mod tests {
         assert!(content.contains("-1,-1,-1,-1,100,100"));
         assert!(content.contains("\\pos(480,810)"));
         assert!(content.contains("Hello\\N\\{world\\}"));
+    }
+
+    #[test]
+    fn text_overlay_ass_disables_auto_wrap_like_preview() {
+        // Preview uses `white-space: pre` (explicit breaks only); the export
+        // must not auto-wrap long lines but clip at the frame instead.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_wrap_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("WrapStyle: 2"));
+    }
+
+    #[test]
+    fn subtitle_ass_keeps_default_smart_wrapping() {
+        // Auto subtitles rely on wrapping; only the freeform text path opts
+        // out via WrapStyle 2.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_subtitle_wrap_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            ..AssStyle::default()
+        };
+        let segments = vec![SubtitleSegment {
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "Hello".to_string(),
+            words: Vec::new(),
+        }];
+        write_ass(&path, &segments, &style).expect("subtitle ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(!content.contains("WrapStyle: 2"));
+    }
+
+    #[test]
+    fn text_overlay_ass_serializes_letter_spacing() {
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_spacing_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            spacing: 1.92,
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("100,100,1.92,0,1"));
     }
 
     #[test]

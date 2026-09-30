@@ -68,5 +68,8 @@ rand = "0.8"
 dotenvy = "0.15"
 sysinfo = "0.39"
 
+[dev-dependencies]
+ttf-parser = "0.25"
+
 [features]
 dev-auth = []

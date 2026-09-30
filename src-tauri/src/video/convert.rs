@@ -74,11 +74,19 @@ fn prepare_text_overlay(
                 std::fs::copy(&font_path, fonts_dir.join(file_name))?;
             }
         }
-        let font_name = crate::video::text_fonts::family(&settings.font_style).ass_name;
+        let text_font = crate::video::text_fonts::family(&settings.font_style);
+        let nominal_size = settings.font_size.max(1) as f32;
         let style = crate::subtitles::ass_writer::AssStyle {
             name: format!("TextOverlay{}", index + 1),
-            font_name: font_name.to_string(),
-            font_size: settings.font_size.max(1) as u32,
+            font_name: text_font.ass_name.to_string(),
+            // Preview (CSS `font-size`) sets the em square; libass scales so
+            // the Windows line cell equals `Fontsize`. Upscale by the
+            // per-font win/UPM ratio so the export glyph size matches the
+            // preview. Canonical `fontSize` storage is unchanged.
+            font_size: crate::video::text_fonts::ass_font_size_for_style(
+                &settings.font_style,
+                nominal_size,
+            ),
             primary_colour: ass_colour(&settings.color, settings.opacity),
             outline_colour: ass_colour(&settings.outline_color, settings.opacity),
             back_colour: "&HFF000000".to_string(),
@@ -86,8 +94,13 @@ fn prepare_text_overlay(
             italic: settings.italic,
             underline: settings.underline,
             strikethrough: settings.strikethrough,
+            // Preview uses `-webkit-text-stroke` with `paint-order: stroke
+            // fill`: the stroke is centered on the glyph edge and the fill
+            // covers the inner half, so only ~w/2 is visible outside. ASS
+            // `Outline` draws the full width outward, so halve it to match
+            // the preview's visible thickness.
             outline: if settings.outline_enabled {
-                settings.outline_width.max(0) as f32
+                settings.outline_width.max(0) as f32 / 2.0
             } else {
                 0.0
             },
@@ -97,6 +110,10 @@ fn prepare_text_overlay(
             play_res_y: layout.target_height,
             play_res_x: layout.target_width,
             position: None,
+            spacing: crate::video::text_fonts::ass_letter_spacing_for_style(
+                &settings.font_style,
+                nominal_size,
+            ),
         };
         prepared_layers.push((settings.text.clone(), style, settings.x, settings.y));
     }
