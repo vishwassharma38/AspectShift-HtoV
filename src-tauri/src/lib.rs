@@ -81,6 +81,14 @@ async fn reinstall_dependencies(
 pub fn run() {
     dotenv().ok();
 
+    #[cfg(target_os = "windows")]
+    // Windows/WebView2 can render UI colors with an incorrect warm/yellow tint.
+    // Force sRGB to keep the app's UI colors rendering correctly.
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--force-color-profile=srgb",
+    );
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
