@@ -773,8 +773,11 @@ export default function App() {
       const layer: TextLayerSettings = {
         ...sourceLayer,
         id,
-        x: Math.min(0.8, sourceLayer.x + offset),
-        y: Math.min(0.8, sourceLayer.y + offset),
+        // Unbounded overlay geometry: duplicated layers keep
+        // source + offset exactly. Never clamp back toward the frame;
+        // off-frame sources stay off-frame (plus offset).
+        x: sourceLayer.x + offset,
+        y: sourceLayer.y + offset,
       };
       return {
         ...current,
@@ -948,12 +951,8 @@ export default function App() {
   const volumeCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const firstRunSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const firstRunGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const firstRunSuccessTimerRef = useRef<number | null>(null);
+  const firstRunGapTimerRef = useRef<number | null>(null);
   const previewVolumeRef = useRef<HTMLDivElement | null>(null);
   const isAuthHydrating =
     !authState ||

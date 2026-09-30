@@ -25,8 +25,9 @@
 //! ```
 //!
 //! Frame-containment boundaries that remain are interaction or product
-//! policy, not geometry: drag limits, unrelated numeric validation (opacity,
-//! font size, scale), and automatic-subtitle margin layout. The video frame
+//! policy, not geometry: unrelated numeric validation (opacity,
+//! font size, scale), and automatic-subtitle margin layout. Drag
+//! interaction is unbounded (no min/max bounds). The video frame
 //! clips visibility; it never bounds these coordinates.
 
 /// A canonical overlay coordinate is valid only when finite.

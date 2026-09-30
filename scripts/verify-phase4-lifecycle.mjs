@@ -129,17 +129,37 @@ try {
   );
 }
 
-// --- Drag interaction policy is retained (not canonical enforcement). ---
+// --- Drag interaction is unbounded (frame is clip-only, never a drag bound). ---
 {
   const canvas = readFileSync(
     join(root, "src", "components", "VideoCanvas.tsx"),
     "utf8",
   );
-  assert.ok(canvas.includes("minX"), "text drag bounds must remain");
-  assert.ok(canvas.includes("maxX"), "text drag bounds must remain");
+  assert.ok(
+    !canvas.includes("minX") && !canvas.includes("maxX"),
+    "drag min/max X bounds must not exist (unbounded positioning)",
+  );
+  assert.ok(
+    !canvas.includes("minY") && !canvas.includes("maxY"),
+    "drag min/max Y bounds must not exist (unbounded positioning)",
+  );
+  assert.ok(
+    canvas.includes("previewDeltaToCanonical"),
+    "drag delta conversion must remain pure scale",
+  );
   assert.ok(
     !canvas.includes("clampTextToFrame"),
     "Phase 2 removal must still hold",
+  );
+}
+
+// --- Duplicate-layer creation must not clamp back toward the frame. ---
+{
+  const app = readFileSync(join(root, "src", "App.tsx"), "utf8");
+  assert.ok(
+    !app.includes("Math.min(0.8, sourceLayer.x") &&
+      !app.includes("Math.min(0.8, sourceLayer.y"),
+    "duplicate-layer positions must not be capped at 0.8",
   );
 }
 

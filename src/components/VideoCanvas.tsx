@@ -100,10 +100,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     startY: number;
     frameWidth: number;
     frameHeight: number;
-    minX: number;
-    maxX: number;
-    minY: number;
-    maxY: number;
     moved: boolean;
   } | null>(null);
   const logoDragRef = useRef<{
@@ -114,10 +110,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     startY: number;
     frameWidth: number;
     frameHeight: number;
-    minX: number;
-    maxX: number;
-    minY: number;
-    maxY: number;
     moved: boolean;
   } | null>(null);
   const subtitleDragRef = useRef<{
@@ -128,10 +120,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     startY: number;
     frameWidth: number;
     frameHeight: number;
-    minX: number;
-    maxX: number;
-    minY: number;
-    maxY: number;
     moved: boolean;
   } | null>(null);
   // Tracks whether the video element has decoded enough to display.
@@ -397,8 +385,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const frameRect = frame.getBoundingClientRect();
       const logoRect = event.currentTarget.getBoundingClientRect();
       if (frameRect.width <= 0 || frameRect.height <= 0) return;
-      const minX = Math.min(0.5, logoRect.width / (2 * frameRect.width));
-      const minY = Math.min(0.5, logoRect.height / (2 * frameRect.height));
+      // Unbounded overlay geometry: the video frame is only the visible
+      // clipping region, never a drag boundary. No min/max is computed;
+      // any finite canonical position (negative, >1, arbitrarily far
+      // outside) is valid and is never pulled back toward the frame.
       const startX = effects.logo.manualPosition
         ? effects.logo.x ?? 0.5
         : (logoRect.left + logoRect.width / 2 - frameRect.left) /
@@ -416,10 +406,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         startY,
         frameWidth: frameRect.width,
         frameHeight: frameRect.height,
-        minX,
-        maxX: 1 - minX,
-        minY,
-        maxY: 1 - minY,
         moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -441,24 +427,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       onLogoChange?.({
         ...effects.logo,
         manualPosition: true,
-        // Phase 1: screen-px drag delta → canonical delta. Drag limits
-        // preserved; limit removal belongs to Phase 2.
-        x: Math.max(
-          drag.minX,
-          Math.min(
-            drag.maxX,
-            drag.startX +
-              previewDeltaToCanonical(deltaX, drag.frameWidth),
-          ),
-        ),
-        y: Math.max(
-          drag.minY,
-          Math.min(
-            drag.maxY,
-            drag.startY +
-              previewDeltaToCanonical(deltaY, drag.frameHeight),
-          ),
-        ),
+        // Unbounded drag: screen-px delta → canonical delta with no
+        // frame clamping. Negative and >1 values are valid; the frame
+        // only clips visibility.
+        x:
+          drag.startX +
+          previewDeltaToCanonical(deltaX, drag.frameWidth),
+        y:
+          drag.startY +
+          previewDeltaToCanonical(deltaY, drag.frameHeight),
       });
     },
     [effects.logo, onLogoChange],
@@ -608,10 +585,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       selectTextLayer(layer.id, event);
 
       const frameRect = frame.getBoundingClientRect();
-      const textRect = event.currentTarget.getBoundingClientRect();
       if (frameRect.width <= 0 || frameRect.height <= 0) return;
-      const minX = Math.min(0.5, textRect.width / (2 * frameRect.width));
-      const minY = Math.min(0.5, textRect.height / (2 * frameRect.height));
+      // Unbounded overlay geometry: no min/max drag bounds. The overlay
+      // element is positioned by its canonical center; the frame only
+      // clips visibility. Overlay size is never used as a drag boundary.
       textDragRef.current = {
         layerId: layer.id,
         pointerId: event.pointerId,
@@ -621,10 +598,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         startY: layer.y,
         frameWidth: frameRect.width,
         frameHeight: frameRect.height,
-        minX,
-        maxX: 1 - minX,
-        minY,
-        maxY: 1 - minY,
         moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -643,22 +616,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }
       if (!drag.moved) return;
       event.preventDefault();
-      // Phase 1: screen-px drag delta → canonical delta. Drag limits
-      // preserved; limit removal belongs to Phase 2.
-      const x = Math.max(
-        drag.minX,
-        Math.min(
-          drag.maxX,
-          drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth),
-        ),
-      );
-      const y = Math.max(
-        drag.minY,
-        Math.min(
-          drag.maxY,
-          drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight),
-        ),
-      );
+      // Unbounded drag: screen-px delta → canonical delta with no frame
+      // clamping. Any finite x/y (negative, >1, arbitrarily far outside)
+      // is valid and never snaps back.
+      const x =
+        drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth);
+      const y =
+        drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight);
       updateTextLayer(drag.layerId, { x, y });
     },
     [updateTextLayer],
@@ -754,8 +718,11 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const frameRect = frame.getBoundingClientRect();
       const subtitleRect = event.currentTarget.getBoundingClientRect();
       if (frameRect.width <= 0 || frameRect.height <= 0) return;
-      const minX = Math.min(0.5, subtitleRect.width / (2 * frameRect.width));
-      const minY = Math.min(0.5, subtitleRect.height / (2 * frameRect.height));
+      // Unbounded overlay geometry: manual subtitle position follows the
+      // same free-positioning rules as text/logo. No min/max drag bounds;
+      // the frame only clips visibility. Auto-subtitle margin layout is
+      // untouched (separate product concept, used only when manualPosition
+      // is false).
       const current = subtitleOverlayRef.current;
       const startX = current.manualPosition
         ? current.x
@@ -774,10 +741,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         startY,
         frameWidth: frameRect.width,
         frameHeight: frameRect.height,
-        minX,
-        maxX: 1 - minX,
-        minY,
-        maxY: 1 - minY,
         moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -798,22 +761,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       event.preventDefault();
       updateSubtitleOverlay({
         manualPosition: true,
-        // Phase 1: screen-px drag delta → canonical delta. Drag limits and
-        // auto-subtitle margin layout preserved (Phases 2/3 scope).
-        x: Math.max(
-          drag.minX,
-          Math.min(
-            drag.maxX,
-            drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth),
-          ),
-        ),
-        y: Math.max(
-          drag.minY,
-          Math.min(
-            drag.maxY,
-            drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight),
-          ),
-        ),
+        // Unbounded drag: screen-px delta → canonical delta with no frame
+        // clamping. Manual subtitles share the free-positioning model;
+        // auto-subtitle margin layout is not applied here.
+        x:
+          drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth),
+        y:
+          drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight),
       });
     },
     [updateSubtitleOverlay],

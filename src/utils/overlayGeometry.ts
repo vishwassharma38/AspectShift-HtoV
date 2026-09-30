@@ -29,10 +29,12 @@
  * rendering or resizing the preview no longer rewrites canonical `x/y`.
  * Phase 4 removed the geometry clamps along the state → normalization →
  * validation → renderer path, so finite off-canvas values survive as signed
- * video-space coordinates and the frame clips visibility. Remaining
- * boundaries (drag limits, unrelated numeric validation such as opacity /
- * font size / scale, automatic-subtitle margin layout) are interaction or
- * product policy, not geometry.
+ * video-space coordinates and the frame clips visibility. Drag interaction
+ * is unbounded (no min/max drag bounds): screen-px deltas convert via
+ * `previewDeltaToCanonical` with no clamping. Remaining boundaries
+ * (unrelated numeric validation such as opacity / font size / scale,
+ * automatic-subtitle margin layout) are interaction or product policy,
+ * not geometry.
  */
 
 export interface CanonicalOverlayPosition {
