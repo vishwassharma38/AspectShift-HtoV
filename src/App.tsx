@@ -33,8 +33,7 @@ import type {
   EncodingProfile,
   FileProgress,
   FileReadiness,
-  LogoOptions,
-  LogoPosition,
+  ImageOverlaySettings,
   OrientationInfo,
   OutputFormat,
   OutputJob,
@@ -103,6 +102,13 @@ import {
   resolveSubtitleOverlay,
   type ResolvedSubtitleOverlaySettings,
 } from "./utils/subtitleOverlay";
+import {
+  DEFAULT_IMAGE_OVERLAY,
+  normalizeImageOverlaySettings,
+  resolveImageOverlaySettings,
+  type ResolvedImageOverlay,
+  type ResolvedImageOverlaySettings,
+} from "./utils/imageOverlay";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -261,7 +267,7 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   burnSubtitles: false,
   skipExisting: true,
   outputFormat: "mp4",
-  logo: null,
+  imageOverlay: DEFAULT_IMAGE_OVERLAY,
   textOverlay: DEFAULT_TEXT_OVERLAY,
   subtitleOverlay: DEFAULT_SUBTITLE_OVERLAY,
   transform: { rotate: 0, flip_h: false, flip_v: false },
@@ -407,27 +413,6 @@ function uiFlipsToTransform(
   return base;
 }
 
-function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
-  if (!logo || !logo.enabled || !logo.path) return null;
-  // Phase 4: free-positioned logo coordinates accept any finite value.
-  // The video frame clips visibility instead of bounding geometry.
-  const finiteLogoPosition = (value: number | null | undefined) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : 0.5;
-  };
-  return {
-    enabled: true,
-    position: logo.position,
-    opacity: Number(logo.opacity),
-    gap: Number(logo.gap),
-    scale: Number(logo.scale),
-    path: logo.path,
-    manualPosition: !!logo.manualPosition,
-    x: finiteLogoPosition(logo.x),
-    y: finiteLogoPosition(logo.y),
-  };
-}
-
 function deepClone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -442,12 +427,19 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
     ...effects,
     blur: whiteBackground ? false : !!effects.blur,
     whiteBackground,
-    logo: normalizeLogo(effects.logo ?? null),
+    imageOverlay: normalizeImageOverlaySettings(effects.imageOverlay),
     textOverlay: normalizeTextOverlay(effects.textOverlay),
     subtitleOverlay: normalizeSubtitleOverlay(effects.subtitleOverlay),
     transform: normalizeTransform(effects.transform),
   };
 }
+
+// Fine-positioning increment for arrow-key image nudging, in canonical image
+// coordinates (fraction of the video frame per axis — the same units mouse
+// dragging uses). 0.005 moves the image ~2px per press on a typical preview
+// size: small enough for precise placement, large enough that repeated
+// presses cover ground.
+const IMAGE_ARROW_NUDGE = 0.005;
 
 function parseBitrateKbps(value: string): number | null {
   const normalized = value.trim().toLowerCase();
@@ -717,11 +709,116 @@ export default function App() {
     },
     [],
   );
-  const handleLogoChange = useCallback((next: LogoOptions) => {
+  const imageOverlay = useMemo<ResolvedImageOverlaySettings>(
+    () => resolveImageOverlaySettings(effectsState.imageOverlay),
+    [effectsState.imageOverlay],
+  );
+  const handleImageOverlayChange = useCallback((next: ImageOverlaySettings) => {
     setEffectsState((current) => ({
       ...current,
-      logo: normalizeLogo(next),
+      imageOverlay: normalizeImageOverlaySettings(next),
     }));
+  }, []);
+  const selectedImage: ResolvedImageOverlay | null = useMemo(() => {
+    if (!imageOverlay.selectedOverlayId) return null;
+    return (
+      imageOverlay.overlays.find(
+        (overlay) => overlay.id === imageOverlay.selectedOverlayId,
+      ) ?? null
+    );
+  }, [imageOverlay.overlays, imageOverlay.selectedOverlayId]);
+  const hasSelectedImage = selectedImage !== null;
+  const updateSelectedImage = useCallback(
+    (patch: Partial<ResolvedImageOverlay>) => {
+      setEffectsState((current) => {
+        const currentOverlay = resolveImageOverlaySettings(
+          current.imageOverlay,
+        );
+        if (!currentOverlay.selectedOverlayId) return current;
+        return {
+          ...current,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentOverlay,
+            overlays: currentOverlay.overlays.map((overlay) =>
+              overlay.id === currentOverlay.selectedOverlayId
+                ? { ...overlay, ...patch }
+                : overlay,
+            ),
+          }),
+        };
+      });
+    },
+    [],
+  );
+  const handleNudgeSelectedImage = useCallback(
+    (dx: number, dy: number) => {
+      setEffectsState((current) => {
+        const currentOverlay = resolveImageOverlaySettings(
+          current.imageOverlay,
+        );
+        const selectedId = currentOverlay.selectedOverlayId;
+        if (!selectedId) return current;
+        return {
+          ...current,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentOverlay,
+            overlays: currentOverlay.overlays.map((overlay) =>
+              overlay.id === selectedId
+                ? { ...overlay, x: overlay.x + dx, y: overlay.y + dy }
+                : overlay,
+            ),
+          }),
+        };
+      });
+    },
+    [],
+  );
+  const handleRemoveSelectedImage = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveImageOverlaySettings(current.imageOverlay);
+      const selectedId = currentOverlay.selectedOverlayId;
+      if (!selectedId) return current;
+      return {
+        ...current,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentOverlay,
+          overlays: currentOverlay.overlays.filter(
+            (overlay) => overlay.id !== selectedId,
+          ),
+          selectedOverlayId: null,
+        }),
+      };
+    });
+  }, []);
+  const handleDuplicateSelectedImage = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveImageOverlaySettings(current.imageOverlay);
+      const selectedId = currentOverlay.selectedOverlayId;
+      if (!selectedId) return current;
+      const source = currentOverlay.overlays.find(
+        (overlay) => overlay.id === selectedId,
+      );
+      if (!source) return current;
+      const id = generateId();
+      // Duplicate is an independent object: copy all properties, new ID,
+      // slight offset so it is visibly separate, then select the duplicate.
+      const duplicate: ResolvedImageOverlay = {
+        ...source,
+        id,
+        x: source.x + 0.05,
+        y: source.y + 0.05,
+        crop: { ...source.crop },
+      };
+      return {
+        ...current,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentOverlay,
+          panelOpen: true,
+          overlays: [...currentOverlay.overlays, duplicate],
+          selectedOverlayId: id,
+        }),
+      };
+    });
   }, []);
   const selectedTextLayers = useMemo(
     () =>
@@ -822,6 +919,7 @@ export default function App() {
 
   // Custom preset builder
   const [newPresetName, setNewPresetName] = useState("");
+  const [imageCropEditing, setImageCropEditing] = useState(false);
 
   // Video / batch state
   const [orientation, setOrientation] = useState<OrientationInfo | null>(null);
@@ -2281,14 +2379,86 @@ export default function App() {
         return;
       }
 
+      // Ctrl+D duplicates the currently selected image. Only for images;
+      // do not expand to unrequested shortcuts (no copy/paste, undo, nudge).
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        normalizeShortcutKey(event) === "d" &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        if (hasSelectedImage) {
+          event.preventDefault();
+          event.stopPropagation();
+          handleDuplicateSelectedImage();
+          return;
+        }
+      }
+
       if (
         event.key === "Delete" &&
-        hasSelectedTextLayer &&
+        (hasSelectedTextLayer || hasSelectedImage) &&
         !isEditableShortcutTarget(event.target)
       ) {
         event.preventDefault();
         event.stopPropagation();
-        handleRemoveSelectedTextLayers();
+        // Image and text systems stay separate: each deletes only its own
+        // selected objects.
+        if (hasSelectedImage) {
+          handleRemoveSelectedImage();
+        }
+        if (hasSelectedTextLayer) {
+          handleRemoveSelectedTextLayers();
+        }
+        return;
+      }
+
+      // Arrow keys fine-position the selected overlays by one deterministic
+      // canonical increment per press. Plain arrows only (no modifiers), and
+      // never while an editable control (slider, input, button, text
+      // editing, ...) has focus, so native control behavior is preserved.
+      // Images and selected text layers share the increment and move through
+      // their own canonical x/y.
+      if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        (event.key === "ArrowUp" ||
+          event.key === "ArrowDown" ||
+          event.key === "ArrowLeft" ||
+          event.key === "ArrowRight") &&
+        (hasSelectedImage || hasSelectedTextLayer) &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        let dx = 0;
+        let dy = 0;
+        switch (event.key) {
+          case "ArrowLeft":
+            dx = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowRight":
+            dx = IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowUp":
+            dy = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowDown":
+            dy = IMAGE_ARROW_NUDGE;
+            break;
+        }
+        if (hasSelectedImage) {
+          handleNudgeSelectedImage(dx, dy);
+        }
+        if (hasSelectedTextLayer) {
+          updateSelectedTextLayers((layer) => ({
+            x: layer.x + dx,
+            y: layer.y + dy,
+          }));
+        }
         return;
       }
 
@@ -2303,10 +2473,15 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     handleCheckForUpdates,
+    handleDuplicateSelectedImage,
+    handleNudgeSelectedImage,
     handleRefreshApp,
+    handleRemoveSelectedImage,
     handleRemoveSelectedTextLayers,
     handleToggleSettings,
+    hasSelectedImage,
     hasSelectedTextLayer,
+    updateSelectedTextLayers,
   ]);
 
   useEffect(() => {
@@ -2611,11 +2786,7 @@ export default function App() {
       );
 
       if (
-        config.logoPath ||
-        config.logoOpacity !== null ||
-        config.logoManualPosition !== null ||
-        config.logoX !== null ||
-        config.logoY !== null ||
+        config.imageOverlay !== null ||
         config.textOverlay !== null ||
         config.subtitleOverlay !== null ||
         config.blur !== null ||
@@ -2624,21 +2795,7 @@ export default function App() {
       ) {
         setEffectsState((prev) => ({
           ...prev,
-          logo: config.logoPath
-            ? {
-                enabled: true,
-                path: config.logoPath,
-                opacity: config.logoOpacity ?? 1.0,
-                position:
-                  config.logoPosition ?? prev.logo?.position ?? "bottom_right",
-                gap: prev.logo?.gap ?? 20,
-                scale: prev.logo?.scale ?? 0.15,
-                manualPosition:
-                  config.logoManualPosition ?? prev.logo?.manualPosition ?? false,
-                x: config.logoX ?? prev.logo?.x ?? 0.5,
-                y: config.logoY ?? prev.logo?.y ?? 0.5,
-              }
-            : null,
+          imageOverlay: normalizeImageOverlaySettings(config.imageOverlay),
           textOverlay: normalizeTextOverlay(config.textOverlay),
           subtitleOverlay: normalizeSubtitleOverlay(config.subtitleOverlay),
           blur: config.whiteBackground ? false : (config.blur ?? prev.blur),
@@ -2663,10 +2820,13 @@ export default function App() {
       }
 
       // Register asset protocol scope for all previously saved paths
+      const savedImagePaths = (config.imageOverlay?.overlays ?? [])
+        .map((overlay) => overlay.path)
+        .filter((p): p is string => typeof p === "string" && p.length > 0);
       const savedPaths = [
         config.lastInputDir,
         config.lastOutputDir,
-        config.logoPath,
+        ...savedImagePaths,
       ].filter((p): p is string => typeof p === "string" && p.length > 0);
 
       for (const p of savedPaths) {
@@ -2705,12 +2865,7 @@ export default function App() {
         lastPresetId: null,
         selectedRatioIds: selectedRatios,
         selectedPresetIds: selectedPresetIds,
-        logoPath: effectsState.logo?.path || null,
-        logoOpacity: effectsState.logo?.opacity ?? null,
-        logoPosition: effectsState.logo?.position ?? null,
-        logoManualPosition: effectsState.logo?.manualPosition ?? null,
-        logoX: effectsState.logo?.x ?? null,
-        logoY: effectsState.logo?.y ?? null,
+        imageOverlay: normalizeImageOverlaySettings(effectsState.imageOverlay),
         textOverlay: normalizeTextOverlay(effectsState.textOverlay),
         subtitleOverlay: normalizeSubtitleOverlay(effectsState.subtitleOverlay),
         blur: effectsState.blur ?? null,
@@ -2731,7 +2886,7 @@ export default function App() {
     outputDir,
     selectedRatios,
     selectedPresetIds,
-    effectsState.logo,
+    effectsState.imageOverlay,
     effectsState.textOverlay,
     effectsState.subtitleOverlay,
     effectsState.blur,
@@ -3194,34 +3349,61 @@ export default function App() {
     [addLog],
   );
 
-  const handlePickLogo = async () => {
+  const handlePickImage = async () => {
     try {
       const sel = await open({
         multiple: false,
         filters: [
-          { name: "Image", extensions: ["png", "jpg", "jpeg", "svg", "webp"] },
+          {
+            name: "Image",
+            extensions: ["png", "jpg", "jpeg", "svg", "webp", "gif"],
+          },
         ],
       });
       if (sel && typeof sel === "string") {
-        setEffectsState((prev) => ({
-          ...prev,
-          logo: {
-            enabled: true,
-            position: prev.logo?.position ?? "bottom_right",
-            opacity: prev.logo?.opacity ?? 1,
-            gap: prev.logo?.gap ?? 20,
-            scale: prev.logo?.scale ?? 0.15,
-            path: sel,
-            manualPosition: prev.logo?.manualPosition ?? false,
-            x: prev.logo?.x ?? 0.5,
-            y: prev.logo?.y ?? 0.5,
-          },
-        }));
+        const id = generateId();
+        setEffectsState((prev) => {
+          const currentOverlay = resolveImageOverlaySettings(prev.imageOverlay);
+          return {
+            ...prev,
+            imageOverlay: normalizeImageOverlaySettings({
+              ...currentOverlay,
+              panelOpen: true,
+              overlays: [
+                ...currentOverlay.overlays,
+                {
+                  id,
+                  path: sel,
+                  x: 0.5,
+                  y: 0.5,
+                  scale: 0.25,
+                  rotation: 0,
+                  opacity: 1,
+                  flipHorizontal: false,
+                  flipVertical: false,
+                  crop: { x: 0, y: 0, width: 1, height: 1 },
+                },
+              ],
+              selectedOverlayId: id,
+            }),
+          };
+        });
+        setImageCropEditing(false);
+        // The "+ Add Image" button retains DOM focus after the file picker
+        // closes, and buttons count as editable shortcut targets, so image
+        // shortcuts (Ctrl+D / Delete) stay blocked until the user clicks the
+        // preview. Blur replicates the focus state of a normal canvas click
+        // without touching the shortcut architecture.
+        requestAnimationFrame(() => {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+        });
         await invoke("allow_path_scope", { path: sel }).catch(() => {});
-        addLog(`Logo loaded: ${basename(sel)}`, "info");
+        addLog(`Image added: ${basename(sel)}`, "info");
       }
     } catch (e) {
-      addLog(`Logo picker error: ${errorMessage(e)}`, "error");
+      addLog(`Image picker error: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -4196,126 +4378,184 @@ export default function App() {
 
                     <div className="settings-group">
                       <div className="settings-group-title">Overlay</div>
-                      <div className="toggle-row mb-2">
-                        <span className="toggle-label">Enable Logo</span>
+                      <div className="toggle-row mb-2 image-settings-panel">
+                        <span className="toggle-label">Add Image</span>
                         <Toggle
-                          checked={!!effectsState.logo?.enabled}
-                          onChange={(v) =>
-                            setEffectsState({
-                              ...effectsState,
-                              logo: v
+                          checked={imageOverlay.panelOpen}
+                          onChange={(panelOpen) =>
+                            handleImageOverlayChange(
+                              panelOpen
                                 ? {
-                                    enabled: true,
-                                    position:
-                                      effectsState.logo?.position ??
-                                      "bottom_right",
-                                    opacity: effectsState.logo?.opacity ?? 1,
-                                    gap: effectsState.logo?.gap ?? 20,
-                                    scale: effectsState.logo?.scale ?? 0.15,
-                                    path: effectsState.logo?.path ?? null,
-                                    manualPosition:
-                                      effectsState.logo?.manualPosition ?? false,
-                                    x: effectsState.logo?.x ?? 0.5,
-                                    y: effectsState.logo?.y ?? 0.5,
+                                    ...imageOverlay,
+                                    panelOpen,
                                   }
-                                : null,
-                            })
+                                : DEFAULT_IMAGE_OVERLAY,
+                            )
                           }
                         />
                       </div>
-                      {effectsState.logo?.enabled && (
-                        <>
+                      {imageOverlay.panelOpen && (
+                        <div className="text-overlay-controls image-settings-panel">
+                          <button
+                            className="btn btn-primary btn-sm btn-full"
+                            onClick={handlePickImage}
+                          >
+                            + Add Image
+                          </button>
+                          <div className="text-overlay-hint mt-2">
+                            {selectedImage
+                              ? `Selected Image: ${basename(selectedImage.path) || "Untitled"}`
+                              : imageOverlay.overlays.length > 0
+                                ? "No image selected — click an image on the preview to select it."
+                                : "No image selected — add one to get started."}
+                          </div>
                           <div
-                            className="logo-upload-zone"
-                            onClick={handlePickLogo}
+                            className={`image-settings-body${selectedImage ? "" : " is-disabled"}`}
+                            aria-disabled={!selectedImage}
                           >
-                            {effectsState.logo.path ? (
-                              <img
-                                className="logo-preview-thumb"
-                                src={convertFileSrc(effectsState.logo.path)}
-                                alt="logo"
+                            <div className="slider-row mt-2">
+                              <span className="text-xs">Opacity</span>
+                              <input
+                                className="slider"
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={selectedImage?.opacity ?? 1}
+                                disabled={!selectedImage}
+                                onChange={(e) =>
+                                  updateSelectedImage({
+                                    opacity: Number(e.target.value),
+                                  })
+                                }
                               />
-                            ) : (
-                              <span style={{ fontSize: 25 }}>🖼</span>
-                            )}{" "}
-                            <div className="logo-upload-text">
-                              <strong>
-                                {effectsState.logo.path
-                                  ? basename(effectsState.logo.path)
-                                  : "No logo"}
-                              </strong>{" "}
-                              Click to change
+                              <span className="slider-value">
+                                {Math.round(
+                                  (selectedImage?.opacity ?? 1) * 100,
+                                )}
+                                %
+                              </span>
                             </div>
+                            <div className="flex gap-6 mt-2">
+                              <button
+                                className={`btn btn-sm flex-1${selectedImage?.flipHorizontal ? " btn-primary" : ""}`}
+                                aria-pressed={
+                                  selectedImage?.flipHorizontal ?? false
+                                }
+                                disabled={!selectedImage}
+                                onClick={() =>
+                                  updateSelectedImage({
+                                    flipHorizontal:
+                                      !selectedImage?.flipHorizontal,
+                                  })
+                                }
+                              >
+                                Flip Horizontally
+                              </button>
+                              <button
+                                className={`btn btn-sm flex-1${selectedImage?.flipVertical ? " btn-primary" : ""}`}
+                                aria-pressed={
+                                  selectedImage?.flipVertical ?? false
+                                }
+                                disabled={!selectedImage}
+                                onClick={() =>
+                                  updateSelectedImage({
+                                    flipVertical: !selectedImage?.flipVertical,
+                                  })
+                                }
+                              >
+                                Flip Vertically
+                              </button>
+                            </div>
+                            <div className="settings-group-title mt-2">
+                              Crop
+                            </div>
+                            <button
+                              className="btn btn-ghost btn-sm btn-full"
+                              disabled={!selectedImage}
+                              onClick={() => setImageCropEditing((v) => !v)}
+                            >
+                              {imageCropEditing ? "Close Crop" : "Edit Crop"}
+                            </button>
+                            {imageCropEditing && (
+                              <div className="text-overlay-controls mt-2">
+                                {(
+                                  [
+                                    ["x", "Left", 0, 1, 0.01],
+                                    ["y", "Top", 0, 1, 0.01],
+                                    ["width", "Width", 0.01, 1, 0.01],
+                                    ["height", "Height", 0.01, 1, 0.01],
+                                  ] as const
+                                ).map(([key, label, min, max, step]) => (
+                                  <div className="slider-row mt-2" key={key}>
+                                    <span className="text-xs">{label}</span>
+                                    <input
+                                      className="slider"
+                                      type="range"
+                                      min={min}
+                                      max={max}
+                                      step={step}
+                                      value={
+                                        selectedImage?.crop[key] ??
+                                        (key === "width" || key === "height"
+                                          ? 1
+                                          : 0)
+                                      }
+                                      disabled={!selectedImage}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value);
+                                        if (!Number.isFinite(value)) return;
+                                        if (!selectedImage) return;
+                                        updateSelectedImage({
+                                          crop: {
+                                            ...selectedImage.crop,
+                                            [key]: value,
+                                          },
+                                        });
+                                      }}
+                                    />
+                                    <span className="slider-value">
+                                      {Math.round(
+                                        (selectedImage?.crop[key] ??
+                                          (key === "width" ||
+                                          key === "height"
+                                            ? 1
+                                            : 0)) * 100,
+                                      )}
+                                      %
+                                    </span>
+                                  </div>
+                                ))}
+                                <button
+                                  className="btn btn-ghost btn-sm btn-full mt-2"
+                                  disabled={!selectedImage}
+                                  onClick={() =>
+                                    updateSelectedImage({
+                                      crop: {
+                                        x: 0,
+                                        y: 0,
+                                        width: 1,
+                                        height: 1,
+                                      },
+                                    })
+                                  }
+                                >
+                                  Reset Crop
+                                </button>
+                              </div>
+                            )}
+                            <button
+                              className="btn btn-ghost btn-sm btn-full mt-2 text-remove-btn"
+                              disabled={!selectedImage}
+                              onClick={handleRemoveSelectedImage}
+                            >
+                              Delete Image
+                            </button>
                           </div>
-                          <select
-                            className="input select mt-2"
-                            value={effectsState.logo.position}
-                            onChange={(e) =>
-                              setEffectsState({
-                                ...effectsState,
-                                logo: {
-                                  ...effectsState.logo!,
-                                  position: e.target.value as LogoPosition,
-                                  manualPosition: false,
-                                },
-                              })
-                            }
-                          >
-                            <option value="top_left">Top Left</option>
-                            <option value="top_right">Top Right</option>
-                            <option value="bottom_left">Bottom Left</option>
-                            <option value="bottom_right">Bottom Right</option>
-                          </select>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Opacity</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="0"
-                              max="1"
-                              step="0.05"
-                              value={effectsState.logo.opacity}
-                              onChange={(e) =>
-                                setEffectsState({
-                                  ...effectsState,
-                                  logo: {
-                                    ...effectsState.logo!,
-                                    opacity: parseFloat(e.target.value),
-                                  },
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {Math.round(effectsState.logo.opacity * 100)}%
-                            </span>
-                          </div>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Scale</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="0.05"
-                              max="0.5"
-                              step="0.01"
-                              value={effectsState.logo.scale}
-                              onChange={(e) =>
-                                setEffectsState({
-                                  ...effectsState,
-                                  logo: {
-                                    ...effectsState.logo!,
-                                    scale: parseFloat(e.target.value),
-                                  },
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {Math.round(effectsState.logo.scale * 100)}%
-                            </span>
-                          </div>
-                        </>
+                        </div>
                       )}
 
-                      <div className="toggle-row">
+                      <div className="toggle-row text-settings-panel">
                         <span className="toggle-label">Add Text</span>
                         <Toggle
                           checked={textOverlay.panelOpen}
@@ -4332,11 +4572,7 @@ export default function App() {
                         />
                       </div>
                       {textOverlay.panelOpen && (
-                        <div className="text-overlay-controls">
-                          <div className="text-overlay-hint">
-                            Use A to add a layer. Click text to select or edit;
-                            drag to move.
-                          </div>
+                        <div className="text-overlay-controls text-settings-panel">
                           <label className="input-label" htmlFor="text-style">
                             Style
                           </label>
@@ -4394,7 +4630,9 @@ export default function App() {
                                     type="button"
                                     className={`text-format-btn text-format-${property}${primaryTextLayer?.[property] ? " active" : ""}`}
                                     aria-label={label}
-                                    aria-pressed={!!primaryTextLayer?.[property]}
+                                    aria-pressed={
+                                      !!primaryTextLayer?.[property]
+                                    }
                                     title={label}
                                     disabled={!hasSelectedTextLayer}
                                     onClick={() =>
@@ -4426,27 +4664,9 @@ export default function App() {
                               }
                             />
                             <span className="text-color-value">
-                              {(primaryTextLayer?.color ?? "#ffffff").toUpperCase()}
-                            </span>
-                          </div>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Size</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="12"
-                              max="240"
-                              step="1"
-                              value={primaryTextLayer?.fontSize ?? 48}
-                              disabled={!hasSelectedTextLayer}
-                              onChange={(e) =>
-                                updateSelectedTextLayers({
-                                  fontSize: Number(e.target.value),
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {primaryTextLayer?.fontSize ?? 48}px
+                              {(
+                                primaryTextLayer?.color ?? "#ffffff"
+                              ).toUpperCase()}
                             </span>
                           </div>
                           <div className="slider-row mt-2">
@@ -4466,7 +4686,10 @@ export default function App() {
                               }
                             />
                             <span className="slider-value">
-                              {Math.round((primaryTextLayer?.opacity ?? 1) * 100)}%
+                              {Math.round(
+                                (primaryTextLayer?.opacity ?? 1) * 100,
+                              )}
+                              %
                             </span>
                           </div>
                           <button
@@ -4515,8 +4738,7 @@ export default function App() {
                           ...manualEncodingOverrides,
                           qualityPreset,
                           crf: null,
-                          qualityAuthority:
-                            "qualityPreset" as QualityAuthority,
+                          qualityAuthority: "qualityPreset" as QualityAuthority,
                         };
                         setManualEncodingOverrides(next);
                         scheduleEncodingPreview(
@@ -4544,8 +4766,7 @@ export default function App() {
                         max="51"
                         value={
                           manualEncodingOverrides.qualityAuthority ===
-                            "manualCrf" &&
-                          manualEncodingOverrides.crf != null
+                            "manualCrf" && manualEncodingOverrides.crf != null
                             ? manualEncodingOverrides.crf
                             : encodingState.crf
                         }
@@ -4560,8 +4781,7 @@ export default function App() {
                             ...prev,
                             crf,
                             qualityPreset: null,
-                            qualityAuthority:
-                              "manualCrf" as QualityAuthority,
+                            qualityAuthority: "manualCrf" as QualityAuthority,
                           }));
                         }}
                       />
@@ -4580,9 +4800,7 @@ export default function App() {
                         manualEncodingOverrides.speedPreset ??
                         encodingState.speedPreset
                       }
-                      disabled={
-                        (effectsState.outputFormat ?? "mp4") === "webm"
-                      }
+                      disabled={(effectsState.outputFormat ?? "mp4") === "webm"}
                       onChange={(e) => {
                         const speedPreset = e.target.value;
                         setManualEncodingOverrides((prev) => ({
@@ -4804,7 +5022,7 @@ export default function App() {
                   effects={effectsState}
                   onTextOverlayChange={handleTextOverlayChange}
                   onSubtitleOverlayChange={handleSubtitleOverlayChange}
-                  onLogoChange={handleLogoChange}
+                  onImageOverlayChange={handleImageOverlayChange}
                   orientation={orientation}
                   previewVolume={previewVolume}
                   showGuides={showGuides}

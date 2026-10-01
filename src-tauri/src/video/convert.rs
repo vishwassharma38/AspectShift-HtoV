@@ -114,6 +114,16 @@ fn prepare_text_overlay(
                 &settings.font_style,
                 nominal_size,
             ),
+            // Preview CSS `rotate()` is clockwise-positive; ASS `Angle`
+            // (`\frz` convention) is counter-clockwise-positive, so negate
+            // to match the preview. Center anchor is the same on both sides
+            // (`translate(-50%,-50%)` + `center center` vs `\an5` + `\pos`),
+            // so no origin/position change is needed. Image overlays keep a
+            // straight pass-through because FFmpeg `rotate` is
+            // clockwise-positive like CSS.
+            angle: crate::video::text_fonts::ass_angle_for_text_rotation(
+                settings.rotation,
+            ),
         };
         prepared_layers.push((settings.text.clone(), style, settings.x, settings.y));
     }
@@ -397,7 +407,7 @@ pub async fn render_single(
         job.effects.remove_audio_enabled(),
         job.effects.burn_subtitles_enabled(),
         job.effects.text_overlay_enabled(),
-        plan.logo.is_some(),
+        !plan.images.is_empty(),
         has_transform,
         job.force_reencode,
     );

@@ -419,7 +419,7 @@ pub fn is_passthrough_allowed(
     remove_audio_enabled: bool,
     burn_subtitles_enabled: bool,
     text_overlay_enabled: bool,
-    has_logo: bool,
+    has_images: bool,
     has_transform: bool,
     force_reencode: bool,
 ) -> bool {
@@ -432,7 +432,7 @@ pub fn is_passthrough_allowed(
         && !remove_audio_enabled
         && !burn_subtitles_enabled
         && !text_overlay_enabled
-        && !has_logo
+        && !has_images
         && !has_transform
 }
 
@@ -630,7 +630,7 @@ mod tests {
             burn_subtitles: None,
             skip_existing: None,
             output_format: None,
-            logo: None,
+            image_overlay: crate::video::types::ImageOverlaySettings::default(),
             text_overlay: TextOverlaySettings::default(),
             subtitle_overlay: SubtitleOverlaySettings::default(),
             transform: None,
@@ -643,7 +643,7 @@ mod tests {
             encoding,
             effects,
             platform_config: None,
-            logo: None,
+            images: Vec::new(),
         }
     }
 

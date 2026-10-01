@@ -1947,6 +1947,26 @@ html.theme-transitioning *::after {
   gap: 4px;
 }
 
+/* Image settings: permanently expanded body; selection only toggles
+   enabled/disabled. Add Image stays outside this wrapper so it remains
+   usable when no image is selected. */
+.image-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.image-settings-body.is-disabled {
+  opacity: 0.5;
+  filter: saturate(0.6);
+  pointer-events: none;
+}
+
+.slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .text-overlay-hint {
   margin-bottom: 6px;
   color: var(--text-muted);
@@ -2089,6 +2109,115 @@ html.theme-transitioning *::after {
 .canvas-text-overlay.is-editing {
   outline: 1px dashed rgba(255, 255, 255, 0.8);
   outline-offset: 5px;
+}
+
+/* ── Image Overlay (Add Image canvas objects) ─────────────── */
+.canvas-image-overlay {
+  outline: none;
+}
+
+.canvas-image-overlay:active {
+  cursor: grabbing !important;
+}
+
+.canvas-image-selection-outline {
+  position: absolute;
+  inset: -6px;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-image-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  touch-action: none;
+}
+
+.canvas-image-handle-nw {
+  left: -12px;
+  top: -12px;
+  cursor: nwse-resize;
+}
+
+.canvas-image-handle-n {
+  left: 50%;
+  top: -12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.canvas-image-handle-ne {
+  right: -12px;
+  top: -12px;
+  cursor: nesw-resize;
+}
+
+.canvas-image-handle-w {
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.canvas-image-handle-e {
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.canvas-image-handle-sw {
+  left: -12px;
+  bottom: -12px;
+  cursor: nesw-resize;
+}
+
+.canvas-image-handle-s {
+  left: 50%;
+  bottom: -12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.canvas-image-handle-se {
+  right: -12px;
+  bottom: -12px;
+  cursor: nwse-resize;
+}
+
+.canvas-image-rotate-handle {
+  position: absolute;
+  left: 50%;
+  bottom: -38px;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  touch-action: none;
+  user-select: none;
+}
+
+.canvas-image-rotate-handle:active {
+  cursor: grabbing !important;
 }
 
 /* ── Slider ───────────────────────────────────────────────── */

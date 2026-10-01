@@ -27,6 +27,14 @@ pub struct AssStyle {
     /// Previously hardcoded to 0, which dropped minimal/cyberpunk/gaming
     /// spacing in the export.
     pub spacing: f32,
+    /// Z-rotation in degrees (ASS `\frz` convention: positive =
+    /// counter-clockwise) about the center anchor (`\an5` + `\pos`).
+    /// Callers convert from the preview CSS `rotate()` convention (positive
+    /// = clockwise) via `ass_angle_for_text_rotation()` (negation);
+    /// subtitles always use 0. The writer serializes verbatim — it must not
+    /// negate. This differs from the image pipeline, where FFmpeg `rotate`
+    /// is clockwise-positive like CSS and needs no negation.
+    pub angle: f32,
 }
 
 impl Default for AssStyle {
@@ -50,6 +58,7 @@ impl Default for AssStyle {
             play_res_x: 1920,
             position: None,
             spacing: 0.0,
+            angle: 0.0,
         }
     }
 }
@@ -98,7 +107,7 @@ pub fn write_ass(
     body.push_str("[V4+ Styles]\n");
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     body.push_str(&format!(
-        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},0,1,{},{},{},20,20,{},1\n\n",
+        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},{},1,{},{},{},20,20,{},1\n\n",
         style.name,
         style.font_name,
         style.font_size,
@@ -110,6 +119,7 @@ pub fn write_ass(
         if style.underline { -1 } else { 0 },
         if style.strikethrough { -1 } else { 0 },
         format_ass_float(style.spacing),
+        format_ass_float(style.angle),
         style.outline,
         style.shadow,
         style.alignment,
@@ -195,7 +205,7 @@ pub fn write_text_overlays_ass(
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     for (_, style, _, _) in layers {
         body.push_str(&format!(
-            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},0,1,{},{},5,0,0,0,1\n",
+            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},{},1,{},{},5,0,0,0,1\n",
             style.name,
             style.font_name,
             style.font_size,
@@ -207,6 +217,7 @@ pub fn write_text_overlays_ass(
             if style.underline { -1 } else { 0 },
             if style.strikethrough { -1 } else { 0 },
             format_ass_float(style.spacing),
+            format_ass_float(style.angle),
             style.outline,
             style.shadow,
         ));
@@ -325,6 +336,25 @@ mod tests {
         let _ = std::fs::remove_file(path);
 
         assert!(content.contains("100,100,1.92,0,1"));
+    }
+
+    #[test]
+    fn text_overlay_ass_serializes_layer_rotation_as_angle() {
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_angle_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            angle: 15.5,
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("rotated text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("100,100,0,15.5,1"));
     }
 
     #[test]

@@ -18,10 +18,10 @@ use aspectshift_htov_lib::video::{
     types::{
         AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress,
         ConversionRequestDTO, CustomPreset, EncodingProfile, FileProgress, FileReadiness,
-        JobStatus, LogoOptions, LogoPosition, OrientationInfo, OutputFormat, OutputJob,
-        PlatformConfig, PlatformPreset, PreviewLayoutRequest, StructuredError,
-        SubtitleOverlaySettings, TextFontStyle, TextLayerSettings, TextOverlaySettings,
-        VideoEffectsSettings, VideoPresetDTO, VideoTransform,
+        ImageCrop, ImageOverlay, ImageOverlaySettings, JobStatus, OrientationInfo,
+        OutputFormat, OutputJob, PlatformConfig, PlatformPreset, PreviewLayoutRequest,
+        StructuredError, SubtitleOverlaySettings, TextFontStyle, TextLayerSettings,
+        TextOverlaySettings, VideoEffectsSettings, VideoPresetDTO, VideoTransform,
     },
 };
 use specta::TypeCollection;
@@ -40,10 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<EncodingPreviewRequest>()
         .register::<EncodingPreviewResponse>()
         .register::<OutputFormat>()
-        .register::<LogoPosition>()
         .register::<PlatformConfig>()
         .register::<VideoTransform>()
-        .register::<LogoOptions>()
+        .register::<ImageCrop>()
+        .register::<ImageOverlay>()
+        .register::<ImageOverlaySettings>()
         .register::<TextFontStyle>()
         .register::<TextLayerSettings>()
         .register::<TextOverlaySettings>()

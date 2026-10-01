@@ -183,7 +183,7 @@ pub(crate) fn classify_job_cost(job: &BatchJob) -> usize {
 /// * output codec (VP9/webm is materially more expensive than H.264)
 /// * the subtitle pipeline (audio-extract → Whisper → render, mirroring the
 ///   cost-2 classification scaled down for ordering)
-/// * per-effect filter workload (background, logo, text, overlays, transform,
+/// * per-effect filter workload (background, image, text, overlays, transform,
 ///   colour filter)
 /// * audio removal (one stream skipped → marginally cheaper)
 /// * encoding speed preset (faster presets cost less wall-clock)
@@ -223,7 +223,7 @@ pub(crate) fn estimate_job_cost(job: &BatchJob) -> f64 {
     if effects.background_effect_enabled() {
         cost *= 1.15;
     }
-    if effects.logo.as_ref().map(|l| l.enabled).unwrap_or(false) {
+    if effects.image_overlay_enabled() {
         cost *= 1.1;
     }
     if effects.text_overlay_enabled() {

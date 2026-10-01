@@ -164,6 +164,26 @@ pub fn ass_letter_spacing_for_style(style: &TextFontStyle, nominal_size: f32) ->
     }
 }
 
+/// Canonical preview rotation (degrees, clockwise-positive per CSS
+/// `rotate()`) -> ASS `Angle` (degrees, counter-clockwise-positive per the
+/// ASS `\frz` convention).
+///
+/// Preview (`VideoCanvas.tsx` `getTextWrapperStyle`) uses CSS
+/// `rotate(rotation)` with `transform-origin: center`, where positive is
+/// clockwise (MDN/CSS spec, LTR). The ASS Style `Angle` column follows the
+/// ASS `\frz` convention where positive is counter-clockwise (Aegisub
+/// manual: "Rotating on it (with positive values) causes the text to rotate
+/// in 2D, counterclockwise (as standard for degrees)"). FFmpeg `rotate` and
+/// the image overlay pipeline are clockwise-positive like CSS, so only the
+/// text ASS path needs this negation. Rotation origin is the center in both
+/// (CSS `center center` vs ASS `\an5` + `\pos` anchor), so negating the sign
+/// is sufficient — no origin or position change is needed. Negation preserves
+/// the validated `-720..=720` range and maps 0 -> 0 and 180 -> -180
+/// (visually identical).
+pub fn ass_angle_for_text_rotation(rotation_deg: f32) -> f32 {
+    -rotation_deg
+}
+
 fn all_styles() -> [TextFontStyle; 10] {
     [
         TextFontStyle::Clean,
@@ -555,6 +575,22 @@ mod tests {
             super::ass_letter_spacing_for_style(&TextFontStyle::Clean, 48.0),
             0.0
         );
+    }
+
+    #[test]
+    fn ass_angle_negates_preview_rotation_to_match_ass_convention() {
+        // Preview CSS `rotate()` is clockwise-positive; ASS `Angle`/`\frz`
+        // is counter-clockwise-positive, so the export must negate.
+        assert_eq!(super::ass_angle_for_text_rotation(0.0), 0.0);
+        assert_eq!(super::ass_angle_for_text_rotation(45.0), -45.0);
+        assert_eq!(super::ass_angle_for_text_rotation(-45.0), 45.0);
+        assert_eq!(super::ass_angle_for_text_rotation(90.0), -90.0);
+        assert_eq!(super::ass_angle_for_text_rotation(-90.0), 90.0);
+        // 180 and -180 are visually identical; negation preserves that.
+        assert_eq!(super::ass_angle_for_text_rotation(180.0), -180.0);
+        // Bounds are preserved: negation maps -720..=720 onto itself.
+        assert_eq!(super::ass_angle_for_text_rotation(720.0), -720.0);
+        assert_eq!(super::ass_angle_for_text_rotation(-720.0), 720.0);
     }
 
     #[test]

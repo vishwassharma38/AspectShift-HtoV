@@ -152,6 +152,8 @@ pub fn calculate_ass_style(
             .then_some((subtitle_overlay.x, subtitle_overlay.y)),
         // Subtitle preview has no `letterSpacing`; keep ASS spacing at 0.
         spacing: 0.0,
+        // Subtitles have no rotation interaction; keep ASS angle at 0.
+        angle: 0.0,
     }
 }
 

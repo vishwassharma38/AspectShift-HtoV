@@ -1,6 +1,6 @@
 use crate::video::encoding::{validate_baseline_profile, validate_encoding_overrides};
 use crate::video::types::{
-    EncodingProfile, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
+    EncodingProfile, ImageOverlay, OutputFormat, OutputJob, PlatformConfig, PlatformPreset,
     SubtitleOverlaySettings, TextFontStyle, TextLayerSettings, VideoEffectsSettings, VideoError,
 };
 use std::collections::HashSet;
@@ -55,33 +55,25 @@ pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError
         }
     }
 
-    if let Some(logo) = &effects.logo {
-        if !(0.0..=1.0).contains(&logo.opacity) {
-            return Err(VideoError::InvalidInput(
-                "effects.logo.opacity must be between 0.0 and 1.0".to_string(),
-            ));
-        }
-        if !(0.01..=1.0).contains(&logo.scale) {
-            return Err(VideoError::InvalidInput(
-                "effects.logo.scale must be between 0.01 and 1.0".to_string(),
-            ));
-        }
-        if logo.gap > 2000 {
-            return Err(VideoError::InvalidInput(
-                "effects.logo.gap is too large".to_string(),
-            ));
-        }
-        // Phase 4: free-positioned logo coordinates accept any finite value.
-        // The video frame clips visibility instead of bounding geometry.
-        if !logo.x.is_finite() {
-            return Err(VideoError::InvalidInput(
-                "effects.logo.x must be a finite number".to_string(),
-            ));
-        }
-        if !logo.y.is_finite() {
-            return Err(VideoError::InvalidInput(
-                "effects.logo.y must be a finite number".to_string(),
-            ));
+    if effects.image_overlay.overlays.len() > 128 {
+        return Err(VideoError::InvalidInput(
+            "effects.imageOverlay.overlays cannot exceed 128 overlays".to_string(),
+        ));
+    }
+    {
+        let mut overlay_ids = HashSet::new();
+        for (index, overlay) in effects.image_overlay.overlays.iter().enumerate() {
+            validate_image_overlay(overlay, index)?;
+            if overlay.id.trim().is_empty() {
+                return Err(VideoError::InvalidInput(format!(
+                    "effects.imageOverlay.overlays[{index}].id cannot be empty"
+                )));
+            }
+            if !overlay_ids.insert(overlay.id.clone()) {
+                return Err(VideoError::InvalidInput(format!(
+                    "effects.imageOverlay.overlays[{index}].id must be unique"
+                )));
+            }
         }
     }
 
@@ -197,6 +189,11 @@ fn validate_text_layer(text: &TextLayerSettings, index: usize) -> Result<(), Vid
             "{prefix}.y must be a finite number"
         )));
     }
+    if !text.rotation.is_finite() || !(-720.0..=720.0).contains(&text.rotation) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.rotation must be between -720.0 and 720.0"
+        )));
+    }
     if !is_hex_color(&text.color) {
         return Err(VideoError::InvalidInput(format!(
             "{prefix}.color must use #RRGGBB format"
@@ -223,6 +220,72 @@ fn validate_text_layer(text: &TextLayerSettings, index: usize) -> Result<(), Vid
         | TextFontStyle::Cinematic
         | TextFontStyle::Retro
         | TextFontStyle::Handwritten => {}
+    }
+    Ok(())
+}
+
+fn validate_image_overlay(overlay: &ImageOverlay, index: usize) -> Result<(), VideoError> {
+    let prefix = format!("effects.imageOverlay.overlays[{index}]");
+    if overlay.path.trim().is_empty() {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.path cannot be empty"
+        )));
+    }
+    if !overlay.opacity.is_finite() || !(0.0..=1.0).contains(&overlay.opacity) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.opacity must be between 0.0 and 1.0"
+        )));
+    }
+    // Canonical, unbounded geometry: any finite x/y is valid (negative, >1,
+    // arbitrarily far outside). The video frame clips visibility.
+    if !overlay.x.is_finite() {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.x must be a finite number"
+        )));
+    }
+    if !overlay.y.is_finite() {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.y must be a finite number"
+        )));
+    }
+    // Bounding-box manipulation is the source of scale changes. Internal
+    // scale is a width fraction of the video width; allow larger-than-frame
+    // values so resized images can exceed the frame.
+    if !overlay.scale.is_finite() || !(0.01..=10.0).contains(&overlay.scale) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.scale must be between 0.01 and 10.0"
+        )));
+    }
+    if !overlay.rotation.is_finite() || !(-720.0..=720.0).contains(&overlay.rotation) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.rotation must be between -720.0 and 720.0"
+        )));
+    }
+    // Crop is independent from transform: fractions of the source image.
+    let crop = &overlay.crop;
+    if !crop.x.is_finite()
+        || !crop.y.is_finite()
+        || !crop.width.is_finite()
+        || !crop.height.is_finite()
+    {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.crop must use finite numbers"
+        )));
+    }
+    if !(0.0..=1.0).contains(&crop.x) || !(0.0..=1.0).contains(&crop.y) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.crop x/y must be between 0.0 and 1.0"
+        )));
+    }
+    if !(0.01..=1.0).contains(&crop.width) || !(0.01..=1.0).contains(&crop.height) {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.crop width/height must be between 0.01 and 1.0"
+        )));
+    }
+    if crop.x + crop.width > 1.001 || crop.y + crop.height > 1.001 {
+        return Err(VideoError::InvalidInput(format!(
+            "{prefix}.crop region must stay within the source image"
+        )));
     }
     Ok(())
 }
@@ -356,6 +419,31 @@ mod tests {
     }
 
     #[test]
+    fn text_overlay_rotation_validates_like_image_rotation() {
+        let mut effects = default_effects();
+        effects
+            .text_overlay
+            .layers
+            .push(crate::video::types::TextLayerSettings {
+                id: "layer-1".to_string(),
+                rotation: 45.0,
+                ..crate::video::types::TextLayerSettings::default()
+            });
+        assert!(
+            validate_effects(&effects).is_ok(),
+            "finite rotation must validate"
+        );
+
+        effects.text_overlay.layers[0].rotation = 721.0;
+        let error = validate_effects(&effects).expect_err("excess rotation must fail");
+        assert!(error.to_string().contains("rotation"));
+
+        effects.text_overlay.layers[0].rotation = f32::NAN;
+        let error = validate_effects(&effects).expect_err("NaN rotation must fail");
+        assert!(error.to_string().contains("rotation"));
+    }
+
+    #[test]
     fn subtitle_overlay_accepts_off_canvas_but_rejects_non_finite() {
         // Phase 4: same finite-only rule for free-positioned subtitles.
         let mut effects = default_effects();
@@ -378,27 +466,49 @@ mod tests {
     }
 
     #[test]
-    fn logo_accepts_off_canvas_but_rejects_non_finite() {
-        // Phase 4: same finite-only rule for manual logo coordinates.
+    fn image_overlay_accepts_off_canvas_but_rejects_non_finite() {
+        // Canonical, unbounded geometry: finite off-canvas centers validate;
+        // only non-finite values and unrelated bounds fail.
         let mut effects = default_effects();
-        effects.logo = Some(crate::video::types::LogoOptions {
-            enabled: true,
-            path: Some("logo.png".to_string()),
-            manual_position: true,
+        effects.image_overlay.overlays = vec![crate::video::types::ImageOverlay {
+            id: "img-1".to_string(),
+            path: "a.png".to_string(),
             x: -0.2,
             y: 1.2,
-            ..crate::video::types::LogoOptions::default()
-        });
+            ..crate::video::types::ImageOverlay::default()
+        }];
         assert!(
             validate_effects(&effects).is_ok(),
-            "finite off-canvas logo x/y must validate"
+            "finite off-canvas image x/y must validate"
         );
 
-        if let Some(logo) = effects.logo.as_mut() {
-            logo.x = f32::NAN;
-        }
-        let error = validate_effects(&effects).expect_err("NaN logo x must fail");
-        assert!(error.to_string().contains("effects.logo.x"));
+        effects.image_overlay.overlays[0].x = f32::NAN;
+        let error = validate_effects(&effects).expect_err("NaN image x must fail");
+        assert!(error.to_string().contains("imageOverlay.overlays[0].x"));
+    }
+
+    #[test]
+    fn image_overlay_rejects_duplicate_ids_and_bad_crop() {
+        let mut effects = default_effects();
+        effects.image_overlay.overlays = vec![
+            crate::video::types::ImageOverlay {
+                id: "same".to_string(),
+                path: "a.png".to_string(),
+                ..crate::video::types::ImageOverlay::default()
+            },
+            crate::video::types::ImageOverlay {
+                id: "same".to_string(),
+                path: "b.png".to_string(),
+                ..crate::video::types::ImageOverlay::default()
+            },
+        ];
+        let error = validate_effects(&effects).expect_err("duplicate IDs must fail");
+        assert!(error.to_string().contains("must be unique"));
+
+        effects.image_overlay.overlays[1].id = "other".to_string();
+        effects.image_overlay.overlays[0].crop.width = 0.0;
+        let error = validate_effects(&effects).expect_err("bad crop must fail");
+        assert!(error.to_string().contains("crop"));
     }
 
     #[test]

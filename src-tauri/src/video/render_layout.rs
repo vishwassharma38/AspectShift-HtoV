@@ -12,8 +12,6 @@ pub struct PreviewRenderLayout {
     pub foreground_frame_width: u32,
     pub foreground_frame_height: u32,
     pub blur_sigma: f32,
-    pub logo_width: Option<u32>,
-    pub logo_gap: Option<u32>,
     pub subtitle: SubtitleLayoutMetrics,
 }
 
@@ -95,11 +93,6 @@ pub fn calculate_render_layout(
             (PreviewFitMode::Cover, target_width, target_height)
         };
 
-    let logo_width = plan
-        .logo
-        .as_ref()
-        .map(|logo| (target_width as f32 * logo.scale).round() as u32);
-    let logo_gap = plan.logo.as_ref().map(|logo| logo.gap);
     let subtitle = calculate_layout_metrics(
         target_width,
         target_height,
@@ -116,8 +109,6 @@ pub fn calculate_render_layout(
         foreground_frame_width,
         foreground_frame_height,
         blur_sigma: plan.effects.blur_sigma_value(),
-        logo_width,
-        logo_gap,
         subtitle,
     }
 }

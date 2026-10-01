@@ -76,9 +76,20 @@ pub fn build_ffmpeg_args(
 
     let mut args = vec!["-i".to_string(), input.to_string()];
 
-    if let Some(logo) = &plan.logo {
+    // Each image overlay is an independent input (`[1:v]`, `[2:v]`, ...).
+    // Static images loop so a single frame covers the whole render; GIFs
+    // (animated image overlays) loop as an animation layer while the video
+    // continues underneath.
+    for image in &plan.images {
+        if image.is_gif {
+            args.push("-stream_loop".to_string());
+            args.push("-1".to_string());
+        } else {
+            args.push("-loop".to_string());
+            args.push("1".to_string());
+        }
         args.push("-i".to_string());
-        args.push(logo.path.clone());
+        args.push(image.path.clone());
     }
 
     let use_filter_complex = uses_complex_graph(&final_filter_graph);
@@ -153,6 +164,17 @@ pub fn build_ffmpeg_args(
     args.push("-pix_fmt".to_string());
     args.push("yuv420p".to_string());
 
+    // Image overlays use infinite looped inputs (`-loop 1` / `-stream_loop -1`)
+    // so a single frame (or GIF cycle) covers the whole render. Without
+    // `-shortest` the output would follow the longest (infinite) input and
+    // FFmpeg would never exit: progress would clamp at 100% while the job
+    // stayed `Processing` (lifecycle 95/100) and the queue never completed.
+    // `-shortest` ends encoding at the main video length, preserving GIF
+    // looping while letting FFmpeg terminate normally.
+    if !plan.images.is_empty() {
+        args.push("-shortest".to_string());
+    }
+
     args.extend_from_slice(&["-y".to_string(), output.to_string()]);
 
     args
@@ -183,14 +205,45 @@ mod tests {
                 burn_subtitles: None,
                 skip_existing: None,
                 output_format: None,
-                logo: None,
+                image_overlay: crate::video::types::ImageOverlaySettings::default(),
                 text_overlay: TextOverlaySettings::default(),
                 subtitle_overlay: SubtitleOverlaySettings::default(),
                 transform: None,
             },
             platform_config: None,
-            logo: None,
+            images: Vec::new(),
         }
+    }
+
+    fn test_plan_with_images() -> RenderPlan {
+        let mut plan = test_plan();
+        plan.images = vec![
+            crate::video::types::ImagePreset {
+                path: "a.png".to_string(),
+                x: 0.5,
+                y: 0.5,
+                scale: 0.25,
+                rotation: 0.0,
+                opacity: 1.0,
+                flip_h: false,
+                flip_v: false,
+                crop: crate::video::types::ImageCrop::default(),
+                is_gif: false,
+            },
+            crate::video::types::ImagePreset {
+                path: "b.gif".to_string(),
+                x: 0.3,
+                y: 0.7,
+                scale: 0.2,
+                rotation: 0.0,
+                opacity: 0.9,
+                flip_h: false,
+                flip_v: false,
+                crop: crate::video::types::ImageCrop::default(),
+                is_gif: true,
+            },
+        ];
+        plan
     }
 
     fn build_args(output: &str, threads_per_job: Option<usize>) -> Vec<String> {
@@ -336,5 +389,69 @@ mod tests {
         let codec_pos = args.iter().position(|a| a == "-c:v").unwrap();
         let threads_pos = args.iter().position(|a| a == "-threads").unwrap();
         assert!(threads_pos > codec_pos, "-threads must appear after -c:v");
+    }
+
+    #[test]
+    fn image_inputs_are_added_as_independent_looped_inputs() {
+        let plan = test_plan_with_images();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // Static image loops a single frame; GIF loops as animation layer.
+        assert!(args.contains(&"a.png".to_string()));
+        assert!(args.contains(&"b.gif".to_string()));
+        assert!(args.contains(&"-loop".to_string()));
+        assert!(args.contains(&"-stream_loop".to_string()));
+    }
+
+    #[test]
+    fn image_renders_terminate_at_main_video_length() {
+        // Looped image inputs are infinite; without `-shortest` FFmpeg would
+        // never exit (per-video 100% via clamped out_time, job stuck at
+        // lifecycle 95/100, queue never completes).
+        let plan = test_plan_with_images();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            args.contains(&"-shortest".to_string()),
+            "image renders must emit -shortest, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn non_image_renders_do_not_emit_shortest() {
+        let plan = test_plan();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !args.contains(&"-shortest".to_string()),
+            "non-image renders must not change termination behavior, got: {args:?}"
+        );
     }
 }

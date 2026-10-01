@@ -155,3 +155,79 @@ export function toPreviewFontSize(
 ): number {
   return canonicalFontSize * previewScale;
 }
+
+/**
+ * Bounding-box resize handle identifiers, shared by every overlay type that
+ * offers direct bounding-box manipulation (images, text).
+ */
+export type OverlayResizeHandle =
+  | "n"
+  | "s"
+  | "e"
+  | "w"
+  | "ne"
+  | "nw"
+  | "se"
+  | "sw";
+
+/**
+ * Resize-handle drag delta (screen px) → box-size delta (screen px).
+ *
+ * Pure function of (handle, dx, dy): corner handles split the combined drag
+ * evenly across both axes, edge handles use their own axis. Callers convert
+ * the result into their own canonical size representation (image `scale`,
+ * text `fontSize`), so aspect handling stays domain-specific while the
+ * handle geometry is defined exactly once.
+ */
+export function resizeHandleDeltaPx(
+  handle: OverlayResizeHandle,
+  dx: number,
+  dy: number,
+): number {
+  switch (handle) {
+    case "e":
+      return dx;
+    case "w":
+      return -dx;
+    case "s":
+      return dy;
+    case "n":
+      return -dy;
+    case "se":
+      return (dx + dy) / 2;
+    case "nw":
+      return (-dx - dy) / 2;
+    case "ne":
+      return (dx - dy) / 2;
+    case "sw":
+      return (-dx + dy) / 2;
+  }
+}
+
+/**
+ * Rotation-handle drag → rotation delta (degrees).
+ *
+ * Pure function of (startAngleDeg, currentAngleDeg): the shortest signed
+ * sweep between the two pointer angles, normalized to [-180, 180] so
+ * crossing the ±180° seam stays smooth. Callers add it to their own stored
+ * rotation; clamping to the domain's rotation bounds stays domain-specific.
+ */
+export function rotationDeltaDeg(
+  startAngleDeg: number,
+  currentAngleDeg: number,
+): number {
+  let delta = currentAngleDeg - startAngleDeg;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return delta;
+}
+
+/** Pointer position → angle (degrees) around a center point. */
+export function pointerAngleDeg(
+  clientX: number,
+  clientY: number,
+  centerX: number,
+  centerY: number,
+): number {
+  return (Math.atan2(clientY - centerY, clientX - centerX) * 180) / Math.PI;
+}

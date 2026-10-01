@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type {
-  LogoOptions,
+  ImageOverlaySettings,
   OrientationInfo,
   PreviewRenderLayout,
   SubtitleOverlaySettings,
@@ -29,14 +29,24 @@ import {
   type ResolvedTextOverlaySettings,
 } from "../utils/textOverlay";
 import {
+  normalizeImageOverlaySettings,
+  resolveImageOverlaySettings,
+  type ResolvedImageOverlay,
+  type ResolvedImageOverlaySettings,
+} from "../utils/imageOverlay";
+import {
   normalizeSubtitleOverlay,
   resolveSubtitleOverlay,
   type ResolvedSubtitleOverlaySettings,
 } from "../utils/subtitleOverlay";
 import {
+  pointerAngleDeg,
   previewDeltaToCanonical,
+  resizeHandleDeltaPx,
+  rotationDeltaDeg,
   toPreviewFontSize,
   toPreviewPercent,
+  type OverlayResizeHandle,
 } from "../utils/overlayGeometry";
 
 interface VideoCanvasProps {
@@ -45,12 +55,14 @@ interface VideoCanvasProps {
   effects: VideoEffectsSettings;
   onTextOverlayChange?: (textOverlay: TextOverlaySettings) => void;
   onSubtitleOverlayChange?: (subtitleOverlay: SubtitleOverlaySettings) => void;
-  onLogoChange?: (logo: LogoOptions) => void;
+  onImageOverlayChange?: (imageOverlay: ImageOverlaySettings) => void;
   orientation: OrientationInfo | null;
   previewVolume: number;
   showGuides?: boolean;
   showSafeFrames?: boolean;
 }
+
+type ImageResizeHandle = OverlayResizeHandle;
 
 const TEXT_FONT_FAMILIES: Record<TextFontStyle, string> = {
   clean: '"AspectShift Text Clean"',
@@ -79,7 +91,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   effects,
   onTextOverlayChange,
   onSubtitleOverlayChange,
-  onLogoChange,
+  onImageOverlayChange,
   orientation,
   previewVolume,
   showGuides = true,
@@ -102,7 +114,25 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     frameHeight: number;
     moved: boolean;
   } | null>(null);
-  const logoDragRef = useRef<{
+  const textResizeRef = useRef<{
+    layerId: string;
+    handle: OverlayResizeHandle;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startFontSize: number;
+    startWidthPx: number;
+  } | null>(null);
+  const textRotateRef = useRef<{
+    layerId: string;
+    pointerId: number;
+    startAngleDeg: number;
+    startRotation: number;
+    centerX: number;
+    centerY: number;
+  } | null>(null);
+  const imageDragRef = useRef<{
+    overlayId: string;
     pointerId: number;
     startClientX: number;
     startClientY: number;
@@ -111,6 +141,23 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     frameWidth: number;
     frameHeight: number;
     moved: boolean;
+  } | null>(null);
+  const imageResizeRef = useRef<{
+    overlayId: string;
+    handle: ImageResizeHandle;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScale: number;
+    frameWidth: number;
+  } | null>(null);
+  const imageRotateRef = useRef<{
+    overlayId: string;
+    pointerId: number;
+    startAngleDeg: number;
+    startRotation: number;
+    centerX: number;
+    centerY: number;
   } | null>(null);
   const subtitleDragRef = useRef<{
     pointerId: number;
@@ -134,15 +181,23 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     () => resolveTextOverlay(effects.textOverlay),
     [effects.textOverlay],
   );
+  const imageOverlay = useMemo<ResolvedImageOverlaySettings>(
+    () => resolveImageOverlaySettings(effects.imageOverlay),
+    [effects.imageOverlay],
+  );
   const subtitleOverlay = useMemo<ResolvedSubtitleOverlaySettings>(
     () => resolveSubtitleOverlay(effects.subtitleOverlay),
     [effects.subtitleOverlay],
   );
   const textOverlayStateRef = useRef(textOverlay);
+  const imageOverlayStateRef = useRef(imageOverlay);
   const subtitleOverlayRef = useRef(subtitleOverlay);
   useLayoutEffect(() => {
     textOverlayStateRef.current = textOverlay;
   }, [textOverlay]);
+  useLayoutEffect(() => {
+    imageOverlayStateRef.current = imageOverlay;
+  }, [imageOverlay]);
   useLayoutEffect(() => {
     subtitleOverlayRef.current = subtitleOverlay;
   }, [subtitleOverlay]);
@@ -317,140 +372,11 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     effects.transform?.flip_v,
   ]);
 
-  const logoStyle = useMemo(() => {
-    if (!effects.logo || !effects.logo.enabled || !effects.logo.path)
-      return null;
-    const { position, opacity, gap } = effects.logo;
-
-    if (!previewLayout) return null;
-    if (previewLayout.logoWidth === null || previewLayout.logoGap === null) {
-      return null;
-    }
-    const logoWidth = (previewLayout.logoWidth ?? 0) * targetScale;
-    const scaledGap = (previewLayout.logoGap ?? gap) * targetScale;
-
-    const style: React.CSSProperties = {
-      position: "absolute",
-      width: logoWidth,
-      opacity,
-      transition: effects.logo.manualPosition ? "none" : "all 0.2s ease",
-      zIndex: 10,
-      cursor: "grab",
-      userSelect: "none",
-      touchAction: "none",
-    };
-
-    if (effects.logo.manualPosition) {
-      // Phase 1: canonical video-space position → preview percent.
-      // Center anchor (`translate(-50%, -50%)`) preserved; no clamp change.
-      const logoPreview = toPreviewPercent({
-        x: effects.logo.x ?? 0.5,
-        y: effects.logo.y ?? 0.5,
-      });
-      style.left = `${logoPreview.xPercent}%`;
-      style.top = `${logoPreview.yPercent}%`;
-      style.transform = "translate(-50%, -50%)";
-    } else {
-      switch (position) {
-        case "top_left":
-          style.top = scaledGap;
-          style.left = scaledGap;
-          break;
-        case "top_right":
-          style.top = scaledGap;
-          style.right = scaledGap;
-          break;
-        case "bottom_left":
-          style.bottom = scaledGap;
-          style.left = scaledGap;
-          break;
-        case "bottom_right":
-          style.bottom = scaledGap;
-          style.right = scaledGap;
-          break;
-      }
-    }
-
-    return style;
-  }, [effects.logo, previewLayout, targetScale]);
-
-  const handleLogoPointerDown = useCallback(
-    (event: React.PointerEvent<HTMLImageElement>) => {
-      if (event.button !== 0 || !effects.logo?.enabled) return;
-      const frame = canvasBoxRef.current;
-      if (!frame) return;
-      event.preventDefault();
-      event.stopPropagation();
-
-      const frameRect = frame.getBoundingClientRect();
-      const logoRect = event.currentTarget.getBoundingClientRect();
-      if (frameRect.width <= 0 || frameRect.height <= 0) return;
-      // Unbounded overlay geometry: the video frame is only the visible
-      // clipping region, never a drag boundary. No min/max is computed;
-      // any finite canonical position (negative, >1, arbitrarily far
-      // outside) is valid and is never pulled back toward the frame.
-      const startX = effects.logo.manualPosition
-        ? effects.logo.x ?? 0.5
-        : (logoRect.left + logoRect.width / 2 - frameRect.left) /
-          frameRect.width;
-      const startY = effects.logo.manualPosition
-        ? effects.logo.y ?? 0.5
-        : (logoRect.top + logoRect.height / 2 - frameRect.top) /
-          frameRect.height;
-
-      logoDragRef.current = {
-        pointerId: event.pointerId,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startX,
-        startY,
-        frameWidth: frameRect.width,
-        frameHeight: frameRect.height,
-        moved: false,
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
+  const applyImageOverlay = useCallback(
+    (next: ResolvedImageOverlaySettings) => {
+      onImageOverlayChange?.(normalizeImageOverlaySettings(next));
     },
-    [effects.logo],
-  );
-
-  const handleLogoPointerMove = useCallback(
-    (event: React.PointerEvent<HTMLImageElement>) => {
-      const drag = logoDragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId || !effects.logo) return;
-      const deltaX = event.clientX - drag.startClientX;
-      const deltaY = event.clientY - drag.startClientY;
-      if (!drag.moved && Math.hypot(deltaX, deltaY) >= 3) {
-        drag.moved = true;
-      }
-      if (!drag.moved) return;
-      event.preventDefault();
-      onLogoChange?.({
-        ...effects.logo,
-        manualPosition: true,
-        // Unbounded drag: screen-px delta → canonical delta with no
-        // frame clamping. Negative and >1 values are valid; the frame
-        // only clips visibility.
-        x:
-          drag.startX +
-          previewDeltaToCanonical(deltaX, drag.frameWidth),
-        y:
-          drag.startY +
-          previewDeltaToCanonical(deltaY, drag.frameHeight),
-      });
-    },
-    [effects.logo, onLogoChange],
-  );
-
-  const handleLogoPointerEnd = useCallback(
-    (event: React.PointerEvent<HTMLImageElement>) => {
-      const drag = logoDragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      logoDragRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-    },
-    [],
+    [onImageOverlayChange],
   );
 
   const applyTextOverlay = useCallback(
@@ -458,6 +384,328 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       onTextOverlayChange?.(next);
     },
     [onTextOverlayChange],
+  );
+
+  const updateImageOverlay = useCallback(
+    (overlayId: string, patch: Partial<ResolvedImageOverlay>) => {
+      const current = imageOverlayStateRef.current;
+      applyImageOverlay({
+        ...current,
+        overlays: current.overlays.map((overlay) =>
+          overlay.id === overlayId ? { ...overlay, ...patch } : overlay,
+        ),
+      });
+    },
+    [applyImageOverlay],
+  );
+
+  const selectImageOverlay = useCallback(
+    (overlayId: string) => {
+      const current = imageOverlayStateRef.current;
+      if (current.selectedOverlayId === overlayId) return;
+      applyImageOverlay({ ...current, selectedOverlayId: overlayId });
+    },
+    [applyImageOverlay],
+  );
+
+  const deselectImageOverlay = useCallback(() => {
+    const current = imageOverlayStateRef.current;
+    if (current.selectedOverlayId === null) return;
+    applyImageOverlay({ ...current, selectedOverlayId: null });
+  }, [applyImageOverlay]);
+
+  const handleCanvasBoxPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      // Fires only for empty canvas space: image, handle, rotation, text,
+      // and subtitle pointer handlers all stop propagation. Clears only the
+      // image selection; image transform state is untouched, so the image
+      // stays visible in place with its handles hidden.
+      if (event.button !== 0) return;
+      deselectImageOverlay();
+    },
+    [deselectImageOverlay],
+  );
+
+  useEffect(() => {
+    // App-wide dismissal: a click anywhere outside the selected overlays'
+    // interaction context clears the selection so bounding boxes/handles
+    // hide. Interaction context = (A) the selected overlay element itself
+    // (image, handles, rotation, text content, wrapper, handles, rotation)
+    // or (B) the selected object's own settings panel
+    // (`.image-settings-panel` for images, `.text-settings-panel` for
+    // text). This is a native bubble-phase window listener with no
+    // preventDefault/stopPropagation, so it runs after React synthetic
+    // onClick handlers and never blocks panel controls: each control
+    // performs its action first, then selection is (or isn't) dismissed.
+    // Overlay transform state is untouched. Image and text selections clear
+    // independently through their own state, so an image-panel click keeps
+    // the image but still dismisses text, and vice versa.
+    const onWindowClick = (event: MouseEvent) => {
+      const target = event.target;
+      const inOverlay =
+        target instanceof Element &&
+        target.closest(
+          ".canvas-image-overlay, .canvas-text-overlay, .canvas-text-overlay-wrap",
+        );
+      if (inOverlay) return;
+      const inImagePanel =
+        target instanceof Element &&
+        target.closest(".image-settings-panel");
+      const inTextPanel =
+        target instanceof Element && target.closest(".text-settings-panel");
+      const currentImage = imageOverlayStateRef.current;
+      if (currentImage.selectedOverlayId !== null && !inImagePanel) {
+        applyImageOverlay({ ...currentImage, selectedOverlayId: null });
+      }
+      const currentText = textOverlayStateRef.current;
+      if (currentText.selectedLayerIds.length > 0 && !inTextPanel) {
+        applyTextOverlay({ ...currentText, selectedLayerIds: [] });
+      }
+    };
+    window.addEventListener("click", onWindowClick);
+    return () => window.removeEventListener("click", onWindowClick);
+  }, [applyImageOverlay, applyTextOverlay]);
+
+  const getImageWrapperStyle = useCallback(
+    (overlay: ResolvedImageOverlay): React.CSSProperties => {
+      // Canonical video-space position → preview percent. Center anchor.
+      // Unbounded: x/y may be outside 0..1; the frame clips visibility.
+      const preview = toPreviewPercent({ x: overlay.x, y: overlay.y });
+      return {
+        position: "absolute",
+        left: `${preview.xPercent}%`,
+        top: `${preview.yPercent}%`,
+        width: `${overlay.scale * 100}%`,
+        transform: `translate(-50%, -50%) rotate(${overlay.rotation}deg)`,
+        transformOrigin: "center center",
+        zIndex: 10,
+        cursor: "grab",
+        userSelect: "none",
+        touchAction: "none",
+      };
+    },
+    [],
+  );
+
+  const getImageElementStyle = useCallback(
+    (overlay: ResolvedImageOverlay): React.CSSProperties => {
+      const crop = overlay.crop;
+      const insetTop = crop.y * 100;
+      const insetLeft = crop.x * 100;
+      const insetRight = Math.max(0, (1 - crop.x - crop.width) * 100);
+      const insetBottom = Math.max(0, (1 - crop.y - crop.height) * 100);
+      const transforms: string[] = [];
+      if (overlay.flipHorizontal) transforms.push("scaleX(-1)");
+      if (overlay.flipVertical) transforms.push("scaleY(-1)");
+      return {
+        display: "block",
+        width: "100%",
+        height: "auto",
+        opacity: overlay.opacity,
+        transform: transforms.length > 0 ? transforms.join(" ") : undefined,
+        transformOrigin: "center center",
+        clipPath:
+          crop.x !== 0 ||
+          crop.y !== 0 ||
+          crop.width !== 1 ||
+          crop.height !== 1
+            ? `inset(${insetTop}% ${insetRight}% ${insetBottom}% ${insetLeft}%)`
+            : undefined,
+        pointerEvents: "none",
+        userSelect: "none",
+        draggable: false,
+      } as React.CSSProperties;
+    },
+    [],
+  );
+
+  const handleImagePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, overlay: ResolvedImageOverlay) => {
+      if (event.button !== 0) return;
+      const frame = canvasBoxRef.current;
+      if (!frame) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectImageOverlay(overlay.id);
+
+      const frameRect = frame.getBoundingClientRect();
+      if (frameRect.width <= 0 || frameRect.height <= 0) return;
+      // Unbounded drag: screen-px delta → canonical delta with no clamping.
+      imageDragRef.current = {
+        overlayId: overlay.id,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startX: overlay.x,
+        startY: overlay.y,
+        frameWidth: frameRect.width,
+        frameHeight: frameRect.height,
+        moved: false,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [selectImageOverlay],
+  );
+
+  const handleImagePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = imageDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const deltaX = event.clientX - drag.startClientX;
+      const deltaY = event.clientY - drag.startClientY;
+      if (!drag.moved && Math.hypot(deltaX, deltaY) >= 3) {
+        drag.moved = true;
+      }
+      if (!drag.moved) return;
+      event.preventDefault();
+      const x =
+        drag.startX + previewDeltaToCanonical(deltaX, drag.frameWidth);
+      const y =
+        drag.startY + previewDeltaToCanonical(deltaY, drag.frameHeight);
+      updateImageOverlay(drag.overlayId, { x, y });
+    },
+    [updateImageOverlay],
+  );
+
+  const handleImagePointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = imageDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      imageDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [],
+  );
+
+  const handleImageResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, overlay: ResolvedImageOverlay, handle: ImageResizeHandle) => {
+      if (event.button !== 0) return;
+      const frame = canvasBoxRef.current;
+      if (!frame) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectImageOverlay(overlay.id);
+      const frameRect = frame.getBoundingClientRect();
+      if (frameRect.width <= 0) return;
+      imageResizeRef.current = {
+        overlayId: overlay.id,
+        handle,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startScale: overlay.scale,
+        frameWidth: frameRect.width,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [selectImageOverlay],
+  );
+
+  const handleImageResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const resize = imageResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      const current = imageOverlayStateRef.current.overlays.find(
+        (o) => o.id === resize.overlayId,
+      );
+      if (!current) return;
+      const dx = event.clientX - resize.startClientX;
+      const dy = event.clientY - resize.startClientY;
+      // Shared handle geometry (same as text): edge/corner drag → box-size
+      // delta. Only the canonical mapping stays domain-specific (image
+      // `scale` vs text `fontSize`); aspect is preserved by width-only sizing.
+      const deltaPx = resizeHandleDeltaPx(resize.handle, dx, dy);
+      // Bounding-box manipulation is the source of scale changes.
+      // Only scale changes; aspect is preserved by width-only sizing.
+      const nextScale = Math.max(
+        0.01,
+        Math.min(10, resize.startScale + deltaPx / resize.frameWidth),
+      );
+      event.preventDefault();
+      updateImageOverlay(resize.overlayId, { scale: nextScale });
+    },
+    [updateImageOverlay],
+  );
+
+  const handleImageResizePointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const resize = imageResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      imageResizeRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [],
+  );
+
+  const handleImageRotatePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, overlay: ResolvedImageOverlay) => {
+      if (event.button !== 0) return;
+      const frame = canvasBoxRef.current;
+      if (!frame) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectImageOverlay(overlay.id);
+      const frameRect = frame.getBoundingClientRect();
+      if (frameRect.width <= 0 || frameRect.height <= 0) return;
+      const centerX = frameRect.left + overlay.x * frameRect.width;
+      const centerY = frameRect.top + overlay.y * frameRect.height;
+      // Shared rotation geometry (same as text): pointer angle around the
+      // canonical center. Domain-specific part is only which object we write.
+      const startAngleDeg = pointerAngleDeg(
+        event.clientX,
+        event.clientY,
+        centerX,
+        centerY,
+      );
+      imageRotateRef.current = {
+        overlayId: overlay.id,
+        pointerId: event.pointerId,
+        startAngleDeg,
+        startRotation: overlay.rotation,
+        centerX,
+        centerY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [selectImageOverlay],
+  );
+
+  const handleImageRotatePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const rotate = imageRotateRef.current;
+      if (!rotate || rotate.pointerId !== event.pointerId) return;
+      const currentAngleDeg = pointerAngleDeg(
+        event.clientX,
+        event.clientY,
+        rotate.centerX,
+        rotate.centerY,
+      );
+      // Shared shortest-sweep delta, same as text rotation.
+      const delta = rotationDeltaDeg(rotate.startAngleDeg, currentAngleDeg);
+      let nextRotation = rotate.startRotation + delta;
+      // Keep within validation bounds.
+      if (nextRotation > 720) nextRotation = 720;
+      if (nextRotation < -720) nextRotation = -720;
+      event.preventDefault();
+      updateImageOverlay(rotate.overlayId, { rotation: nextRotation });
+    },
+    [updateImageOverlay],
+  );
+
+  const handleImageRotatePointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const rotate = imageRotateRef.current;
+      if (!rotate || rotate.pointerId !== event.pointerId) return;
+      imageRotateRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [],
   );
 
   const updateSubtitleOverlay = useCallback(
@@ -644,6 +892,178 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     [beginTextEditing],
   );
 
+  const selectSingleTextLayer = useCallback(
+    (layerId: string) => {
+      const current = textOverlayStateRef.current;
+      if (
+        current.selectedLayerIds.length === 1 &&
+        current.selectedLayerIds[0] === layerId
+      ) {
+        return;
+      }
+      applyTextOverlay({ ...current, selectedLayerIds: [layerId] });
+    },
+    [applyTextOverlay],
+  );
+
+  const handleTextResizePointerDown = useCallback(
+    (
+      event: React.PointerEvent<HTMLDivElement>,
+      layer: ResolvedTextLayerSettings,
+      handle: OverlayResizeHandle,
+    ) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Keep an existing multi-selection intact; otherwise single-select the
+      // resized layer, mirroring canvas click selection.
+      const current = textOverlayStateRef.current;
+      if (!current.selectedLayerIds.includes(layer.id)) {
+        selectSingleTextLayer(layer.id);
+      }
+      const element = textOverlayRefs.current[layer.id];
+      const startWidthPx = element?.offsetWidth ?? 0;
+      if (startWidthPx <= 0) return;
+      textResizeRef.current = {
+        layerId: layer.id,
+        handle,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startFontSize: layer.fontSize,
+        startWidthPx,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [selectSingleTextLayer],
+  );
+
+  const handleTextResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const resize = textResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      const dx = event.clientX - resize.startClientX;
+      const dy = event.clientY - resize.startClientY;
+      // Approach 1 — font-size scaling: the box width maps proportionally
+      // onto the canonical fontSize, so glyphs, outline, spacing, and
+      // wrapping keep their normal typography instead of being stretched.
+      // Bounds (12..240) are enforced by normalizeTextLayer on write.
+      const nextWidthPx = Math.max(8, resize.startWidthPx + resizeHandleDeltaPx(resize.handle, dx, dy));
+      const nextFontSize = Math.round(
+        (resize.startFontSize * nextWidthPx) / resize.startWidthPx,
+      );
+      event.preventDefault();
+      updateTextLayer(resize.layerId, { fontSize: nextFontSize });
+    },
+    [updateTextLayer],
+  );
+
+  const handleTextResizePointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const resize = textResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      textResizeRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [],
+  );
+
+  const handleTextRotatePointerDown = useCallback(
+    (
+      event: React.PointerEvent<HTMLDivElement>,
+      layer: ResolvedTextLayerSettings,
+    ) => {
+      if (event.button !== 0) return;
+      const frame = canvasBoxRef.current;
+      if (!frame) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = textOverlayStateRef.current;
+      if (!current.selectedLayerIds.includes(layer.id)) {
+        selectSingleTextLayer(layer.id);
+      }
+      const frameRect = frame.getBoundingClientRect();
+      if (frameRect.width <= 0 || frameRect.height <= 0) return;
+      const centerX = frameRect.left + layer.x * frameRect.width;
+      const centerY = frameRect.top + layer.y * frameRect.height;
+      textRotateRef.current = {
+        layerId: layer.id,
+        pointerId: event.pointerId,
+        startAngleDeg: pointerAngleDeg(
+          event.clientX,
+          event.clientY,
+          centerX,
+          centerY,
+        ),
+        startRotation: layer.rotation,
+        centerX,
+        centerY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [selectSingleTextLayer],
+  );
+
+  const handleTextRotatePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const rotate = textRotateRef.current;
+      if (!rotate || rotate.pointerId !== event.pointerId) return;
+      const currentAngleDeg = pointerAngleDeg(
+        event.clientX,
+        event.clientY,
+        rotate.centerX,
+        rotate.centerY,
+      );
+      let nextRotation =
+        rotate.startRotation + rotationDeltaDeg(rotate.startAngleDeg, currentAngleDeg);
+      // Same bounds as image rotation; enforced again by normalization.
+      if (nextRotation > 720) nextRotation = 720;
+      if (nextRotation < -720) nextRotation = -720;
+      event.preventDefault();
+      updateTextLayer(rotate.layerId, { rotation: nextRotation });
+    },
+    [updateTextLayer],
+  );
+
+  const handleTextRotatePointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const rotate = textRotateRef.current;
+      if (!rotate || rotate.pointerId !== event.pointerId) return;
+      textRotateRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [],
+  );
+
+  const getTextWrapperStyle = useCallback(
+    (layer: ResolvedTextLayerSettings): React.CSSProperties => {
+      // Phase 1: canonical video-space position → preview percent, center
+      // anchor shared with every overlay type. Rotation applies on the same
+      // center anchor, mirroring the image wrapper. Unbounded: x/y may be
+      // outside 0..1; the frame clips visibility.
+      const textPreview = toPreviewPercent({ x: layer.x, y: layer.y });
+      return {
+        position: "absolute",
+        left: `${textPreview.xPercent}%`,
+        top: `${textPreview.yPercent}%`,
+        transform:
+          layer.rotation !== 0
+            ? `translate(-50%, -50%) rotate(${layer.rotation}deg)`
+            : "translate(-50%, -50%)",
+        transformOrigin: "center center",
+        zIndex: 15,
+        cursor: "grab",
+        userSelect: "none",
+        touchAction: "none",
+      };
+    },
+    [],
+  );
+
   const getTextLayerStyle = useCallback((layer: ResolvedTextLayerSettings): React.CSSProperties => {
     const isEditing = editingLayerId === layer.id;
     // Phase 5: pure mathematical scale of the canonical video-space font
@@ -652,18 +1072,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     const outlineWidth = layer.outlineEnabled
       ? Math.max(0, layer.outlineWidth * targetScale)
       : 0;
-    // Phase 1: canonical video-space position → preview percent.
     // Phase 3: no viewport-imposed text box. The element sizes to its
     // natural content width and the canvas frame clips it; explicit
     // newlines are preserved via `pre` without automatic wrapping.
-    // Center anchor preserved; remaining typography (line height, letter
-    // spacing, outline rendering) untouched — Phase 6 scope.
-    const textPreview = toPreviewPercent({ x: layer.x, y: layer.y });
+    // Positioning/rotation live on the wrapper; remaining typography (line
+    // height, letter spacing, outline rendering) untouched — Phase 6 scope.
     return {
-      position: "absolute",
-      left: `${textPreview.xPercent}%`,
-      top: `${textPreview.yPercent}%`,
-      transform: "translate(-50%, -50%)",
       color: layer.color,
       opacity: layer.opacity,
       fontFamily: TEXT_FONT_FAMILIES[layer.fontStyle],
@@ -719,7 +1133,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const subtitleRect = event.currentTarget.getBoundingClientRect();
       if (frameRect.width <= 0 || frameRect.height <= 0) return;
       // Unbounded overlay geometry: manual subtitle position follows the
-      // same free-positioning rules as text/logo. No min/max drag bounds;
+      // same free-positioning rules as text/image overlays. No min/max drag bounds;
       // the frame only clips visibility. Auto-subtitle margin layout is
       // untouched (separate product concept, used only when manualPosition
       // is false).
@@ -874,6 +1288,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
           <div
             ref={canvasBoxRef}
             className="video-canvas-box"
+            onPointerDown={handleCanvasBoxPointerDown}
             style={{
               width: canvasSize.width,
               height: canvasSize.height,
@@ -1004,21 +1419,89 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
               />
             )}
 
-            {/* Logo Layer */}
-            {effects.logo?.enabled && effects.logo.path && logoStyle && (
-              <img
-                src={convertFileSrc(effects.logo.path)}
-                style={logoStyle}
-                alt="Logo"
-                draggable={false}
-                onPointerDown={handleLogoPointerDown}
-                onPointerMove={handleLogoPointerMove}
-                onPointerUp={handleLogoPointerEnd}
-                onPointerCancel={handleLogoPointerEnd}
-              />
-            )}
+            {/* Image Overlays: independent objects directly on the canvas.
+                Single selection via selectedOverlayId; the panel edits the
+                selected image. No image list in the panel. */}
+            {imageOverlay.overlays
+              .filter((overlay) => overlay.path.trim())
+              .map((overlay) => {
+                const isSelected =
+                  imageOverlay.selectedOverlayId === overlay.id;
+                const handles: ImageResizeHandle[] = [
+                  "nw",
+                  "n",
+                  "ne",
+                  "w",
+                  "e",
+                  "sw",
+                  "s",
+                  "se",
+                ];
+                return (
+                  <div
+                    key={overlay.id}
+                    className={`canvas-image-overlay${isSelected ? " is-selected" : ""}`}
+                    style={getImageWrapperStyle(overlay)}
+                    onPointerDown={(event) =>
+                      handleImagePointerDown(event, overlay)
+                    }
+                    onPointerMove={handleImagePointerMove}
+                    onPointerUp={handleImagePointerEnd}
+                    onPointerCancel={handleImagePointerEnd}
+                    aria-label="Video image overlay"
+                    aria-selected={isSelected}
+                  >
+                    <img
+                      src={convertFileSrc(overlay.path)}
+                      style={getImageElementStyle(overlay)}
+                      alt=""
+                      draggable={false}
+                    />
+                    {isSelected && (
+                      <>
+                        <div className="canvas-image-selection-outline" />
+                        {handles.map((handle) => (
+                          <div
+                            key={handle}
+                            className={`canvas-image-handle canvas-image-handle-${handle}`}
+                            data-handle={handle}
+                            onPointerDown={(event) =>
+                              handleImageResizePointerDown(
+                                event,
+                                overlay,
+                                handle,
+                              )
+                            }
+                            onPointerMove={handleImageResizePointerMove}
+                            onPointerUp={handleImageResizePointerEnd}
+                            onPointerCancel={handleImageResizePointerEnd}
+                          />
+                        ))}
+                        <div
+                          className="canvas-image-rotate-handle"
+                          aria-label="Rotate image"
+                          onPointerDown={(event) =>
+                            handleImageRotatePointerDown(event, overlay)
+                          }
+                          onPointerMove={handleImageRotatePointerMove}
+                          onPointerUp={handleImageRotatePointerEnd}
+                          onPointerCancel={handleImageRotatePointerEnd}
+                        >
+                          ↻
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
 
-            {/* Editable Text Layers */}
+            {/* Editable Text Layers.
+                Each layer is a positioned wrapper (shared center-anchor
+                geometry with image overlays) containing the typographic
+                content element plus, when actively selected and not editing,
+                the bounding-box resize/rotation handles. The content element
+                keeps every existing behavior: editing lifecycle, text sync,
+                typography, and selection styling. */}
             {textOverlay.layers
               .filter((layer) => layer.enabled)
               .map((layer) => {
@@ -1027,60 +1510,115 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   layer.id,
                 );
                 const isEmpty = !layer.text.trim();
+                // Bounding box persists while editing the selected layer:
+                // selection (not editing state) controls visibility, so
+                // clicking/typing in the already-selected text keeps its
+                // handles. Drag is separately disabled while any layer is
+                // editing (see handleTextPointerDown), so typing can't move
+                // the layer; resize/rotate handles stay interactive.
+                const showTextHandles = isSelected;
+                const textHandles: OverlayResizeHandle[] = [
+                  "nw",
+                  "n",
+                  "ne",
+                  "w",
+                  "e",
+                  "sw",
+                  "s",
+                  "se",
+                ];
                 return (
                   <div
                     key={layer.id}
-                    ref={(element) => setTextOverlayElement(layer.id, element)}
-                    className={`canvas-text-overlay${isEditing ? " is-editing" : ""}${isSelected ? " is-selected" : ""}${isEmpty ? " is-empty" : ""}`}
-                    data-placeholder={DEFAULT_TEXT_LAYER.text}
-                    style={getTextLayerStyle(layer)}
-                    contentEditable={isEditing}
-                    suppressContentEditableWarning
-                    role="textbox"
-                    aria-label="Video text overlay"
-                    aria-multiline="true"
-                    aria-selected={isSelected}
-                    tabIndex={0}
+                    className="canvas-text-overlay-wrap"
+                    style={getTextWrapperStyle(layer)}
                     onPointerDown={(event) =>
                       handleTextPointerDown(event, layer)
                     }
                     onPointerMove={handleTextPointerMove}
                     onPointerUp={handleTextPointerEnd}
                     onPointerCancel={handleTextPointerEnd}
-                    onInput={(event) => {
-                      const nextText = Array.from(
-                        event.currentTarget.textContent ?? "",
-                      )
-                        .slice(0, 500)
-                        .join("");
-                      if (
-                        Array.from(event.currentTarget.textContent ?? "")
-                          .length > 500
-                      ) {
-                        event.currentTarget.textContent = nextText;
-                      }
-                      updateTextLayer(layer.id, { text: nextText });
-                    }}
-                    onKeyDown={(event) => {
-                      if (
-                        !isEditing &&
-                        (event.key === "Enter" || event.key === " ")
-                      ) {
-                        event.preventDefault();
-                        beginTextEditing(layer.id);
-                      } else if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        commitTextEditing();
-                      } else if (isEditing && event.key === "Escape") {
-                        event.preventDefault();
-                        cancelTextEditing();
-                      }
-                    }}
-                    onBlur={() => {
-                      if (isEditing) commitTextEditing();
-                    }}
-                    onClick={(event) => event.stopPropagation()}
-                  />
+                  >
+                    <div
+                      ref={(element) => setTextOverlayElement(layer.id, element)}
+                      className={`canvas-text-overlay${isEditing ? " is-editing" : ""}${isSelected ? " is-selected" : ""}${isEmpty ? " is-empty" : ""}`}
+                      data-placeholder={DEFAULT_TEXT_LAYER.text}
+                      style={getTextLayerStyle(layer)}
+                      contentEditable={isEditing}
+                      suppressContentEditableWarning
+                      role="textbox"
+                      aria-label="Video text overlay"
+                      aria-multiline="true"
+                      aria-selected={isSelected}
+                      tabIndex={0}
+                      onInput={(event) => {
+                        const nextText = Array.from(
+                          event.currentTarget.textContent ?? "",
+                        )
+                          .slice(0, 500)
+                          .join("");
+                        if (
+                          Array.from(event.currentTarget.textContent ?? "")
+                            .length > 500
+                        ) {
+                          event.currentTarget.textContent = nextText;
+                        }
+                        updateTextLayer(layer.id, { text: nextText });
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          !isEditing &&
+                          (event.key === "Enter" || event.key === " ")
+                        ) {
+                          event.preventDefault();
+                          beginTextEditing(layer.id);
+                        } else if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          commitTextEditing();
+                        } else if (isEditing && event.key === "Escape") {
+                          event.preventDefault();
+                          cancelTextEditing();
+                        }
+                      }}
+                      onBlur={() => {
+                        if (isEditing) commitTextEditing();
+                      }}
+                      onClick={(event) => event.stopPropagation()}
+                    />
+                    {showTextHandles && (
+                      <>
+                        {textHandles.map((handle) => (
+                          <div
+                            key={handle}
+                            className={`canvas-image-handle canvas-image-handle-${handle}`}
+                            data-handle={handle}
+                            onPointerDown={(event) =>
+                              handleTextResizePointerDown(
+                                event,
+                                layer,
+                                handle,
+                              )
+                            }
+                            onPointerMove={handleTextResizePointerMove}
+                            onPointerUp={handleTextResizePointerEnd}
+                            onPointerCancel={handleTextResizePointerEnd}
+                          />
+                        ))}
+                        <div
+                          className="canvas-image-rotate-handle"
+                          aria-label="Rotate text"
+                          onPointerDown={(event) =>
+                            handleTextRotatePointerDown(event, layer)
+                          }
+                          onPointerMove={handleTextRotatePointerMove}
+                          onPointerUp={handleTextRotatePointerEnd}
+                          onPointerCancel={handleTextRotatePointerEnd}
+                        >
+                          ↻
+                        </div>
+                      </>
+                    )}
+                  </div>
                 );
               })}
 

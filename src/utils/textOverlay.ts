@@ -13,6 +13,7 @@ export type ResolvedTextLayerSettings = Omit<
   | "italic"
   | "underline"
   | "strikethrough"
+  | "rotation"
 > & {
   id: string;
   enabled: boolean;
@@ -21,6 +22,7 @@ export type ResolvedTextLayerSettings = Omit<
   italic: boolean;
   underline: boolean;
   strikethrough: boolean;
+  rotation: number;
 };
 
 export type ResolvedTextOverlaySettings = {
@@ -43,6 +45,7 @@ export const DEFAULT_TEXT_LAYER: ResolvedTextLayerSettings = {
   opacity: 1,
   x: 0.5,
   y: 0.5,
+  rotation: 0,
   outlineEnabled: true,
   outlineColor: "#000000",
   outlineWidth: 3,
@@ -175,6 +178,7 @@ export function resolveTextLayer(
     italic: !!layer?.italic,
     underline: !!layer?.underline,
     strikethrough: !!layer?.strikethrough,
+    rotation: finiteOr(layer?.rotation, DEFAULT_TEXT_LAYER.rotation),
   };
 }
 
@@ -249,6 +253,12 @@ export function normalizeTextLayer(
     opacity: clampFinite(resolved.opacity, 0, 1, DEFAULT_TEXT_LAYER.opacity),
     x: finiteOr(resolved.x, DEFAULT_TEXT_LAYER.x),
     y: finiteOr(resolved.y, DEFAULT_TEXT_LAYER.y),
+    rotation: clampFinite(
+      resolved.rotation,
+      -720,
+      720,
+      DEFAULT_TEXT_LAYER.rotation,
+    ),
     outlineColor: /^#[0-9a-f]{6}$/i.test(resolved.outlineColor)
       ? resolved.outlineColor
       : DEFAULT_TEXT_LAYER.outlineColor,
