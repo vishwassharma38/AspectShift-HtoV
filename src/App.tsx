@@ -54,7 +54,7 @@ import type {
   VideoTransform,
 } from "./types/backend";
 import "./App.css";
-import { VideoCanvas } from "./components/VideoCanvas";
+import { PreviewHost } from "./components/PreviewHost";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
 import { Header } from "./components/layout/Header";
 import { OnboardingModal } from "./components/modals/OnboardingModal";
@@ -77,8 +77,29 @@ import {
   isBrowserOnlyShortcut,
   isEditableShortcutTarget,
   isAppRefreshShortcut,
+  isExitPreviewFullscreenShortcut,
+  isPreviewPlayPauseShortcut,
   normalizeShortcutKey,
 } from "./utils/appShortcuts";
+import {
+  POPOUT_SESSION_STORAGE_KEY,
+  POPOUT_STATE_EVENT_KEY,
+  PREVIEW_POPOUT_APPLY_EVENT,
+  PREVIEW_POPOUT_CANCEL_EVENT,
+  PREVIEW_POPOUT_UPDATE_EVENT,
+  broadcastPopoutDraft,
+  clearPopoutSession,
+  closePopoutWindow,
+  emitPopoutEvent,
+  focusPopoutWindow,
+  isTauriRuntime,
+  rememberPopoutBounds,
+  setCurrentWindowFullscreen,
+  showPopoutWindow,
+  writePopoutSession,
+  type PopoutDraftUpdate,
+  type PreviewMode,
+} from "./services/previewController";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
@@ -954,6 +975,38 @@ export default function App() {
   const [previewVolume, setPreviewVolume] = useState<number>(
     DEFAULT_PREVIEW_VOLUME,
   );
+
+  // ── Preview Controller (one preview system, multiple display modes) ──
+  // HARD ARCHITECTURAL INVARIANT:
+  // > There must only ever be one active preview renderer for the current
+  // > project. The pop-out window is a different host for the same preview
+  // > system, not a second preview implementation.
+  // `previewMode` is a display mode, not a second preview instance. The same
+  // `VideoCanvas` renderer (via `PreviewHost`) is mounted in whichever host
+  // is active; only one host is active at a time.
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("embedded");
+  // Dedicated borderless/fullscreen preview state, distinct from native
+  // Windows maximize. Esc restores the exact previous pop-out state and
+  // remains in pop-out mode.
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
+  const previewPrevMaximizedRef = useRef(false);
+  // One playback source of truth shared by every display mode. The preview
+  // plays by default; pop-out inherits the current state.
+  const [previewPlaying, setPreviewPlaying] = useState(true);
+  const [previewPlaybackRate] = useState(1);
+  const previewCurrentTimeRef = useRef(0);
+  // Draft transaction: snapshot of committed effects/volume taken at Pop Out
+  // time. Pop-out editing works against the draft (live `effectsState`);
+  // Apply commits it, Cancel / native X restores this snapshot.
+  const popoutCommittedRef = useRef<{
+    effects: VideoEffectsSettings;
+    previewVolume: number;
+  } | null>(null);
+  const isPopoutActive = previewMode === "popout";
+  // Focus/visibility invariant: the pop-out's visibility/minimized state is
+  // controlled ONLY by the native Windows window manager. There is
+  // intentionally no blur-to-minimize / click-outside-to-hide logic anywhere
+  // in this feature.
   const [depsState, setDepsState] = useState<AppDepsState | null>(null);
   const [depsStateLoaded, setDepsStateLoaded] = useState(false);
   const [dependencyOperation, setDependencyOperation] =
@@ -1138,7 +1191,377 @@ export default function App() {
   const handleVolumeChange = useCallback((val: number) => {
     setPreviewVolume(val);
     setVolumeSliderActive(true);
+    if (popoutCommittedRef.current) {
+      // Keep the pop-out host in sync while the draft is being edited from
+      // either host; the committed snapshot itself is untouched.
+      broadcastPopoutDraft({ version: 1, previewVolume: val });
+      void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+        source: "main",
+        previewVolume: val,
+        playing: undefined,
+      });
+    }
   }, []);
+
+  const togglePreviewPlayback = useCallback(() => {
+    setPreviewPlaying((was) => {
+      const next = !was;
+      if (popoutCommittedRef.current) {
+        broadcastPopoutDraft({ version: 1, playing: next });
+        void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+          source: "main",
+          playing: next,
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  const handlePreviewTimeUpdate = useCallback((currentTime: number) => {
+    if (Number.isFinite(currentTime)) previewCurrentTimeRef.current = currentTime;
+  }, []);
+
+  const handleFocusPopout = useCallback(async () => {
+    await focusPopoutWindow();
+  }, []);
+
+  // Pop Out: switch the SAME preview system from the embedded host to the
+  // native Tauri pop-out window, preserving video, position, playing state,
+  // volume, overlays, selection, and preview frame. Only one host is active
+  // at a time — the embedded preview becomes hidden/inactive.
+  //
+  // The native window is opened FIRST and pop-out mode is entered only once
+  // it actually exists. On creation failure we stay in embedded mode instead
+  // of stranding the user on the placeholder with nowhere to edit.
+  const handlePopOut = useCallback(async () => {
+    if (previewMode === "popout" || previewMode === "fullscreen") {
+      await handleFocusPopout();
+      return;
+    }
+    if (!previewFile) return;
+    // Snapshot committed state for the draft transaction (deepClone is the
+    // existing building block; the draft is a transaction around the same
+    // overlay state, not a second overlay system).
+    popoutCommittedRef.current = {
+      effects: deepClone(effectsState),
+      previewVolume,
+    };
+    writePopoutSession({
+      version: 1,
+      effects: deepClone(effectsState),
+      previewVolume,
+      playing: previewPlaying,
+      playbackRate: previewPlaybackRate,
+      currentTime: previewCurrentTimeRef.current,
+      videoSrc: previewFile,
+      orientation: orientation ? deepClone(orientation) : null,
+      previewLayout: previewLayout ? deepClone(previewLayout) : null,
+      showGuides,
+      showSafeFrames,
+      createdAt: Date.now(),
+    });
+    const hostOpened = await showPopoutWindow();
+    if (!hostOpened) {
+      popoutCommittedRef.current = null;
+      clearPopoutSession();
+      console.error(
+        "[preview-popout] the native pop-out window could not be created; staying in embedded mode. Open DevTools for the native error above.",
+      );
+      return;
+    }
+    setPreviewMode("popout");
+    setIsPreviewFullscreen(false);
+    await emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      effects: deepClone(effectsState),
+      previewVolume,
+      playing: previewPlaying,
+      currentTime: previewCurrentTimeRef.current,
+      previewLayout: previewLayout ? deepClone(previewLayout) : null,
+    });
+  }, [
+    handleFocusPopout,
+    previewMode,
+    effectsState,
+    previewVolume,
+    previewPlaying,
+    previewPlaybackRate,
+    previewFile,
+    orientation,
+    previewLayout,
+    showGuides,
+    showSafeFrames,
+  ]);
+
+  // Apply: commit the draft, leave pop-out mode, and return to the regular
+  // preview which reflects exactly what was edited. Apply is the only
+  // explicit commit action.
+  const handleApplyPopout = useCallback(async () => {
+    popoutCommittedRef.current = null;
+    setIsPreviewFullscreen(false);
+    await setCurrentWindowFullscreen(false).catch(() => {});
+    setPreviewMode("embedded");
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({ kind: "apply", source: "main", at: Date.now() }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    await emitPopoutEvent(PREVIEW_POPOUT_APPLY_EVENT, { source: "main" });
+    await closePopoutWindow();
+    clearPopoutSession();
+  }, []);
+
+  // Cancel / native X: discard the draft, restore the pre-pop-out state,
+  // leave pop-out mode, and return to the regular preview exactly as it was
+  // before entering pop-out. X = leave pop-out without committing.
+  const handleCancelPopout = useCallback(async () => {
+    const committed = popoutCommittedRef.current;
+    if (committed) {
+      setEffectsState(committed.effects);
+      setPreviewVolume(committed.previewVolume);
+    }
+    popoutCommittedRef.current = null;
+    setIsPreviewFullscreen(false);
+    await setCurrentWindowFullscreen(false).catch(() => {});
+    setPreviewMode("embedded");
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({ kind: "cancel", source: "main", at: Date.now() }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    await emitPopoutEvent(PREVIEW_POPOUT_CANCEL_EVENT, { source: "main" });
+    await closePopoutWindow();
+    clearPopoutSession();
+  }, []);
+
+  const enterPreviewFullscreen = useCallback(async () => {
+    if (previewMode !== "popout" || isPreviewFullscreen) return;
+    const bounds = await rememberPopoutBounds();
+    previewPrevMaximizedRef.current = bounds.maximized;
+    setIsPreviewFullscreen(true);
+    setPreviewMode("fullscreen");
+    await setCurrentWindowFullscreen(true);
+  }, [previewMode, isPreviewFullscreen]);
+
+  const exitPreviewFullscreenRestorePopout = useCallback(async () => {
+    // Esc exits custom fullscreen and restores the exact previous pop-out
+    // state while remaining in pop-out mode (never drops to embedded).
+    if (previewMode !== "fullscreen" && !isPreviewFullscreen) return;
+    setIsPreviewFullscreen(false);
+    setPreviewMode("popout");
+    await setCurrentWindowFullscreen(false);
+    if (!previewPrevMaximizedRef.current && isTauriRuntime()) {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        if (await win.isMaximized().catch(() => false)) {
+          await win.unmaximize().catch(() => {});
+        }
+      } catch {
+        // Best-effort restore only.
+      }
+    }
+  }, [previewMode, isPreviewFullscreen]);
+
+  // While the pop-out hosts the preview, mirror the recomputed preview
+  // layout (owned by the main window's backend layout effect) so the pop-out
+  // never drifts. Edits themselves flow pop-out -> main via the listeners
+  // below; this direction carries derived layout + playback only.
+  useEffect(() => {
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    if (!popoutCommittedRef.current) return;
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({
+          kind: "update",
+          source: "main",
+          previewLayout,
+          previewVolume,
+          playing: previewPlaying,
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      previewLayout,
+      previewVolume,
+      playing: previewPlaying,
+    });
+  }, [previewLayout, previewVolume, previewPlaying, previewMode]);
+
+  // Pop-out session listeners (main-window side): draft updates mirror into
+  // the live draft state, Apply commits, Cancel/X restores the snapshot.
+  useEffect(() => {
+    let disposed = false;
+    const seenAtRef = { current: 0 };
+
+    const applyRemoteUpdate = (payload: {
+      source?: string;
+      effects?: VideoEffectsSettings;
+      previewVolume?: number;
+      playing?: boolean;
+      currentTime?: number;
+      at?: number;
+    } | null) => {
+      if (!payload || disposed) return;
+      if (payload.source !== "popout") return;
+      if (!popoutCommittedRef.current) return;
+      if (typeof payload.at === "number") {
+        if (payload.at <= seenAtRef.current) return;
+        seenAtRef.current = payload.at;
+      }
+      if (payload.effects && typeof payload.effects === "object") {
+        setEffectsState(payload.effects as VideoEffectsSettings);
+      }
+      if (typeof payload.previewVolume === "number") {
+        setPreviewVolume(
+          Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
+        );
+      }
+      if (typeof payload.playing === "boolean") {
+        setPreviewPlaying(payload.playing);
+      }
+      if (typeof payload.currentTime === "number") {
+        previewCurrentTimeRef.current = payload.currentTime;
+      }
+    };
+
+    const applyRemoteApply = () => {
+      if (disposed || !popoutCommittedRef.current) return;
+      // Draft is already mirrored live; Apply just commits it. The native
+      // pop-out host closes itself.
+      popoutCommittedRef.current = null;
+      setIsPreviewFullscreen(false);
+      setPreviewMode("embedded");
+      clearPopoutSession();
+    };
+
+    const applyRemoteCancel = () => {
+      if (disposed) return;
+      const committed = popoutCommittedRef.current;
+      if (committed) {
+        setEffectsState(committed.effects);
+        setPreviewVolume(committed.previewVolume);
+      }
+      popoutCommittedRef.current = null;
+      setIsPreviewFullscreen(false);
+      setPreviewMode("embedded");
+      clearPopoutSession();
+    };
+
+    const readStateKey = () => {
+      try {
+        const raw = window.localStorage.getItem(POPOUT_STATE_EVENT_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as {
+          kind: string;
+          source: string;
+          effects?: VideoEffectsSettings;
+          previewVolume?: number;
+          playing?: boolean;
+          currentTime?: number;
+          at: number;
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === POPOUT_SESSION_STORAGE_KEY) return;
+      if (e.key !== POPOUT_STATE_EVENT_KEY) return;
+      const event = readStateKey();
+      if (!event || event.source !== "popout") return;
+      if (event.at <= seenAtRef.current) return;
+      seenAtRef.current = event.at;
+      if (event.kind === "update") applyRemoteUpdate(event);
+      else if (event.kind === "apply") {
+        if (event.effects) setEffectsState(event.effects);
+        if (typeof event.previewVolume === "number") {
+          setPreviewVolume(Math.max(0, Math.min(100, Math.round(event.previewVolume))));
+        }
+        applyRemoteApply();
+      } else if (event.kind === "cancel") applyRemoteCancel();
+    };
+    window.addEventListener("storage", onStorage);
+
+    let unsubs: Array<() => void> = [];
+    if (isTauriRuntime()) {
+      (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          const u1 = await listen(PREVIEW_POPOUT_UPDATE_EVENT, (ev) =>
+            applyRemoteUpdate({
+              ...(ev.payload as object),
+              at: Date.now(),
+            } as never),
+          );
+          const u2 = await listen(
+            PREVIEW_POPOUT_APPLY_EVENT,
+            (ev) => {
+              const payload = ev.payload as {
+                source?: string;
+                effects?: VideoEffectsSettings;
+                previewVolume?: number;
+              } | null;
+              if (!payload || payload.source !== "popout") return;
+              if (payload.effects) setEffectsState(payload.effects);
+              if (typeof payload.previewVolume === "number") {
+                setPreviewVolume(
+                  Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
+                );
+              }
+              applyRemoteApply();
+            },
+          );
+          const u3 = await listen(PREVIEW_POPOUT_CANCEL_EVENT, (ev) => {
+            const payload = ev.payload as { source?: string } | null;
+            if (!payload || payload.source !== "popout") return;
+            applyRemoteCancel();
+          });
+          if (disposed) {
+            u1();
+            u2();
+            u3();
+          } else {
+            unsubs = [u1, u2, u3];
+          }
+        } catch {
+          // Storage-event fallback covers browser use.
+        }
+      })();
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", onStorage);
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
+
+  // Broadcast draft edits made in the embedded host while popped out (e.g.
+  // settings-panel changes) so the pop-out host stays in sync. The committed
+  // snapshot is untouched; Cancel still restores it.
+  useEffect(() => {
+    if (!popoutCommittedRef.current) return;
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    const draft: PopoutDraftUpdate = { version: 1, effects: effectsState };
+    broadcastPopoutDraft(draft);
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      effects: effectsState,
+      at: Date.now(),
+    });
+  }, [effectsState, previewMode]);
 
   useEffect(() => {
     if (!volumeSliderActive) return;
@@ -2340,6 +2763,26 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Single global Space implementation owned by the preview controller:
+      // Space toggles play/pause in embedded, pop-out, and fullscreen hosts
+      // (same underlying preview state). Protected from editable fields.
+      if (isPreviewPlayPauseShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        togglePreviewPlayback();
+        return;
+      }
+      // Esc exits custom fullscreen and restores the exact previous pop-out
+      // state while remaining in pop-out mode (never closes the pop-out).
+      if (
+        isExitPreviewFullscreenShortcut(event) &&
+        (previewMode === "fullscreen" || isPreviewFullscreen)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void exitPreviewFullscreenRestorePopout();
+        return;
+      }
       if (isAppRefreshShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2472,6 +2915,7 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    exitPreviewFullscreenRestorePopout,
     handleCheckForUpdates,
     handleDuplicateSelectedImage,
     handleNudgeSelectedImage,
@@ -2481,6 +2925,9 @@ export default function App() {
     handleToggleSettings,
     hasSelectedImage,
     hasSelectedTextLayer,
+    isPreviewFullscreen,
+    previewMode,
+    togglePreviewPlayback,
     updateSelectedTextLayers,
   ]);
 
@@ -5016,18 +5463,79 @@ export default function App() {
                     Safe Areas
                   </button>
                 </div>
-                <VideoCanvas
-                  videoSrc={previewFile}
-                  previewLayout={previewLayout}
-                  effects={effectsState}
-                  onTextOverlayChange={handleTextOverlayChange}
-                  onSubtitleOverlayChange={handleSubtitleOverlayChange}
-                  onImageOverlayChange={handleImageOverlayChange}
-                  orientation={orientation}
-                  previewVolume={previewVolume}
-                  showGuides={showGuides}
-                  showSafeFrames={showSafeFrames}
-                />
+                {isPopoutActive ||
+                previewMode === "fullscreen" ? (
+                  // Only one host is active at a time: while the pop-out
+                  // hosts the SAME preview system, the embedded preview is
+                  // hidden/inactive (no second renderer is mounted here).
+                  <div
+                    className="preview-popped-out-placeholder"
+                    data-testid="preview-popped-out-placeholder"
+                  >
+                    <div className="preview-popped-out-card">
+                      <div className="preview-popped-out-title">
+                        Preview in pop-out window
+                      </div>
+                      <p className="preview-popped-out-text">
+                        {isTauriRuntime()
+                          ? "The same preview is now hosted in the “AspectShift - Preview” window. Edit overlays there, then Apply or Cancel."
+                          : "The same preview is now hosted in the pop-out window. Edit overlays there, then Apply or Cancel."}
+                      </p>
+                      <div className="preview-popped-out-actions">
+                        <button
+                          type="button"
+                          className="btn btn-xs"
+                          onClick={() => void handleFocusPopout()}
+                        >
+                          Focus pop-out
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-xs"
+                          onClick={() =>
+                            void enterPreviewFullscreen().catch(() => {})
+                          }
+                          disabled={previewMode === "fullscreen"}
+                          title="Enter fullscreen (distinct from maximize)"
+                        >
+                          Fullscreen
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => void handleCancelPopout()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-xs"
+                          onClick={() => void handleApplyPopout()}
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <PreviewHost
+                    mode="embedded"
+                    videoSrc={previewFile}
+                    previewLayout={previewLayout}
+                    effects={effectsState}
+                    onTextOverlayChange={handleTextOverlayChange}
+                    onSubtitleOverlayChange={handleSubtitleOverlayChange}
+                    onImageOverlayChange={handleImageOverlayChange}
+                    orientation={orientation}
+                    previewVolume={previewVolume}
+                    showGuides={showGuides}
+                    showSafeFrames={showSafeFrames}
+                    playing={previewPlaying}
+                    playbackRate={previewPlaybackRate}
+                    initialTime={previewCurrentTimeRef.current}
+                    onTimeUpdate={handlePreviewTimeUpdate}
+                  />
+                )}
                 <div
                   className="preview-volume"
                   ref={previewVolumeRef}
@@ -5085,21 +5593,68 @@ export default function App() {
                       }
                     />
                   </div>
-                  <button
-                    className="preview-volume-btn"
-                    onClick={() => {
-                      cancelVolumeCollapse();
-                      setVolumeSliderActive(true);
-                      setPreviewVolume((v) =>
-                        v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
-                      );
-                    }}
-                    aria-label={
-                      previewVolume === 0 ? "Unmute preview" : "Mute preview"
-                    }
-                    title={`Preview volume: ${previewVolume}%`}
-                  >
-                    {previewVolume === 0 ? (
+                  <div className="preview-volume-btn-row">
+                    <button
+                      className="preview-volume-btn"
+                      onClick={() => {
+                        cancelVolumeCollapse();
+                        setVolumeSliderActive(true);
+                        setPreviewVolume((v) =>
+                          v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
+                        );
+                      }}
+                      aria-label={
+                        previewVolume === 0 ? "Unmute preview" : "Mute preview"
+                      }
+                      title={`Preview volume: ${previewVolume}%`}
+                    >
+                      {previewVolume === 0 ? (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="lucide lucide-volume-x"
+                        >
+                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                          <line x1="22" x2="16" y1="9" y2="15" />
+                          <line x1="16" x2="22" y1="9" y2="15" />
+                        </svg>
+                      ) : (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="lucide lucide-volume-2"
+                        >
+                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                          <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                        </svg>
+                      )}
+                    </button>
+                    <button
+                      className="preview-volume-btn preview-popout-btn"
+                      onClick={() => void handlePopOut()}
+                      disabled={!previewFile || isPopoutActive}
+                      aria-label="Pop out preview"
+                      title={
+                        isPopoutActive
+                          ? "Preview is popped out"
+                          : "Pop out preview (800 × 800)"
+                      }
+                    >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
                         width="16"
@@ -5110,31 +5665,14 @@ export default function App() {
                         strokeWidth="2"
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        className="lucide lucide-volume-x"
+                        className="lucide lucide-external-link"
                       >
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                        <line x1="22" x2="16" y1="9" y2="15" />
-                        <line x1="16" x2="22" y1="9" y2="15" />
+                        <path d="M15 3h6v6" />
+                        <path d="M10 14 21 3" />
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                       </svg>
-                    ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="lucide lucide-volume-2"
-                      >
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                      </svg>
-                    )}
-                  </button>
+                    </button>
+                  </div>
                 </div>
                 {orientation && (
                   <div className="preview-meta">

@@ -60,6 +60,18 @@ interface VideoCanvasProps {
   previewVolume: number;
   showGuides?: boolean;
   showSafeFrames?: boolean;
+  /**
+   * Controlled preview playback state (single source of truth owned by the
+   * preview controller). `playing` defaults to true: the preview plays by
+   * default when opened. The same state is used across embedded / pop-out /
+   * fullscreen display modes so mode switches preserve playing/paused,
+   * volume, rate, and position.
+   */
+  playing?: boolean;
+  playbackRate?: number;
+  /** Position to restore when (re)mounting the shared renderer in a host. */
+  initialTime?: number;
+  onTimeUpdate?: (currentTime: number) => void;
 }
 
 type ImageResizeHandle = OverlayResizeHandle;
@@ -96,6 +108,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   previewVolume,
   showGuides = true,
   showSafeFrames = true,
+  playing = true,
+  playbackRate = 1,
+  initialTime,
+  onTimeUpdate,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasBoxRef = useRef<HTMLDivElement>(null);
@@ -278,6 +294,88 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   useEffect(() => {
     syncBlurBackgroundToForeground();
   }, [syncBlurBackgroundToForeground, videoSrc, showBlur]);
+
+  // Controlled preview playback: one playback state owned by the preview
+  // controller. Multiple <video> elements exist only because of the
+  // blur/background rendering arrangement; they all synchronize from the
+  // same `playing` / `playbackRate` / `previewVolume` state so embedded and
+  // pop-out hosts never drift.
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  useLayoutEffect(() => {
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
+  const reportTime = useCallback((currentTime: number) => {
+    if (Number.isFinite(currentTime)) onTimeUpdateRef.current?.(currentTime);
+  }, []);
+  const restoreTimeRef = useRef<number | null>(null);
+  useEffect(() => {
+    restoreTimeRef.current =
+      typeof initialTime === "number" && Number.isFinite(initialTime)
+        ? initialTime
+        : null;
+  }, [videoSrc, initialTime]);
+
+  const applyPlaybackState = useCallback(
+    (el: HTMLVideoElement | null) => {
+      if (!el) return;
+      try {
+        el.playbackRate = playbackRate;
+      } catch {
+        // playbackRate is best-effort on some media states.
+      }
+      if (playing) {
+        if (el.paused) void el.play().catch(() => {});
+      } else if (!el.paused) {
+        el.pause();
+      }
+    },
+    [playing, playbackRate],
+  );
+
+  useEffect(() => {
+    applyPlaybackState(mainVideoRef.current);
+    applyPlaybackState(foregroundVideoRef.current);
+    // The blur background strictly follows the foreground element.
+    syncBlurBackgroundToForeground();
+    if (!playing) {
+      const bg = backgroundVideoRef.current;
+      if (bg && !bg.paused) bg.pause();
+    }
+  }, [playing, playbackRate, videoSrc, applyPlaybackState, syncBlurBackgroundToForeground]);
+
+  const handlePlaybackCanPlay = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      const el = event.currentTarget;
+      const pending = restoreTimeRef.current;
+      if (pending !== null && Number.isFinite(pending)) {
+        try {
+          const duration = el.duration;
+          if (
+            !Number.isFinite(duration) ||
+            duration <= 0 ||
+            pending <= duration + 0.25
+          ) {
+            el.currentTime = Math.max(0, pending);
+          }
+        } catch {
+          // Seeking before metadata is fully ready is best-effort.
+        }
+        restoreTimeRef.current = null;
+      }
+      const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
+      const isMuted = normalized <= 0;
+      el.volume = normalized;
+      el.muted = isMuted;
+      applyPlaybackState(el);
+      setVideoReady(true);
+      syncBlurBackgroundToForeground();
+    },
+    [
+      applyPlaybackState,
+      previewVolume,
+      syncBlurBackgroundToForeground,
+    ],
+  );
 
   // Update container dims on resize
   useEffect(() => {
@@ -1377,15 +1475,11 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   onSeeking={syncBlurBackgroundToForeground}
                   onSeeked={syncBlurBackgroundToForeground}
                   onRateChange={syncBlurBackgroundToForeground}
-                  onTimeUpdate={syncBlurBackgroundToForeground}
-                  onCanPlay={(e) => {
-                    const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
-                    const isMuted = normalized <= 0;
-                    e.currentTarget.volume = normalized;
-                    e.currentTarget.muted = isMuted;
-                    setVideoReady(true);
+                  onTimeUpdate={(e) => {
                     syncBlurBackgroundToForeground();
+                    reportTime(e.currentTarget.currentTime);
                   }}
+                  onCanPlay={handlePlaybackCanPlay}
                 />
               </>
             ) : (
@@ -1409,13 +1503,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                 autoPlay
                 loop
                 playsInline
-                onCanPlay={(e) => {
-                  const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
-                  const isMuted = normalized <= 0;
-                  e.currentTarget.volume = normalized;
-                  e.currentTarget.muted = isMuted;
-                  setVideoReady(true);
-                }}
+                onTimeUpdate={(e) =>
+                  reportTime(e.currentTarget.currentTime)
+                }
+                onCanPlay={handlePlaybackCanPlay}
               />
             )}
 

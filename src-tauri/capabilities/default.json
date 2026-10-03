@@ -1,10 +1,22 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window and the preview pop-out host (same preview system, multiple window hosts)",
+  "windows": ["main", "aspectshift-preview"],
   "permissions": [
     "core:default",
+    "core:window:allow-create",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-fullscreen",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:webview:allow-create-webview-window",
     "opener:default",
     "dialog:default",
     "shell:default",
@@ -28,6 +40,8 @@
   ],
   "commands": {
     "allow": [
+      "allow_path_scope",
+      "compute_preview_layout",
       "detect_orientation",
       "convert_to_ratio",
       "check_file_ready",

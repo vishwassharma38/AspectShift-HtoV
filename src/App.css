@@ -2996,3 +2996,159 @@ html.theme-transitioning *::after {
     width: calc(100% - 20px);
   }
 }
+
+/* ── Pop-Out Video Preview (one preview system, multiple hosts) ──
+   The pop-out window is a different host for the same VideoCanvas renderer,
+   not a second preview implementation. Embedded preview is hidden/inactive
+   while the pop-out hosts the preview. */
+.preview-volume-btn-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-volume-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.preview-popped-out-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.preview-popped-out-card {
+  max-width: 420px;
+  text-align: center;
+  padding: 24px;
+  border-radius: 12px;
+  border: 1px dashed var(--border);
+  background: var(--bg-card);
+}
+
+.preview-popped-out-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.preview-popped-out-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.preview-popped-out-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Pop-out native-window root: preview surface only, no app shell. */
+.preview-popout-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.preview-popout-root.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.preview-popout-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 16px 8px;
+}
+
+.preview-popout-root.is-fullscreen .preview-popout-stage {
+  padding: 0;
+}
+
+.preview-popout-root.is-fullscreen .video-canvas-box {
+  border-radius: 0;
+}
+
+.preview-popout-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-wrap: wrap;
+}
+
+.preview-popout-playback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.preview-popout-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.preview-popout-volume-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.preview-popout-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.preview-popout-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-popout-empty-card {
+  max-width: 420px;
+  margin: auto;
+  text-align: center;
+  padding: 32px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.preview-popout-empty-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.preview-popout-empty-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
+}

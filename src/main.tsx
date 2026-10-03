@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { PreviewPopoutWindow } from "./components/PreviewPopoutWindow";
+import { isPopoutRouteSync } from "./services/previewController";
 import {
   isBrowserOnlyShortcut,
   shouldSuppressBrowserShortcutDefault,
@@ -37,8 +39,14 @@ if (import.meta.hot) {
   });
 }
 
+// The pop-out window hosts ONLY the preview surface (no second application
+// shell). The same frontend bundle detects the `#/preview-popout` route and
+// renders the shared preview renderer through `PreviewHost` instead of the
+// full application.
+const isPreviewPopout = isPopoutRouteSync();
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    {isPreviewPopout ? <PreviewPopoutWindow /> : <App />}
   </React.StrictMode>,
 );
