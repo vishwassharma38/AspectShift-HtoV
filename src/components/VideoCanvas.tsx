@@ -497,13 +497,26 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     [applyImageOverlay],
   );
 
+  const deselectTextLayers = useCallback(() => {
+    const current = textOverlayStateRef.current;
+    if (current.selectedLayerIds.length === 0) return;
+    applyTextOverlay({ ...current, selectedLayerIds: [] });
+  }, [applyTextOverlay]);
+
   const selectImageOverlay = useCallback(
     (overlayId: string) => {
+      // Cross-type exclusivity: selecting an image clears any text
+      // selection so keyboard shortcuts and the bounding box always follow
+      // the single currently selected overlay.
+      const currentText = textOverlayStateRef.current;
+      if (currentText.selectedLayerIds.length > 0) {
+        applyTextOverlay({ ...currentText, selectedLayerIds: [] });
+      }
       const current = imageOverlayStateRef.current;
       if (current.selectedOverlayId === overlayId) return;
       applyImageOverlay({ ...current, selectedOverlayId: overlayId });
     },
-    [applyImageOverlay],
+    [applyImageOverlay, applyTextOverlay],
   );
 
   const deselectImageOverlay = useCallback(() => {
@@ -515,13 +528,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   const handleCanvasBoxPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       // Fires only for empty canvas space: image, handle, rotation, text,
-      // and subtitle pointer handlers all stop propagation. Clears only the
-      // image selection; image transform state is untouched, so the image
-      // stays visible in place with its handles hidden.
+      // and subtitle pointer handlers all stop propagation. Clears both
+      // image and text selection (same deselect model); overlay transform
+      // state is untouched, so overlays stay visible in place with their
+      // handles hidden.
       if (event.button !== 0) return;
       deselectImageOverlay();
+      deselectTextLayers();
     },
-    [deselectImageOverlay],
+    [deselectImageOverlay, deselectTextLayers],
   );
 
   useEffect(() => {
@@ -837,6 +852,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
 
   const selectTextLayer = useCallback(
     (layerId: string, event: React.PointerEvent<HTMLDivElement>) => {
+      // Cross-type exclusivity (mirror of selectImageOverlay): any text
+      // interaction clears the image selection so only one overlay type is
+      // ever active. Intra-text ctrl/shift multi-select is preserved.
+      const currentImage = imageOverlayStateRef.current;
+      if (currentImage.selectedOverlayId !== null) {
+        applyImageOverlay({ ...currentImage, selectedOverlayId: null });
+      }
       const current = textOverlayStateRef.current;
       const selected = new Set(current.selectedLayerIds);
       let selectedLayerIds: string[];
@@ -855,7 +877,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }
       applyTextOverlay({ ...current, selectedLayerIds });
     },
-    [applyTextOverlay],
+    [applyImageOverlay, applyTextOverlay],
   );
 
   const beginTextEditing = useCallback((layerId: string) => {
@@ -992,16 +1014,21 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
 
   const selectSingleTextLayer = useCallback(
     (layerId: string) => {
+      const currentImage = imageOverlayStateRef.current;
+      if (currentImage.selectedOverlayId !== null) {
+        applyImageOverlay({ ...currentImage, selectedOverlayId: null });
+      }
       const current = textOverlayStateRef.current;
       if (
         current.selectedLayerIds.length === 1 &&
-        current.selectedLayerIds[0] === layerId
+        current.selectedLayerIds[0] === layerId &&
+        currentImage.selectedOverlayId === null
       ) {
         return;
       }
       applyTextOverlay({ ...current, selectedLayerIds: [layerId] });
     },
-    [applyTextOverlay],
+    [applyImageOverlay, applyTextOverlay],
   );
 
   const handleTextResizePointerDown = useCallback(
@@ -1014,7 +1041,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       event.preventDefault();
       event.stopPropagation();
       // Keep an existing multi-selection intact; otherwise single-select the
-      // resized layer, mirroring canvas click selection.
+      // resized layer, mirroring canvas click selection. Any image selection
+      // is cleared so only one overlay type stays active.
+      const currentImageForResize = imageOverlayStateRef.current;
+      if (currentImageForResize.selectedOverlayId !== null) {
+        applyImageOverlay({
+          ...currentImageForResize,
+          selectedOverlayId: null,
+        });
+      }
       const current = textOverlayStateRef.current;
       if (!current.selectedLayerIds.includes(layer.id)) {
         selectSingleTextLayer(layer.id);
@@ -1033,7 +1068,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [selectSingleTextLayer],
+    [applyImageOverlay, selectSingleTextLayer],
   );
 
   const handleTextResizePointerMove = useCallback(
@@ -1078,6 +1113,15 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       if (!frame) return;
       event.preventDefault();
       event.stopPropagation();
+      // Rotating a text layer clears any image selection (exclusive
+      // selection); existing text multi-selection is otherwise preserved.
+      const currentImageForRotate = imageOverlayStateRef.current;
+      if (currentImageForRotate.selectedOverlayId !== null) {
+        applyImageOverlay({
+          ...currentImageForRotate,
+          selectedOverlayId: null,
+        });
+      }
       const current = textOverlayStateRef.current;
       if (!current.selectedLayerIds.includes(layer.id)) {
         selectSingleTextLayer(layer.id);
@@ -1101,7 +1145,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [selectSingleTextLayer],
+    [applyImageOverlay, selectSingleTextLayer],
   );
 
   const handleTextRotatePointerMove = useCallback(

@@ -830,6 +830,9 @@ export default function App() {
         y: source.y + 0.05,
         crop: { ...source.crop },
       };
+      // Exclusive selection: duplicating an image clears any text selection
+      // so the bounding box and shortcuts follow the new duplicate only.
+      const currentText = resolveTextOverlay(current.textOverlay);
       return {
         ...current,
         imageOverlay: normalizeImageOverlaySettings({
@@ -837,6 +840,10 @@ export default function App() {
           panelOpen: true,
           overlays: [...currentOverlay.overlays, duplicate],
           selectedOverlayId: id,
+        }),
+        textOverlay: normalizeTextOverlay({
+          ...currentText,
+          selectedLayerIds: [],
         }),
       };
     });
@@ -897,6 +904,10 @@ export default function App() {
         x: sourceLayer.x + offset,
         y: sourceLayer.y + offset,
       };
+      // Exclusive selection: adding/duplicating a text layer clears any
+      // image selection so the bounding box and shortcuts follow the new
+      // text layer only. This is also the Ctrl+D text-duplicate path.
+      const currentImages = resolveImageOverlaySettings(current.imageOverlay);
       return {
         ...current,
         textOverlay: normalizeTextOverlay({
@@ -905,7 +916,20 @@ export default function App() {
           layers: [...currentOverlay.layers, layer],
           selectedLayerIds: [id],
         }),
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentImages,
+          selectedOverlayId: null,
+        }),
       };
+    });
+    // Mirror the Add Image focus behavior: the Add button retains DOM focus
+    // (buttons count as editable shortcut targets), which would block
+    // Ctrl+D / Delete / arrows until the user clicks elsewhere. Blur so the
+    // newly selected text layer owns shortcuts immediately.
+    requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
     });
   }, []);
   const handleRemoveSelectedTextLayers = useCallback(() => {
@@ -2822,8 +2846,10 @@ export default function App() {
         return;
       }
 
-      // Ctrl+D duplicates the currently selected image. Only for images;
-      // do not expand to unrequested shortcuts (no copy/paste, undo, nudge).
+      // Ctrl+D duplicates the currently selected overlay. Images duplicate
+      // via the image path; text layers duplicate via the existing Add Text
+      // path (copies the selected layer, offsets, selects the duplicate).
+      // No new shortcuts are introduced (no copy/paste, undo).
       if (
         (event.ctrlKey || event.metaKey) &&
         !event.altKey &&
@@ -2831,10 +2857,17 @@ export default function App() {
         normalizeShortcutKey(event) === "d" &&
         !isEditableShortcutTarget(event.target)
       ) {
-        if (hasSelectedImage) {
+        if (hasSelectedImage || hasSelectedTextLayer) {
           event.preventDefault();
           event.stopPropagation();
-          handleDuplicateSelectedImage();
+          // Each duplicates only its own selected objects, mirroring Delete.
+          // Selection is exclusive so normally only one branch fires.
+          if (hasSelectedImage) {
+            handleDuplicateSelectedImage();
+          }
+          if (hasSelectedTextLayer) {
+            handleAddTextLayer();
+          }
           return;
         }
       }
@@ -2916,6 +2949,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     exitPreviewFullscreenRestorePopout,
+    handleAddTextLayer,
     handleCheckForUpdates,
     handleDuplicateSelectedImage,
     handleNudgeSelectedImage,
@@ -3811,6 +3845,8 @@ export default function App() {
         const id = generateId();
         setEffectsState((prev) => {
           const currentOverlay = resolveImageOverlaySettings(prev.imageOverlay);
+          // Exclusive selection: adding an image clears any text selection.
+          const currentText = resolveTextOverlay(prev.textOverlay);
           return {
             ...prev,
             imageOverlay: normalizeImageOverlaySettings({
@@ -3832,6 +3868,10 @@ export default function App() {
                 },
               ],
               selectedOverlayId: id,
+            }),
+            textOverlay: normalizeTextOverlay({
+              ...currentText,
+              selectedLayerIds: [],
             }),
           };
         });
