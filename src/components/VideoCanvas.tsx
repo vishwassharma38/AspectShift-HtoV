@@ -97,6 +97,22 @@ const RATIO_LABELS: Record<string, string> = {
   "1.7777777777777777": "16:9",
 };
 
+/**
+ * Handoff values at or below this (seconds) take the normal reveal path.
+ * A fresh import starts at 0:00, so only a genuinely non-zero restore is
+ * treated as a handoff that must be presented before first paint.
+ */
+const HANDOFF_REVEAL_EPSILON = 0.25;
+
+/** Whether this mount carries a handoff restore worth gating first paint on. */
+function isHandoffRestore(value: number | undefined): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > HANDOFF_REVEAL_EPSILON
+  );
+}
+
 export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   videoSrc,
   previewLayout,
@@ -327,6 +343,44 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         : null;
   }, [videoSrc, initialTime]);
 
+  // Pop-out handoff visibility gate (rendering/initialization sequencing
+  // ONLY — playback ownership is unchanged).
+  //
+  // Race: on a fresh mount carrying a non-zero `initialTime` handoff (main
+  // → pop-out, or pop-out → embedded on Apply/Cancel), the browser can
+  // paint frame ~0:00 as soon as the source is `canPlay`-ready while the
+  // one-time handoff seek is still in flight. The box used to be revealed
+  // (`videoReady`) in the same `canPlay` tick that issued the seek, and
+  // autoplay / the mount playback effect could advance frame 0 before the
+  // seek landed: a brief visible 0:00 → target jump.
+  //
+  // Gate: when this mount carries a meaningful handoff restore, the box
+  // stays suppressed past `canPlay` and is revealed only once the `seeked`
+  // event confirms the target frame is presented; authoritative `playing`
+  // resumes at that point. Normal imports (`initialTime` ≈ 0) keep the
+  // exact previous behavior (reveal on `canPlay`). One discrete handoff
+  // only: no polling, no `setInterval`, no continuous `currentTime`
+  // writes, no second clock, no per-frame React state. Never re-hides an
+  // already-revealed video.
+  const [handoffGateOpen, setHandoffGateOpen] = useState<boolean>(() =>
+    isHandoffRestore(initialTime),
+  );
+
+  useEffect(() => {
+    // Re-evaluate the one-time gate on discrete handoff inputs (new
+    // pop-out session, source replacement before readiness). Never re-hide
+    // an already-revealed video: late corrections keep existing behavior.
+    if (videoReady) return;
+    if (isHandoffRestore(initialTime)) {
+      // Ensure the freshly mounted element still has the pending restore
+      // even if a previous element instance already consumed it.
+      restoreTimeRef.current = initialTime;
+      setHandoffGateOpen(true);
+    } else {
+      setHandoffGateOpen(false);
+    }
+  }, [videoSrc, initialTime, videoReady]);
+
   // One-time handoff correction: if the authoritative `initialTime` changes
   // after the video is already ready (e.g. the pop-out's final position
   // arrives just after the embedded host remounts on Apply/Cancel), seek
@@ -373,6 +427,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   );
 
   useEffect(() => {
+    // While the handoff gate is open the reveal + resume happen on the
+    // handoff `seeked` event; starting playback here would advance frame
+    // ~0:00 before the target frame is presented.
+    if (handoffGateOpen) return;
     applyPlaybackState(mainVideoRef.current);
     applyPlaybackState(foregroundVideoRef.current);
     // The blur background strictly follows the foreground element.
@@ -381,12 +439,59 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const bg = backgroundVideoRef.current;
       if (bg && !bg.paused) bg.pause();
     }
-  }, [playing, playbackRate, videoSrc, applyPlaybackState, syncBlurBackgroundToForeground]);
+  }, [playing, playbackRate, videoSrc, applyPlaybackState, syncBlurBackgroundToForeground, handoffGateOpen]);
+
+  const handleHandoffSeeked = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      if (!handoffGateOpen) return;
+      const el = event.currentTarget;
+      if (!isHandoffRestore(initialTime)) {
+        setHandoffGateOpen(false);
+        return;
+      }
+      let current: number;
+      try {
+        current = el.currentTime;
+      } catch {
+        return;
+      }
+      if (!Number.isFinite(current) || Math.abs(current - initialTime) > 0.35) {
+        // Not the handoff target (e.g. a stale seek completed after the
+        // handoff value moved): re-issue once toward the current target and
+        // stay suppressed. Metadata is guaranteed loaded here (a seek just
+        // completed), so this cannot throw for lack of metadata.
+        try {
+          el.currentTime = Math.max(0, initialTime);
+        } catch {
+          // Best-effort; the pending restore below still covers canPlay.
+        }
+        return;
+      }
+      // Target frame presented: reveal and resume authoritatively, once.
+      restoreTimeRef.current = null;
+      setHandoffGateOpen(false);
+      const normalized = Math.max(0, Math.min(100, previewVolume)) / 100;
+      const isMuted = normalized <= 0;
+      el.volume = normalized;
+      el.muted = isMuted;
+      applyPlaybackState(el);
+      setVideoReady(true);
+      syncBlurBackgroundToForeground();
+    },
+    [
+      handoffGateOpen,
+      initialTime,
+      applyPlaybackState,
+      previewVolume,
+      syncBlurBackgroundToForeground,
+    ],
+  );
 
   const handlePlaybackCanPlay = useCallback(
     (event: React.SyntheticEvent<HTMLVideoElement>) => {
       const el = event.currentTarget;
       const pending = restoreTimeRef.current;
+      let handoffSeekIssued = false;
       if (pending !== null && Number.isFinite(pending)) {
         try {
           const duration = el.duration;
@@ -396,6 +501,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             pending <= duration + 0.25
           ) {
             el.currentTime = Math.max(0, pending);
+            handoffSeekIssued = true;
           }
         } catch {
           // Seeking before metadata is fully ready is best-effort.
@@ -406,6 +512,13 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const isMuted = normalized <= 0;
       el.volume = normalized;
       el.muted = isMuted;
+      if (handoffSeekIssued && handoffGateOpen) {
+        // Visibility gate: the handoff seek is in flight and the target
+        // frame is not presented yet. Stay suppressed (autoplay was
+        // withheld at mount and the mount effect above is gated); the
+        // `seeked` handler reveals and resumes authoritatively.
+        return;
+      }
       applyPlaybackState(el);
       setVideoReady(true);
       syncBlurBackgroundToForeground();
@@ -414,6 +527,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       applyPlaybackState,
       previewVolume,
       syncBlurBackgroundToForeground,
+      handoffGateOpen,
     ],
   );
 
@@ -1551,13 +1665,16 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     zIndex: 2,
                     ...transformStyle,
                   }}
-                  autoPlay={playing}
+                  autoPlay={playing && !handoffGateOpen}
                   loop
                   playsInline
                   onPlay={syncBlurBackgroundToForeground}
                   onPause={syncBlurBackgroundToForeground}
                   onSeeking={syncBlurBackgroundToForeground}
-                  onSeeked={syncBlurBackgroundToForeground}
+                  onSeeked={(e) => {
+                    syncBlurBackgroundToForeground();
+                    handleHandoffSeeked(e);
+                  }}
                   onRateChange={syncBlurBackgroundToForeground}
                   onTimeUpdate={(e) => {
                     syncBlurBackgroundToForeground();
@@ -1584,9 +1701,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   objectFit: "fill",
                   ...transformStyle,
                 }}
-                autoPlay={playing}
+                autoPlay={playing && !handoffGateOpen}
                 loop
                 playsInline
+                onSeeked={handleHandoffSeeked}
                 onTimeUpdate={(e) =>
                   reportTime(e.currentTarget.currentTime)
                 }
