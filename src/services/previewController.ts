@@ -50,8 +50,8 @@ export type PreviewMode = "embedded" | "popout" | "fullscreen";
 
 export const POPOUT_WINDOW_LABEL = "aspectshift-preview";
 export const POPOUT_WINDOW_TITLE = "AspectShift - Preview";
-export const POPOUT_WINDOW_WIDTH = 800;
-export const POPOUT_WINDOW_HEIGHT = 800;
+export const POPOUT_WINDOW_WIDTH = 1082;
+export const POPOUT_WINDOW_HEIGHT = 642;
 export const POPOUT_ROUTE_HASH = "#/preview-popout";
 
 /** Tauri event channels for the pop-out editing session. */
@@ -329,7 +329,7 @@ export async function emitPopoutEvent(
  * Create (or focus, if it already exists) the genuine native pop-out window.
  *
  * - Title: `AspectShift - Preview`
- * - Default size: 800 x 800
+ * - Default size: 1082 x 642
  * - Resizable, centered, normal native title bar (min/max/close).
  * - No blur-to-minimize / click-outside behavior is installed here — focus
  *   state and minimized state stay independent by design.

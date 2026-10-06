@@ -1515,10 +1515,23 @@ html.theme-transitioning *::after {
   right: var(--space-md);
   bottom: var(--space-md);
   display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 96;
+}
+
+/* Volume-only interaction area: the Volume button plus its slider. The
+   slider is absolutely positioned above the button (see below), so this
+   container shrink-wraps the 34px button and sits snug beside the Pop-Out
+   button with no dead space in between. The Pop-Out button is a sibling
+   here (same visual row, Pop-Out stays rightmost and untouched), so
+   hovering it never counts as hovering the Volume control. */
+.preview-volume-control {
+  position: relative;
+  display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-xs);
-  z-index: 96;
 }
 
 .preview-volume-btn {
@@ -1546,8 +1559,21 @@ html.theme-transitioning *::after {
   transform: translateY(-1px);
 }
 
+/* The slider floats centered above the Volume button instead of taking
+   part in the row layout, so the button sits directly beside Pop-Out.
+   padding-bottom keeps a seamless hover bridge between button and slider
+   (it is part of the wrap, so :hover never drops mid-transition);
+   content-box guards the app-wide border-box reset so the padding cannot
+   clip the 88px slider. */
 .preview-volume-slider-wrap {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: content-box;
+  width: 88px;
   height: 0;
+  padding-bottom: var(--space-xs);
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
@@ -1556,8 +1582,8 @@ html.theme-transitioning *::after {
     opacity 0.18s ease;
 }
 
-.preview-volume:hover .preview-volume-slider-wrap,
-.preview-volume:focus-within .preview-volume-slider-wrap {
+.preview-volume-control:hover .preview-volume-slider-wrap,
+.preview-volume-control:focus-within .preview-volume-slider-wrap {
   height: 88px;
   opacity: 1;
   pointer-events: auto;
@@ -1605,11 +1631,17 @@ html.theme-transitioning *::after {
   box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-/* Force-open the slider while the user is actively adjusting volume,
-   even if the mouse has already left the container. */
-.preview-volume[data-slider-active="true"] .preview-volume-slider-wrap {
+/* Force-open the slider while the user is actively adjusting volume
+   (dragging), even if the pointer has momentarily left the Volume control.
+   The slider collapses as soon as the pointer leaves the Volume control
+   area outside of an active drag. NOTE: transform must repeat the base
+   centering (translateX(-50%)) — a transform here replaces the base
+   rule's transform instead of adding to it. */
+.preview-volume-control[data-slider-active="true"]
+  .preview-volume-slider-wrap {
+  height: 88px;
   clip-path: inset(0% 0 0 0 round 999px);
-  transform: translateY(0);
+  transform: translateX(-50%);
   opacity: 1;
   pointer-events: auto;
 }

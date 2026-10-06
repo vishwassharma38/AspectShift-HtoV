@@ -1775,6 +1775,14 @@ export default function App() {
     };
     const onPointerUp = () => {
       setVolumeSliderInteracting(false);
+      // If a volume drag ends outside the Volume control, collapse
+      // immediately instead of waiting for the fallback timer.
+      if (
+        previewVolumeRef.current &&
+        !previewVolumeRef.current.matches(":hover")
+      ) {
+        setVolumeSliderActive(false);
+      }
     };
 
     window.addEventListener("pointerdown", onPointerDown);
@@ -5740,64 +5748,74 @@ export default function App() {
                     onTimeUpdate={handlePreviewTimeUpdate}
                   />
                 )}
-                <div
-                  className="preview-volume"
-                  ref={previewVolumeRef}
-                  aria-label="Preview volume"
-                  data-slider-active={volumeSliderActive ? "true" : undefined}
-                  onMouseEnter={() => {
-                    setVolumeSliderHovering(true);
-                    setVolumeSliderActive(true);
-                  }}
-                  onMouseLeave={() => setVolumeSliderHovering(false)}
-                  onFocusCapture={() => {
-                    setVolumeSliderFocusWithin(true);
-                    setVolumeSliderActive(true);
-                  }}
-                  onBlurCapture={(e) => {
-                    const nextTarget = e.relatedTarget as Node | null;
-                    if (
-                      nextTarget &&
-                      previewVolumeRef.current?.contains(nextTarget)
-                    ) {
-                      return;
-                    }
-                    setVolumeSliderFocusWithin(false);
-                  }}
-                >
-                  <div className="preview-volume-slider-wrap">
-                    <input
-                      className="preview-volume-slider"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={previewVolume}
-                      onChange={(e) =>
-                        handleVolumeChange(Number(e.target.value))
+                <div className="preview-volume">
+                  <div
+                    className="preview-volume-control"
+                    ref={previewVolumeRef}
+                    aria-label="Preview volume"
+                    data-slider-active={volumeSliderActive ? "true" : undefined}
+                    onMouseEnter={() => {
+                      setVolumeSliderHovering(true);
+                      setVolumeSliderActive(true);
+                    }}
+                    onMouseLeave={() => {
+                      setVolumeSliderHovering(false);
+                      // Instagram-like auto-collapse: leaving the entire
+                      // Volume control collapses the slider immediately
+                      // (unless mid-drag, which stays open until release).
+                      if (!volumeSliderInteracting) {
+                        setVolumeSliderActive(false);
                       }
-                      onPointerDown={() => {
-                        cancelVolumeCollapse();
-                        setVolumeSliderInteracting(true);
-                        setVolumeSliderActive(true);
-                      }}
-                      onPointerUp={() => {
-                        setVolumeSliderInteracting(false);
-                      }}
-                      onKeyDown={() => {
-                        cancelVolumeCollapse();
-                        setVolumeSliderActive(true);
-                      }}
-                      onKeyUp={() => {
-                        setVolumeSliderInteracting(false);
-                      }}
-                      aria-label="Preview volume slider"
-                      style={
-                        { "--vol": `${previewVolume}%` } as React.CSSProperties
+                    }}
+                    onFocusCapture={() => {
+                      setVolumeSliderFocusWithin(true);
+                      setVolumeSliderActive(true);
+                    }}
+                    onBlurCapture={(e) => {
+                      const nextTarget = e.relatedTarget as Node | null;
+                      if (
+                        nextTarget &&
+                        previewVolumeRef.current?.contains(nextTarget)
+                      ) {
+                        return;
                       }
-                    />
-                  </div>
-                  <div className="preview-volume-btn-row">
+                      setVolumeSliderFocusWithin(false);
+                    }}
+                  >
+                    <div className="preview-volume-slider-wrap">
+                      <input
+                        className="preview-volume-slider"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={previewVolume}
+                        onChange={(e) =>
+                          handleVolumeChange(Number(e.target.value))
+                        }
+                        onPointerDown={() => {
+                          cancelVolumeCollapse();
+                          setVolumeSliderInteracting(true);
+                          setVolumeSliderActive(true);
+                        }}
+                        onPointerUp={() => {
+                          setVolumeSliderInteracting(false);
+                        }}
+                        onKeyDown={() => {
+                          cancelVolumeCollapse();
+                          setVolumeSliderActive(true);
+                        }}
+                        onKeyUp={() => {
+                          setVolumeSliderInteracting(false);
+                        }}
+                        aria-label="Preview volume slider"
+                        style={
+                          {
+                            "--vol": `${previewVolume}%`,
+                          } as React.CSSProperties
+                        }
+                      />
+                    </div>
                     <button
                       className="preview-volume-btn"
                       onClick={() => {
@@ -5847,35 +5865,35 @@ export default function App() {
                         </svg>
                       )}
                     </button>
-                    <button
-                      className="preview-volume-btn preview-popout-btn"
-                      onClick={() => void handlePopOut()}
-                      disabled={!previewFile || isPopoutActive}
-                      aria-label="Pop out preview"
-                      title={
-                        isPopoutActive
-                          ? "Preview is popped out"
-                          : "Pop out preview (800 × 800)"
-                      }
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="lucide lucide-external-link"
-                      >
-                        <path d="M15 3h6v6" />
-                        <path d="M10 14 21 3" />
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                      </svg>
-                    </button>
                   </div>
+                  <button
+                    className="preview-volume-btn preview-popout-btn"
+                    onClick={() => void handlePopOut()}
+                    disabled={!previewFile || isPopoutActive}
+                    aria-label="Pop out preview"
+                    title={
+                      isPopoutActive
+                        ? "Preview is popped out"
+                        : "Pop out preview (1082 × 642)"
+                    }
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="lucide lucide-external-link"
+                    >
+                      <path d="M15 3h6v6" />
+                      <path d="M10 14 21 3" />
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V8a2 2 0 0 1 2-2h6" />
+                    </svg>
+                  </button>
                 </div>
                 {orientation && (
                   <div className="preview-meta">
