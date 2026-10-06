@@ -1589,7 +1589,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
               width: canvasSize.width,
               height: canvasSize.height,
               position: "relative",
-              overflow: "hidden",
+              // overflow:clip (not hidden): identical frame clipping, but the
+              // box is not a scroll container, so an arbitrarily large overlay
+              // can never shift the video via box scroll (focus/caret/JS scroll).
+              overflow: "clip",
               backgroundColor: showWhiteBackground ? "#fff" : "#000",
               // Corner radius lives in App.css (`.video-canvas-box`), not
               // here: the pop-out fullscreen override must be able to drop it
