@@ -300,6 +300,18 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // blur/background rendering arrangement; they all synchronize from the
   // same `playing` / `playbackRate` / `previewVolume` state so embedded and
   // pop-out hosts never drift.
+  //
+  // PLAYBACK OWNERSHIP: this component is a pure renderer, never the clock
+  // owner. `playing` / `playbackRate` / `initialTime` arrive as props from
+  // the single authoritative owner (main-window preview state, transferred
+  // with the active host). There is no internal playing state, no polling,
+  // no `setInterval`, no `requestVideoFrameCallback` loop, and no
+  // `currentTime` drift-correction between windows. `onTimeUpdate` only
+  // reports the renderer's position for one-time handoff snapshots (open /
+  // Apply / Cancel); it never drives a second clock. Only one host mounts
+  // this renderer at a time, so only one `<video>` decoder ever advances.
+  // `autoPlay` follows the authoritative `playing` prop so a paused owner
+  // never flashes playing on mount.
   const onTimeUpdateRef = useRef(onTimeUpdate);
   useLayoutEffect(() => {
     onTimeUpdateRef.current = onTimeUpdate;
@@ -314,6 +326,34 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         ? initialTime
         : null;
   }, [videoSrc, initialTime]);
+
+  // One-time handoff correction: if the authoritative `initialTime` changes
+  // after the video is already ready (e.g. the pop-out's final position
+  // arrives just after the embedded host remounts on Apply/Cancel), seek
+  // once to the authoritative position. This is NOT a sync loop: it fires
+  // only on discrete `initialTime` prop changes, performs a single bounded
+  // seek when the gap is material (>0.35s), and never polls or re-renders
+  // per frame.
+  const lastHandoffTimeRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!videoReady) return;
+    if (typeof initialTime !== "number" || !Number.isFinite(initialTime)) return;
+    if (lastHandoffTimeRef.current === initialTime) return;
+    lastHandoffTimeRef.current = initialTime;
+    const targets = [mainVideoRef.current, foregroundVideoRef.current].filter(
+      (el): el is HTMLVideoElement => !!el,
+    );
+    for (const el of targets) {
+      try {
+        if (!Number.isFinite(el.currentTime)) continue;
+        if (Math.abs(el.currentTime - initialTime) > 0.35) {
+          el.currentTime = Math.max(0, initialTime);
+        }
+      } catch {
+        // Seeking an unready element is best-effort; canPlay restore covers it.
+      }
+    }
+  }, [initialTime, videoReady]);
 
   const applyPlaybackState = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -1472,7 +1512,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                       filter: `blur(${previewLayout.blurSigma}px)`,
                       ...transformStyle,
                     }}
-                    autoPlay
+                    autoPlay={playing}
                     muted
                     loop
                     playsInline
@@ -1511,7 +1551,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                     zIndex: 2,
                     ...transformStyle,
                   }}
-                  autoPlay
+                  autoPlay={playing}
                   loop
                   playsInline
                   onPlay={syncBlurBackgroundToForeground}
@@ -1544,7 +1584,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
                   objectFit: "fill",
                   ...transformStyle,
                 }}
-                autoPlay
+                autoPlay={playing}
                 loop
                 playsInline
                 onTimeUpdate={(e) =>

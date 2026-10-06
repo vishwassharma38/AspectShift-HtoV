@@ -82,8 +82,10 @@ import {
   normalizeShortcutKey,
 } from "./utils/appShortcuts";
 import {
+  PLAYBACK_COMMAND_STORAGE_KEY,
   POPOUT_SESSION_STORAGE_KEY,
   POPOUT_STATE_EVENT_KEY,
+  PREVIEW_PLAYBACK_COMMAND_EVENT,
   PREVIEW_POPOUT_APPLY_EVENT,
   PREVIEW_POPOUT_CANCEL_EVENT,
   PREVIEW_POPOUT_UPDATE_EVENT,
@@ -93,12 +95,14 @@ import {
   emitPopoutEvent,
   focusPopoutWindow,
   isTauriRuntime,
+  readPlaybackCommandEvent,
   rememberPopoutBounds,
   setCurrentWindowFullscreen,
   showPopoutWindow,
   writePopoutSession,
   type PopoutDraftUpdate,
   type PreviewMode,
+  type PreviewPlaybackCommand,
 } from "./services/previewController";
 import {
   getMissingDependencies,
@@ -1016,9 +1020,34 @@ export default function App() {
   const previewPrevMaximizedRef = useRef(false);
   // One playback source of truth shared by every display mode. The preview
   // plays by default; pop-out inherits the current state.
+  //
+  // PLAYBACK OWNERSHIP INVARIANT: this main-window state IS the single
+  // authoritative playback owner. `previewPlaying` + `previewCurrentTimeRef`
+  // (+ fixed `previewPlaybackRate`) own position/playing/rate/lifecycle.
+  // Only one host mounts `VideoCanvas` at a time, so only one `<video>`
+  // decoder ever advances. The pop-out renders this state and routes user
+  // playback actions back as commands on `PREVIEW_PLAYBACK_COMMAND_EVENT`;
+  // it never owns the clock. `currentTime` travels pop-out -> main only as
+  // a one-time handoff snapshot on Apply/Cancel/close, never as continuous
+  // chasing. Editing/state sync (`effects`, `previewVolume`,
+  // `previewLayout`, draft) is separate and untouched.
   const [previewPlaying, setPreviewPlaying] = useState(true);
   const [previewPlaybackRate] = useState(1);
   const previewCurrentTimeRef = useRef(0);
+  // Reactive handoff snapshot for the embedded host's `initialTime` prop.
+  // The ref above is updated render-free via `onTimeUpdate` (~timeupdate
+  // rate, no re-render); this state changes only on discrete handoff events
+  // (pop-out open / Apply / Cancel / final-position arrival) so the
+  // remounted or already-mounted embedded video can seek exactly once via
+  // `VideoCanvas`' handoff correction. Never updated per frame.
+  const [embeddedRestoreTime, setEmbeddedRestoreTime] = useState(0);
+  // New source = new authoritative timeline: reset the handoff snapshot so
+  // neither host resumes the previous video's position (Test H). No
+  // pause/resume change; `previewPlaying` is untouched.
+  useEffect(() => {
+    previewCurrentTimeRef.current = 0;
+    setEmbeddedRestoreTime(0);
+  }, [previewFile]);
   // Draft transaction: snapshot of committed effects/volume taken at Pop Out
   // time. Pop-out editing works against the draft (live `effectsState`);
   // Apply commits it, Cancel / native X restores this snapshot.
@@ -1425,16 +1454,29 @@ export default function App() {
 
   // Pop-out session listeners (main-window side): draft updates mirror into
   // the live draft state, Apply commits, Cancel/X restores the snapshot.
+  //
+  // Playback ownership: `playing`/`currentTime` are NOT mirrored here.
+  // The pop-out routes playback intent via PREVIEW_PLAYBACK_COMMAND_EVENT
+  // (handled in the next effect); `currentTime` arrives only as a one-time
+  // handoff snapshot inside Apply/Cancel payloads (used to restore the
+  // embedded host exactly, never chased continuously).
   useEffect(() => {
     let disposed = false;
     const seenAtRef = { current: 0 };
+
+    const applyHandoffPosition = (currentTime: unknown) => {
+      if (typeof currentTime !== "number" || !Number.isFinite(currentTime)) return;
+      const clamped = Math.max(0, currentTime);
+      previewCurrentTimeRef.current = clamped;
+      // Reactive so an already-remounted embedded host seeks exactly once
+      // via VideoCanvas' handoff correction (no loop, no polling).
+      setEmbeddedRestoreTime(clamped);
+    };
 
     const applyRemoteUpdate = (payload: {
       source?: string;
       effects?: VideoEffectsSettings;
       previewVolume?: number;
-      playing?: boolean;
-      currentTime?: number;
       at?: number;
     } | null) => {
       if (!payload || disposed) return;
@@ -1444,6 +1486,9 @@ export default function App() {
         if (payload.at <= seenAtRef.current) return;
         seenAtRef.current = payload.at;
       }
+      // Editing/state sync only. Playback fields from the pop-out are
+      // intentionally ignored here (obsolete two-player sync); playback
+      // intent arrives via the dedicated command channel below.
       if (payload.effects && typeof payload.effects === "object") {
         setEffectsState(payload.effects as VideoEffectsSettings);
       }
@@ -1452,31 +1497,31 @@ export default function App() {
           Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
         );
       }
-      if (typeof payload.playing === "boolean") {
-        setPreviewPlaying(payload.playing);
-      }
-      if (typeof payload.currentTime === "number") {
-        previewCurrentTimeRef.current = payload.currentTime;
-      }
     };
 
-    const applyRemoteApply = () => {
+    const applyRemoteApply = (handoffTime?: unknown) => {
       if (disposed || !popoutCommittedRef.current) return;
-      // Draft is already mirrored live; Apply just commits it. The native
+      // Draft is already mirrored live; Apply just commits it. Restore the
+      // authoritative position from the pop-out's one-time handoff snapshot
+      // BEFORE remounting the embedded host so it resumes exactly. The native
       // pop-out host closes itself.
+      applyHandoffPosition(handoffTime);
       popoutCommittedRef.current = null;
       setIsPreviewFullscreen(false);
       setPreviewMode("embedded");
       clearPopoutSession();
     };
 
-    const applyRemoteCancel = () => {
+    const applyRemoteCancel = (handoffTime?: unknown) => {
       if (disposed) return;
       const committed = popoutCommittedRef.current;
       if (committed) {
         setEffectsState(committed.effects);
         setPreviewVolume(committed.previewVolume);
       }
+      // Discard the draft but keep the authoritative position handoff so the
+      // embedded host resumes where the pop-out left off (no jump).
+      applyHandoffPosition(handoffTime);
       popoutCommittedRef.current = null;
       setIsPreviewFullscreen(false);
       setPreviewMode("embedded");
@@ -1514,8 +1559,8 @@ export default function App() {
         if (typeof event.previewVolume === "number") {
           setPreviewVolume(Math.max(0, Math.min(100, Math.round(event.previewVolume))));
         }
-        applyRemoteApply();
-      } else if (event.kind === "cancel") applyRemoteCancel();
+        applyRemoteApply(event.currentTime);
+      } else if (event.kind === "cancel") applyRemoteCancel(event.currentTime);
     };
     window.addEventListener("storage", onStorage);
 
@@ -1537,6 +1582,7 @@ export default function App() {
                 source?: string;
                 effects?: VideoEffectsSettings;
                 previewVolume?: number;
+                currentTime?: number;
               } | null;
               if (!payload || payload.source !== "popout") return;
               if (payload.effects) setEffectsState(payload.effects);
@@ -1545,13 +1591,16 @@ export default function App() {
                   Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
                 );
               }
-              applyRemoteApply();
+              applyRemoteApply(payload.currentTime);
             },
           );
           const u3 = await listen(PREVIEW_POPOUT_CANCEL_EVENT, (ev) => {
-            const payload = ev.payload as { source?: string } | null;
+            const payload = ev.payload as {
+              source?: string;
+              currentTime?: number;
+            } | null;
             if (!payload || payload.source !== "popout") return;
-            applyRemoteCancel();
+            applyRemoteCancel(payload.currentTime);
           });
           if (disposed) {
             u1();
@@ -1586,6 +1635,83 @@ export default function App() {
       at: Date.now(),
     });
   }, [effectsState, previewMode]);
+
+  // Authoritative playback command listener (pop-out -> main). The pop-out
+  // never toggles the clock itself; it sends intent here and this owner
+  // applies it to `previewPlaying`, which then pushes back to the pop-out
+  // as authoritative state on PREVIEW_POPOUT_UPDATE_EVENT. No polling, no
+  // per-frame updates: discrete commands only.
+  useEffect(() => {
+    let disposed = false;
+    const seenCommandAtRef = { current: 0 };
+
+    const applyCommand = (cmd: PreviewPlaybackCommand | null) => {
+      if (!cmd || disposed) return;
+      if (cmd.source !== "popout") return;
+      if (!popoutCommittedRef.current) return;
+      if (typeof cmd.at === "number") {
+        if (cmd.at <= seenCommandAtRef.current) return;
+        seenCommandAtRef.current = cmd.at;
+      }
+      if (cmd.command === "toggle") {
+        togglePreviewPlayback();
+      } else if (cmd.command === "play") {
+        setPreviewPlaying((was) => {
+          if (was) return was;
+          if (popoutCommittedRef.current) {
+            broadcastPopoutDraft({ version: 1, playing: true });
+            void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+              source: "main",
+              playing: true,
+            });
+          }
+          return true;
+        });
+      } else if (cmd.command === "pause") {
+        setPreviewPlaying((was) => {
+          if (!was) return was;
+          if (popoutCommittedRef.current) {
+            broadcastPopoutDraft({ version: 1, playing: false });
+            void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+              source: "main",
+              playing: false,
+            });
+          }
+          return false;
+        });
+      }
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== PLAYBACK_COMMAND_STORAGE_KEY) return;
+      applyCommand(readPlaybackCommandEvent());
+    };
+    window.addEventListener("storage", onStorage);
+
+    let unlisten: (() => void) | null = null;
+    if (isTauriRuntime()) {
+      (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          const u = await listen(PREVIEW_PLAYBACK_COMMAND_EVENT, (ev) =>
+            applyCommand({
+              ...((ev.payload as object) ?? {}),
+              at: Date.now(),
+            } as PreviewPlaybackCommand),
+          );
+          if (disposed) u();
+          else unlisten = u;
+        } catch {
+          // Storage-event fallback covers browser use.
+        }
+      })();
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", onStorage);
+      unlisten?.();
+    };
+  }, [togglePreviewPlayback]);
 
   useEffect(() => {
     if (!volumeSliderActive) return;
@@ -5572,7 +5698,7 @@ export default function App() {
                     showSafeFrames={showSafeFrames}
                     playing={previewPlaying}
                     playbackRate={previewPlaybackRate}
-                    initialTime={previewCurrentTimeRef.current}
+                    initialTime={embeddedRestoreTime}
                     onTimeUpdate={handlePreviewTimeUpdate}
                   />
                 )}

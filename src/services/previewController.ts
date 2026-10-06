@@ -63,9 +63,43 @@ export const PREVIEW_POPOUT_CANCEL_EVENT =
 export const PREVIEW_POPOUT_OPENED_EVENT =
   "aspectshift:preview-popout:opened";
 
+/**
+ * Dedicated Tauri event channel for playback *commands* (pop-out -> main).
+ *
+ * PLAYBACK OWNERSHIP INVARIANT (must be preserved):
+ *
+ * > There is exactly ONE authoritative preview playback owner. The main
+ * > window owns the authoritative playback state (`playing`, position,
+ * > rate). The pop-out never owns the media clock: it renders the
+ * > authoritative state and routes user playback actions back as commands.
+ *
+ * This channel carries intent (`toggle` / `play` / `pause`), never mirrored
+ * `currentTime` chasing. State pushes in the opposite direction
+ * (main -> pop-out `playing`) travel on `PREVIEW_POPOUT_UPDATE_EVENT`.
+ * Editing/state sync (`effects`, `previewVolume`, `previewLayout`, draft
+ * Apply/Cancel) also travels on the pop-out update/apply/cancel channels
+ * and is intentionally untouched by the playback refactor.
+ *
+ * A DOM `<video>` node cannot belong to two Tauri WebViews at once, so true
+ * cross-WebView frame sharing is impractical here. The closest correct
+ * architecture is therefore single-active-renderer with explicit handoff:
+ * only one host (`embedded` in the main window OR `popout` in the native
+ * window) mounts `VideoCanvas` at a time, so only one `<video>` decoder
+ * ever advances. There is no polling, no `setInterval`, no per-frame React
+ * state, and no `currentTime` drift-correction loop.
+ */
+export const PREVIEW_PLAYBACK_COMMAND_EVENT =
+  "aspectshift:preview-playback:command";
+
 /** localStorage keys for the pop-out session (Tauri + browser fallback). */
 export const POPOUT_SESSION_STORAGE_KEY = "aspectshift.preview-popout-session";
 export const POPOUT_STATE_EVENT_KEY = "aspectshift.preview-popout-state";
+/**
+ * localStorage fallback key for playback commands (browser + Tauri backup).
+ * The Tauri event above is primary; this storage key covers browser use.
+ */
+export const PLAYBACK_COMMAND_STORAGE_KEY =
+  "aspectshift.preview-playback-command";
 
 export interface PopoutPreviewSession {
   version: 1;
@@ -173,9 +207,31 @@ export interface PopoutSyncFields {
 }
 
 /**
+ * Playback command sent by the pop-out to the authoritative owner.
+ * `playing`/`currentTime` must NOT be mirrored as continuous state in the
+ * pop-out -> main direction; the pop-out sends intent here and the main
+ * window applies it to its single authoritative `previewPlaying` state,
+ * which then pushes back to the pop-out as a state update.
+ */
+export type PreviewPlaybackCommandKind = "play" | "pause" | "toggle";
+
+export interface PreviewPlaybackCommand {
+  source: "popout";
+  command: PreviewPlaybackCommandKind;
+  at: number;
+}
+
+/**
  * Broadcast a draft update to the other window (storage-event channel,
  * which is the primary channel in browsers and the backup in Tauri).
  * The envelope carries kind/source so both hosts' listeners accept it.
+ *
+ * Main -> pop-out `playing` pushes via this helper are authoritative state
+ * pushes (owner to renderer). Pop-out -> main `playing`/`currentTime`
+ * mirroring through this channel is obsolete: the pop-out must use
+ * `writePlaybackCommandEvent` instead. `currentTime` travels here only as
+ * a one-time handoff snapshot (pop-out open, Apply/Cancel close), never as
+ * continuous chasing.
  */
 export function writePopoutUpdateEvent(
   source: "main" | "popout",
@@ -199,6 +255,49 @@ export function broadcastPopoutDraft(update: PopoutDraftUpdate): void {
     playing: update.playing,
     currentTime: update.currentTime,
   });
+}
+
+/**
+ * Send a playback intent from the pop-out to the authoritative owner
+ * (storage-event fallback; Tauri event is primary via `emitPopoutEvent`
+ * with `PREVIEW_PLAYBACK_COMMAND_EVENT`). Synchronous and render-free.
+ */
+export function writePlaybackCommandEvent(
+  command: PreviewPlaybackCommandKind,
+): void {
+  try {
+    const payload: PreviewPlaybackCommand = {
+      source: "popout",
+      command,
+      at: Date.now(),
+    };
+    window.localStorage.setItem(
+      PLAYBACK_COMMAND_STORAGE_KEY,
+      JSON.stringify(payload),
+    );
+  } catch {
+    // Best-effort only; Tauri events are the primary channel there.
+  }
+}
+
+export function readPlaybackCommandEvent(): PreviewPlaybackCommand | null {
+  try {
+    const raw = window.localStorage.getItem(PLAYBACK_COMMAND_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PreviewPlaybackCommand;
+    if (
+      !parsed ||
+      parsed.source !== "popout" ||
+      (parsed.command !== "play" &&
+        parsed.command !== "pause" &&
+        parsed.command !== "toggle")
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export async function emitPopoutEvent(

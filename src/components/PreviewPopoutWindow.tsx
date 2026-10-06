@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PreviewHost } from "./PreviewHost";
 import {
   POPOUT_STATE_EVENT_KEY,
+  PREVIEW_PLAYBACK_COMMAND_EVENT,
   PREVIEW_POPOUT_APPLY_EVENT,
   PREVIEW_POPOUT_CANCEL_EVENT,
   PREVIEW_POPOUT_UPDATE_EVENT,
@@ -13,6 +14,7 @@ import {
   readPopoutSession,
   rememberPopoutBounds,
   setCurrentWindowFullscreen,
+  writePlaybackCommandEvent,
   writePopoutUpdateEvent,
 } from "../services/previewController";
 import {
@@ -42,6 +44,17 @@ import {
  * through `PreviewHost` (no second renderer, no second overlay system).
  * There is no second application shell here — only the preview surface plus
  * its Apply/Cancel transaction footer.
+ *
+ * PLAYBACK OWNERSHIP: this host never owns the media clock. The main window
+ * owns authoritative `playing` state; this host renders it (via the `playing`
+ * prop) and routes user playback actions back as commands on
+ * `PREVIEW_PLAYBACK_COMMAND_EVENT`. It never calls `video.play()` /
+ * `video.pause()` / `video.currentTime =` / `video.playbackRate =` as part
+ * of its own loop — `VideoCanvas` only follows the authoritative props.
+ * `currentTime` is tracked locally solely for the one-time handoff snapshot
+ * on Apply/Cancel/close, never chased continuously. Editing/state sync
+ * (`effects`, `previewVolume`, `previewLayout`, draft Apply/Cancel) is
+ * separate and preserved untouched.
  *
  * Editing model: the main window snapshots committed effects/volume at
  * Pop Out time. All edits here apply to that draft. Apply commits (main
@@ -110,7 +123,6 @@ export const PreviewPopoutWindow: React.FC = () => {
   const settledRef = useRef<"open" | "applied" | "cancelled">("open");
   const effectsRef = useRef(effects);
   const volumeRef = useRef(previewVolume);
-  const playingRef = useRef(playing);
 
   useEffect(() => {
     effectsRef.current = effects;
@@ -118,9 +130,6 @@ export const PreviewPopoutWindow: React.FC = () => {
   useEffect(() => {
     volumeRef.current = previewVolume;
   }, [previewVolume]);
-  useEffect(() => {
-    playingRef.current = playing;
-  }, [playing]);
 
   const orientation: OrientationInfo | null =
     session?.orientation && typeof session.orientation === "object"
@@ -157,13 +166,14 @@ export const PreviewPopoutWindow: React.FC = () => {
   const applyDraft = useCallback(
     async (next: VideoEffectsSettings) => {
       setEffects(next);
+      // Editing sync only: mirror the draft overlays. Playback fields are
+      // intentionally omitted here (no competing clock, no currentTime
+      // chasing); position travels only as a handoff snapshot on
+      // Apply/Cancel, and playing is owned by the main window.
       writePopoutUpdateEvent("popout", { effects: next });
       await emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
         source: "popout",
         effects: next,
-        previewVolume: volumeRef.current,
-        playing: playingRef.current,
-        currentTime: currentTimeRef.current,
       });
     },
     [],
@@ -208,28 +218,27 @@ export const PreviewPopoutWindow: React.FC = () => {
   const handleVolumeChange = useCallback((value: number) => {
     const clamped = Math.max(0, Math.min(100, Math.round(value)));
     setPreviewVolume(clamped);
+    // Editing/state sync (volume is preserved per scope). No playback
+    // fields: the pop-out never mirrors playing/currentTime continuously.
     writePopoutUpdateEvent("popout", { previewVolume: clamped });
     void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
       source: "popout",
-      effects: effectsRef.current,
       previewVolume: clamped,
-      playing: playingRef.current,
-      currentTime: currentTimeRef.current,
     });
   }, []);
 
   const togglePlayback = useCallback(() => {
-    setPlaying((was) => {
-      const next = !was;
-      writePopoutUpdateEvent("popout", { playing: next });
-      void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
-        source: "popout",
-        effects: effectsRef.current,
-        previewVolume: volumeRef.current,
-        playing: next,
-        currentTime: currentTimeRef.current,
-      });
-      return next;
+    // Command routing only: never toggle a local clock. The main window is
+    // the single owner; it applies this intent to `previewPlaying` and
+    // pushes the authoritative state back, which this host renders. The
+    // local `playing` state below updates only from those authoritative
+    // pushes (plus the opening session snapshot), so both windows represent
+    // the same timeline with no drift-correction loop.
+    writePlaybackCommandEvent("toggle");
+    void emitPopoutEvent(PREVIEW_PLAYBACK_COMMAND_EVENT, {
+      source: "popout",
+      command: "toggle",
+      at: Date.now(),
     });
   }, []);
 
@@ -237,19 +246,20 @@ export const PreviewPopoutWindow: React.FC = () => {
     if (settledRef.current !== "open") return;
     settledRef.current = "applied";
     const draft = effectsRef.current;
+    // Apply commits the draft; the one-time `currentTime` handoff lets the
+    // authoritative owner resume exactly. No `playing` here: the owner keeps
+    // its authoritative playing state.
     writeStateEvent({
       kind: "apply",
       source: "popout",
       effects: draft ?? undefined,
       previewVolume: volumeRef.current,
-      playing: playingRef.current,
       currentTime: currentTimeRef.current,
     });
     await emitPopoutEvent(PREVIEW_POPOUT_APPLY_EVENT, {
       source: "popout",
       effects: draft,
       previewVolume: volumeRef.current,
-      playing: playingRef.current,
       currentTime: currentTimeRef.current,
     });
     clearPopoutSession();
@@ -261,8 +271,16 @@ export const PreviewPopoutWindow: React.FC = () => {
     settledRef.current = "cancelled";
     // X = leave pop-out without committing: discard the draft. The main
     // window restores its pre-pop-out snapshot; Apply is the only commit.
-    writeStateEvent({ kind: "cancel", source: "popout" });
-    await emitPopoutEvent(PREVIEW_POPOUT_CANCEL_EVENT, { source: "popout" });
+    // The handoff position is still reported so the owner resumes exactly.
+    writeStateEvent({
+      kind: "cancel",
+      source: "popout",
+      currentTime: currentTimeRef.current,
+    });
+    await emitPopoutEvent(PREVIEW_POPOUT_CANCEL_EVENT, {
+      source: "popout",
+      currentTime: currentTimeRef.current,
+    });
     clearPopoutSession();
     await closeCurrentWindow();
   }, []);
@@ -270,11 +288,17 @@ export const PreviewPopoutWindow: React.FC = () => {
   // Native X must exit pop-out without committing. `beforeunload` is the
   // reliable cross-runtime hook: if the session was not explicitly applied,
   // synchronously record a discard so the main window restores its snapshot.
+  // The final position is included synchronously so a main-initiated close
+  // during playback still resumes exactly (one-time handoff, no loop).
   useEffect(() => {
     const onBeforeUnload = () => {
       if (settledRef.current !== "open") return;
       settledRef.current = "cancelled";
-      writeStateEvent({ kind: "cancel", source: "popout" });
+      writeStateEvent({
+        kind: "cancel",
+        source: "popout",
+        currentTime: currentTimeRef.current,
+      });
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
@@ -408,6 +432,9 @@ export const PreviewPopoutWindow: React.FC = () => {
   }, [togglePlayback, isFullscreen, exitFullscreenRestorePopout]);
 
   const handleTimeUpdate = useCallback((currentTime: number) => {
+    // Local handoff bookkeeping only: records the renderer's position for
+    // the one-time Apply/Cancel/close snapshot. Never broadcast continuously
+    // and never used to chase another clock.
     currentTimeRef.current = currentTime;
   }, []);
 
