@@ -48,6 +48,41 @@
 
 export type PreviewMode = "embedded" | "popout" | "fullscreen";
 
+/**
+ * Single authoritative application theme (owned by the main window).
+ * The pop-out never owns theme state: it only receives and applies this
+ * value. `"day"` = Light, `"night"` = Dark.
+ */
+export type AppTheme = "day" | "night";
+
+export function isAppTheme(value: unknown): value is AppTheme {
+  return value === "day" || value === "night";
+}
+
+/**
+ * Apply the authoritative theme inside the current WebView (used by the
+ * pop-out host to mirror the main window). Theme-only: touches nothing
+ * else (no playback, overlay, geometry, or lifecycle state).
+ *
+ * Deliberately does NOT persist to localStorage: the main window remains
+ * the single source of truth and owns `asp-theme` persistence.
+ */
+export function applyThemeToDocument(theme: AppTheme): void {
+  try {
+    const html = document.documentElement;
+    if (html.getAttribute("data-theme") === theme) return;
+    // Mirror the main window's transition treatment so the switch animates
+    // the same way in both windows.
+    html.classList.add("theme-transitioning");
+    html.setAttribute("data-theme", theme);
+    window.setTimeout(() => {
+      html.classList.remove("theme-transitioning");
+    }, 260);
+  } catch {
+    // Best-effort only.
+  }
+}
+
 export const POPOUT_WINDOW_LABEL = "aspectshift-preview";
 export const POPOUT_WINDOW_TITLE = "AspectShift - Preview";
 export const POPOUT_WINDOW_WIDTH = 1082;
@@ -114,6 +149,8 @@ export interface PopoutPreviewSession {
   previewLayout: unknown;
   showGuides: boolean;
   showSafeFrames: boolean;
+  /** Authoritative application theme at Pop Out time (initial pop-out theme). */
+  theme?: AppTheme;
   createdAt: number;
 }
 
@@ -125,6 +162,7 @@ export interface PopoutDraftUpdate {
   currentTime?: number;
   showGuides?: boolean;
   showSafeFrames?: boolean;
+  theme?: AppTheme;
 }
 
 export function isTauriRuntime(): boolean {
@@ -208,6 +246,7 @@ export interface PopoutSyncFields {
   previewLayout?: unknown;
   showGuides?: boolean;
   showSafeFrames?: boolean;
+  theme?: AppTheme;
 }
 
 /**
@@ -260,6 +299,7 @@ export function broadcastPopoutDraft(update: PopoutDraftUpdate): void {
     currentTime: update.currentTime,
     showGuides: update.showGuides,
     showSafeFrames: update.showSafeFrames,
+    theme: update.theme,
   });
 }
 

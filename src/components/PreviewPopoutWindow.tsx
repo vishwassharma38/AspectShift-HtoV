@@ -7,15 +7,18 @@ import {
   PREVIEW_POPOUT_APPLY_EVENT,
   PREVIEW_POPOUT_CANCEL_EVENT,
   PREVIEW_POPOUT_UPDATE_EVENT,
+  applyThemeToDocument,
   clearPopoutSession,
   closeCurrentWindow,
   emitPopoutEvent,
+  isAppTheme,
   isTauriRuntime,
   readPopoutSession,
   rememberPopoutBounds,
   setCurrentWindowFullscreen,
   writePlaybackCommandEvent,
   writePopoutUpdateEvent,
+  type AppTheme,
 } from "../services/previewController";
 import {
   isEditableShortcutTarget,
@@ -98,6 +101,7 @@ interface PopoutStateEvent {
   previewLayout?: PreviewRenderLayout | null;
   showGuides?: boolean;
   showSafeFrames?: boolean;
+  theme?: AppTheme;
   at: number;
 }
 
@@ -128,6 +132,24 @@ function writeStateEvent(event: Omit<PopoutStateEvent, "at">): void {
 
 export const PreviewPopoutWindow: React.FC = () => {
   const [session] = useState(readPopoutSession);
+  // Theme initialization (theme-only): the pop-out is a separate WebView
+  // with its own document, so the main window's `data-theme` cannot reach
+  // it. Apply the authoritative theme carried in the pop-out session before
+  // first paint so the pop-out never opens with a stale or hardcoded theme.
+  // No playback, overlay, geometry, or lifecycle state is touched here.
+  useLayoutEffect(() => {
+    const initialTheme = session?.theme;
+    if (isAppTheme(initialTheme)) {
+      try {
+        document.documentElement.setAttribute("data-theme", initialTheme);
+      } catch {
+        // Best-effort only.
+      }
+    }
+    // Session is captured once on mount; theme updates arrive via the
+    // update channel below. Intentionally runs once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [effects, setEffects] = useState<VideoEffectsSettings | null>(() => {
     const raw = session?.effects;
     if (!raw || typeof raw !== "object") return null;
@@ -816,6 +838,12 @@ export const PreviewPopoutWindow: React.FC = () => {
         }
         if (typeof event.showSafeFrames === "boolean") {
           setShowSafeFrames(event.showSafeFrames);
+        }
+        // Live theme sync (theme-only): apply the authoritative theme
+        // immediately in place. No close/reopen/refresh/recreate, and no
+        // playback, position, overlay, geometry, or lifecycle side effects.
+        if (isAppTheme(event.theme)) {
+          applyThemeToDocument(event.theme);
         }
       } else if (event.kind === "apply" || event.kind === "cancel" || event.kind === "close") {
         if (settledRef.current === "open") {

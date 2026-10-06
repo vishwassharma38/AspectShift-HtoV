@@ -1315,6 +1315,7 @@ export default function App() {
       previewLayout: previewLayout ? deepClone(previewLayout) : null,
       showGuides,
       showSafeFrames,
+      theme,
       createdAt: Date.now(),
     });
     const hostOpened = await showPopoutWindow();
@@ -1337,6 +1338,7 @@ export default function App() {
       previewLayout: previewLayout ? deepClone(previewLayout) : null,
       showGuides,
       showSafeFrames,
+      theme,
     });
   }, [
     handleFocusPopout,
@@ -1350,6 +1352,7 @@ export default function App() {
     previewLayout,
     showGuides,
     showSafeFrames,
+    theme,
   ]);
 
   // Apply: commit the draft, leave pop-out mode, and return to the regular
@@ -3396,6 +3399,36 @@ export default function App() {
     }, 260);
     return () => window.clearTimeout(timer);
   }, [theme]);
+
+  // ── Pop-out theme sync (theme-only) ──────────────────────────
+  // The pop-out is a separate WebView with its own document, so the theme
+  // effect above cannot reach it. Mirror the authoritative `theme` to the
+  // open pop-out over the existing pop-out channels (Tauri event primary,
+  // localStorage fallback). Theme-only payload: no playback, position,
+  // overlay, geometry, or lifecycle fields, so nothing else is disturbed.
+  // No close/reopen/refresh/recreate: the pop-out applies `data-theme`
+  // in place.
+  useEffect(() => {
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    if (!popoutCommittedRef.current) return;
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({
+          kind: "update",
+          source: "main",
+          theme,
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      theme,
+    });
+  }, [theme, previewMode]);
 
   // ── Init ──────────────────────────────────────────────────
   useEffect(() => {
