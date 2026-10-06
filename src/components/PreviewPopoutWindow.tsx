@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PreviewHost } from "./PreviewHost";
 import {
@@ -21,6 +21,7 @@ import {
   isEditableShortcutTarget,
   isExitPreviewFullscreenShortcut,
   isPreviewPlayPauseShortcut,
+  normalizeShortcutKey,
 } from "../utils/appShortcuts";
 import type {
   ImageOverlaySettings,
@@ -30,12 +31,25 @@ import type {
   TextOverlaySettings,
   VideoEffectsSettings,
 } from "../types/backend";
-import { resolveTextOverlay } from "../utils/textOverlay";
+import {
+  DEFAULT_TEXT_LAYER,
+  normalizeTextOverlay,
+  resolveTextOverlay,
+} from "../utils/textOverlay";
 import { normalizeSubtitleOverlay } from "../utils/subtitleOverlay";
 import {
   normalizeImageOverlaySettings,
   resolveImageOverlaySettings,
 } from "../utils/imageOverlay";
+
+// Parity with the main window (App.tsx): arrow-key fine-positioning increment
+// in canonical overlay coordinates (fraction of the video frame per axis).
+const IMAGE_ARROW_NUDGE = 0.005;
+const DEFAULT_POPOUT_VOLUME = 20;
+
+function generateId(): string {
+  return crypto.randomUUID();
+}
 
 /**
  * PreviewPopoutWindow — the pop-out native-window host root.
@@ -70,6 +84,8 @@ interface PopoutStateEvent {
   playing?: boolean;
   currentTime?: number;
   previewLayout?: PreviewRenderLayout | null;
+  showGuides?: boolean;
+  showSafeFrames?: boolean;
   at: number;
 }
 
@@ -136,10 +152,29 @@ export const PreviewPopoutWindow: React.FC = () => {
       ? (session.orientation as OrientationInfo)
       : null;
   const videoSrc = typeof session?.videoSrc === "string" ? session.videoSrc : "";
-  const showGuides = session?.showGuides ?? true;
-  const showSafeFrames = session?.showSafeFrames ?? false;
+  const [showGuides, setShowGuides] = useState<boolean>(
+    () => session?.showGuides ?? true,
+  );
+  const [showSafeFrames, setShowSafeFrames] = useState<boolean>(
+    () => session?.showSafeFrames ?? false,
+  );
   const playbackRate =
     typeof session?.playbackRate === "number" ? session.playbackRate : 1;
+
+  // Resolved overlay selection (mirrors the main window's derived selection).
+  // Used only for keyboard parity (Delete / Ctrl+D / arrows) operating on the
+  // same draft `effects` through `applyDraft` — no second overlay system.
+  const resolvedImageOverlay = useMemo(
+    () => resolveImageOverlaySettings(effects?.imageOverlay ?? null),
+    [effects],
+  );
+  const resolvedTextOverlay = useMemo(
+    () => resolveTextOverlay(effects?.textOverlay ?? null),
+    [effects],
+  );
+  const hasSelectedImage = resolvedImageOverlay.selectedOverlayId !== null;
+  const hasSelectedTextLayer =
+    resolvedTextOverlay.selectedLayerIds.length > 0;
 
   // Register asset-protocol scope inside this window so the same file paths
   // resolve here exactly as they do in the main window.
@@ -226,6 +261,302 @@ export const PreviewPopoutWindow: React.FC = () => {
       previewVolume: clamped,
     });
   }, []);
+
+  const handleMuteToggle = useCallback(() => {
+    // Parity with the primary preview mute button: toggle 0 <-> default.
+    // Routes through the same volume sync so the owner converges.
+    handleVolumeChange(previewVolume > 0 ? 0 : DEFAULT_POPOUT_VOLUME);
+  }, [handleVolumeChange, previewVolume]);
+
+  const handleGuidesToggle = useCallback(() => {
+    const next = !showGuides;
+    setShowGuides(next);
+    writePopoutUpdateEvent("popout", { showGuides: next });
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "popout",
+      showGuides: next,
+    });
+  }, [showGuides]);
+
+  const handleSafeFramesToggle = useCallback(() => {
+    const next = !showSafeFrames;
+    setShowSafeFrames(next);
+    writePopoutUpdateEvent("popout", { showSafeFrames: next });
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "popout",
+      showSafeFrames: next,
+    });
+  }, [showSafeFrames]);
+
+  // ── Overlay keyboard parity (mirrors App.tsx main-window handlers) ──
+  // All operations route through the same draft `effects` via `applyDraft` —
+  // no second overlay system, no geometry changes. Pointer/drag/resize/rotate
+  // already share `VideoCanvas`; these handlers cover the keyboard-initiated
+  // operations that previously existed only in the main window.
+  const handleRemoveSelectedOverlays = useCallback(() => {
+    const current = effectsRef.current;
+    if (!current) return;
+    const currentImages = resolveImageOverlaySettings(current.imageOverlay);
+    const currentText = resolveTextOverlay(current.textOverlay);
+    const hasImage = currentImages.selectedOverlayId !== null;
+    const hasText = currentText.selectedLayerIds.length > 0;
+    if (!hasImage && !hasText) return;
+    let next: VideoEffectsSettings = current;
+    if (hasImage) {
+      const selectedId = currentImages.selectedOverlayId;
+      next = {
+        ...next,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentImages,
+          overlays: currentImages.overlays.filter(
+            (overlay) => overlay.id !== selectedId,
+          ),
+          selectedOverlayId: null,
+        }),
+      };
+    }
+    if (hasText) {
+      const selectedIds = new Set(
+        resolveTextOverlay(next.textOverlay).selectedLayerIds,
+      );
+      const resolved = resolveTextOverlay(next.textOverlay);
+      next = {
+        ...next,
+        textOverlay: normalizeTextOverlay({
+          ...resolved,
+          layers: resolved.layers.filter((layer) => !selectedIds.has(layer.id)),
+          selectedLayerIds: [],
+        }),
+      };
+    }
+    void applyDraft(next);
+  }, [applyDraft]);
+
+  const handleDuplicateSelectedOverlays = useCallback(() => {
+    const current = effectsRef.current;
+    if (!current) return;
+    const currentImages = resolveImageOverlaySettings(current.imageOverlay);
+    const currentText = resolveTextOverlay(current.textOverlay);
+    const hasImage = currentImages.selectedOverlayId !== null;
+    const hasText = currentText.selectedLayerIds.length > 0;
+    if (!hasImage && !hasText) return;
+    let next: VideoEffectsSettings = current;
+    if (hasImage) {
+      const source = currentImages.overlays.find(
+        (overlay) => overlay.id === currentImages.selectedOverlayId,
+      );
+      if (source) {
+        const id = generateId();
+        next = {
+          ...next,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentImages,
+            panelOpen: true,
+            overlays: [
+              ...currentImages.overlays,
+              {
+                ...source,
+                id,
+                x: source.x + 0.05,
+                y: source.y + 0.05,
+                crop: { ...source.crop },
+              },
+            ],
+            selectedOverlayId: id,
+          }),
+          textOverlay: normalizeTextOverlay({
+            ...resolveTextOverlay(next.textOverlay),
+            selectedLayerIds: [],
+          }),
+        };
+      }
+    }
+    if (hasText) {
+      const resolved = resolveTextOverlay(next.textOverlay);
+      const offset = Math.min(0.2, resolved.layers.length * 0.035);
+      const id = generateId();
+      const sourceLayer =
+        resolved.selectedLayerIds
+          .map((selectedId) =>
+            resolved.layers.find((layer) => layer.id === selectedId),
+          )
+          .find((layer) => !!layer) ?? DEFAULT_TEXT_LAYER;
+      const imagesAfter = resolveImageOverlaySettings(next.imageOverlay);
+      next = {
+        ...next,
+        textOverlay: normalizeTextOverlay({
+          ...resolved,
+          panelOpen: true,
+          layers: [
+            ...resolved.layers,
+            {
+              ...sourceLayer,
+              id,
+              x: sourceLayer.x + offset,
+              y: sourceLayer.y + offset,
+            },
+          ],
+          selectedLayerIds: [id],
+        }),
+        imageOverlay: normalizeImageOverlaySettings({
+          ...imagesAfter,
+          selectedOverlayId: null,
+        }),
+      };
+    }
+    void applyDraft(next);
+    requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    });
+  }, [applyDraft]);
+
+  const handleNudgeSelectedOverlays = useCallback(
+    (dx: number, dy: number) => {
+      const current = effectsRef.current;
+      if (!current) return;
+      const currentImages = resolveImageOverlaySettings(current.imageOverlay);
+      const currentText = resolveTextOverlay(current.textOverlay);
+      if (
+        currentImages.selectedOverlayId === null &&
+        currentText.selectedLayerIds.length === 0
+      ) {
+        return;
+      }
+      let next: VideoEffectsSettings = current;
+      if (currentImages.selectedOverlayId !== null) {
+        const selectedId = currentImages.selectedOverlayId;
+        next = {
+          ...next,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentImages,
+            overlays: currentImages.overlays.map((overlay) =>
+              overlay.id === selectedId
+                ? { ...overlay, x: overlay.x + dx, y: overlay.y + dy }
+                : overlay,
+            ),
+          }),
+        };
+      }
+      if (currentText.selectedLayerIds.length > 0) {
+        const resolved = resolveTextOverlay(next.textOverlay);
+        const selectedIds = new Set(resolved.selectedLayerIds);
+        next = {
+          ...next,
+          textOverlay: normalizeTextOverlay({
+            ...resolved,
+            layers: resolved.layers.map((layer) =>
+              selectedIds.has(layer.id)
+                ? { ...layer, x: layer.x + dx, y: layer.y + dy }
+                : layer,
+            ),
+          }),
+        };
+      }
+      void applyDraft(next);
+    },
+    [applyDraft],
+  );
+
+  const handleAddTextLayer = useCallback(() => {
+    const current = effectsRef.current;
+    if (!current) return;
+    const currentOverlay = resolveTextOverlay(current.textOverlay);
+    const offset = Math.min(0.2, currentOverlay.layers.length * 0.035);
+    const id = generateId();
+    const sourceLayer =
+      currentOverlay.selectedLayerIds
+        .map((selectedId) =>
+          currentOverlay.layers.find((layer) => layer.id === selectedId),
+        )
+        .find((layer) => !!layer) ?? DEFAULT_TEXT_LAYER;
+    const currentImages = resolveImageOverlaySettings(current.imageOverlay);
+    void applyDraft({
+      ...current,
+      textOverlay: normalizeTextOverlay({
+        ...currentOverlay,
+        panelOpen: true,
+        layers: [
+          ...currentOverlay.layers,
+          {
+            ...sourceLayer,
+            id,
+            x: sourceLayer.x + offset,
+            y: sourceLayer.y + offset,
+          },
+        ],
+        selectedLayerIds: [id],
+      }),
+      imageOverlay: normalizeImageOverlaySettings({
+        ...currentImages,
+        selectedOverlayId: null,
+      }),
+    });
+    requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    });
+  }, [applyDraft]);
+
+  const handlePickImage = useCallback(async () => {
+    const current = effectsRef.current;
+    if (!current) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const sel = await open({
+        multiple: false,
+        filters: [
+          {
+            name: "Image",
+            extensions: ["png", "jpg", "jpeg", "svg", "webp", "gif"],
+          },
+        ],
+      });
+      if (!sel || typeof sel !== "string") return;
+      const live = effectsRef.current;
+      if (!live) return;
+      const id = generateId();
+      const currentOverlay = resolveImageOverlaySettings(live.imageOverlay);
+      const currentText = resolveTextOverlay(live.textOverlay);
+      await invoke("allow_path_scope", { path: sel }).catch(() => {});
+      void applyDraft({
+        ...live,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentOverlay,
+          panelOpen: true,
+          overlays: [
+            ...currentOverlay.overlays,
+            {
+              id,
+              path: sel,
+              x: 0.5,
+              y: 0.5,
+              scale: 0.25,
+              rotation: 0,
+              opacity: 1,
+              flipHorizontal: false,
+              flipVertical: false,
+              crop: { x: 0, y: 0, width: 1, height: 1 },
+            },
+          ],
+          selectedOverlayId: id,
+        }),
+        textOverlay: normalizeTextOverlay({
+          ...currentText,
+          selectedLayerIds: [],
+        }),
+      });
+      requestAnimationFrame(() => {
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      });
+    } catch {
+      // File picker is best-effort; dismissal is not an error.
+    }
+  }, [applyDraft]);
 
   const togglePlayback = useCallback(() => {
     // Command routing only: never toggle a local clock. The main window is
@@ -328,6 +659,12 @@ export const PreviewPopoutWindow: React.FC = () => {
         if (typeof event.playing === "boolean") {
           setPlaying(event.playing);
         }
+        if (typeof event.showGuides === "boolean") {
+          setShowGuides(event.showGuides);
+        }
+        if (typeof event.showSafeFrames === "boolean") {
+          setShowSafeFrames(event.showSafeFrames);
+        }
       } else if (event.kind === "apply" || event.kind === "cancel" || event.kind === "close") {
         if (settledRef.current === "open") {
           settledRef.current =
@@ -408,7 +745,11 @@ export const PreviewPopoutWindow: React.FC = () => {
     }
   }, [isFullscreen]);
 
-  // Single global Space implementation for this host + Esc fullscreen exit.
+  // Preview keyboard parity for this host: Space (play/pause), Esc (fullscreen
+  // exit), Ctrl/Cmd+D (duplicate), Delete (delete), arrows (nudge). Mirrors
+  // the main-window preview handler in App.tsx through the same draft
+  // architecture. Editable targets (inputs, buttons, sliders, text editing)
+  // are never hijacked.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isPreviewPlayPauseShortcut(event)) {
@@ -425,11 +766,81 @@ export const PreviewPopoutWindow: React.FC = () => {
           event.stopPropagation();
           void exitFullscreenRestorePopout();
         }
+        return;
+      }
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      // Ctrl/Cmd+D duplicates the currently selected overlay. Mirrors App.tsx:
+      // images duplicate via the image path; text layers duplicate via the Add
+      // Text path. No new shortcuts are introduced.
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        normalizeShortcutKey(event) === "d" &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        if (hasSelectedImage || hasSelectedTextLayer) {
+          event.preventDefault();
+          event.stopPropagation();
+          handleDuplicateSelectedOverlays();
+          return;
+        }
+      }
+
+      if (
+        event.key === "Delete" &&
+        (hasSelectedTextLayer || hasSelectedImage) &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRemoveSelectedOverlays();
+        return;
+      }
+
+      // Arrow keys fine-position the selected overlays by one deterministic
+      // canonical increment per press. Plain arrows only (no modifiers), and
+      // never while an editable control has focus — same guard as App.tsx.
+      if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        (event.key === "ArrowUp" ||
+          event.key === "ArrowDown" ||
+          event.key === "ArrowLeft" ||
+          event.key === "ArrowRight") &&
+        (hasSelectedImage || hasSelectedTextLayer) &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        let dx = 0;
+        let dy = 0;
+        switch (event.key) {
+          case "ArrowLeft":
+            dx = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowRight":
+            dx = IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowUp":
+            dy = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowDown":
+            dy = IMAGE_ARROW_NUDGE;
+            break;
+        }
+        handleNudgeSelectedOverlays(dx, dy);
+        return;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlayback, isFullscreen, exitFullscreenRestorePopout]);
+  }, [togglePlayback, isFullscreen, exitFullscreenRestorePopout, hasSelectedImage, hasSelectedTextLayer, handleDuplicateSelectedOverlays, handleRemoveSelectedOverlays, handleNudgeSelectedOverlays]);
 
   const handleTimeUpdate = useCallback((currentTime: number) => {
     // Local handoff bookkeeping only: records the renderer's position for
@@ -505,6 +916,53 @@ export const PreviewPopoutWindow: React.FC = () => {
               aria-label="Preview volume slider"
             />
           </label>
+          <button
+            type="button"
+            className="btn btn-xs"
+            onClick={handleMuteToggle}
+            aria-label={previewVolume === 0 ? "Unmute preview" : "Mute preview"}
+            title={`Preview volume: ${previewVolume}%`}
+          >
+            {previewVolume === 0 ? "Unmute" : "Mute"}
+          </button>
+          <button
+            type="button"
+            className={`btn btn-xs${showGuides ? " active" : ""}`}
+            onClick={handleGuidesToggle}
+            aria-pressed={showGuides}
+            aria-label="Toggle guides"
+            title="Toggle guides"
+          >
+            Guides
+          </button>
+          <button
+            type="button"
+            className={`btn btn-xs${showSafeFrames ? " active" : ""}`}
+            onClick={handleSafeFramesToggle}
+            aria-pressed={showSafeFrames}
+            aria-label="Toggle safe areas"
+            title="Toggle safe areas"
+          >
+            Safe Areas
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs"
+            onClick={handleAddTextLayer}
+            aria-label="Add text overlay"
+            title="Add text overlay"
+          >
+            + Text
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs"
+            onClick={() => void handlePickImage()}
+            aria-label="Add image overlay"
+            title="Add image overlay"
+          >
+            + Image
+          </button>
           <button
             type="button"
             className="btn btn-xs"

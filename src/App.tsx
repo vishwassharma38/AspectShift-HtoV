@@ -1048,12 +1048,14 @@ export default function App() {
     previewCurrentTimeRef.current = 0;
     setEmbeddedRestoreTime(0);
   }, [previewFile]);
-  // Draft transaction: snapshot of committed effects/volume taken at Pop Out
-  // time. Pop-out editing works against the draft (live `effectsState`);
+  // Draft transaction: snapshot of committed effects/volume/guides taken at
+  // Pop Out time. Pop-out editing works against the draft (live `effectsState`);
   // Apply commits it, Cancel / native X restores this snapshot.
   const popoutCommittedRef = useRef<{
     effects: VideoEffectsSettings;
     previewVolume: number;
+    showGuides: boolean;
+    showSafeFrames: boolean;
   } | null>(null);
   const isPopoutActive = previewMode === "popout";
   // Focus/visibility invariant: the pop-out's visibility/minimized state is
@@ -1298,6 +1300,8 @@ export default function App() {
     popoutCommittedRef.current = {
       effects: deepClone(effectsState),
       previewVolume,
+      showGuides,
+      showSafeFrames,
     };
     writePopoutSession({
       version: 1,
@@ -1331,6 +1335,8 @@ export default function App() {
       playing: previewPlaying,
       currentTime: previewCurrentTimeRef.current,
       previewLayout: previewLayout ? deepClone(previewLayout) : null,
+      showGuides,
+      showSafeFrames,
     });
   }, [
     handleFocusPopout,
@@ -1375,6 +1381,8 @@ export default function App() {
     if (committed) {
       setEffectsState(committed.effects);
       setPreviewVolume(committed.previewVolume);
+      setShowGuides(committed.showGuides);
+      setShowSafeFrames(committed.showSafeFrames);
     }
     popoutCommittedRef.current = null;
     setIsPreviewFullscreen(false);
@@ -1425,7 +1433,7 @@ export default function App() {
   // While the pop-out hosts the preview, mirror the recomputed preview
   // layout (owned by the main window's backend layout effect) so the pop-out
   // never drifts. Edits themselves flow pop-out -> main via the listeners
-  // below; this direction carries derived layout + playback only.
+  // below; this direction carries derived layout + playback + view toggles.
   useEffect(() => {
     if (previewMode !== "popout" && previewMode !== "fullscreen") return;
     if (!popoutCommittedRef.current) return;
@@ -1438,6 +1446,8 @@ export default function App() {
           previewLayout,
           previewVolume,
           playing: previewPlaying,
+          showGuides,
+          showSafeFrames,
           at: Date.now(),
         }),
       );
@@ -1449,8 +1459,10 @@ export default function App() {
       previewLayout,
       previewVolume,
       playing: previewPlaying,
+      showGuides,
+      showSafeFrames,
     });
-  }, [previewLayout, previewVolume, previewPlaying, previewMode]);
+  }, [previewLayout, previewVolume, previewPlaying, previewMode, showGuides, showSafeFrames]);
 
   // Pop-out session listeners (main-window side): draft updates mirror into
   // the live draft state, Apply commits, Cancel/X restores the snapshot.
@@ -1477,6 +1489,8 @@ export default function App() {
       source?: string;
       effects?: VideoEffectsSettings;
       previewVolume?: number;
+      showGuides?: boolean;
+      showSafeFrames?: boolean;
       at?: number;
     } | null) => {
       if (!payload || disposed) return;
@@ -1496,6 +1510,12 @@ export default function App() {
         setPreviewVolume(
           Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
         );
+      }
+      if (typeof payload.showGuides === "boolean") {
+        setShowGuides(payload.showGuides);
+      }
+      if (typeof payload.showSafeFrames === "boolean") {
+        setShowSafeFrames(payload.showSafeFrames);
       }
     };
 
@@ -1518,6 +1538,8 @@ export default function App() {
       if (committed) {
         setEffectsState(committed.effects);
         setPreviewVolume(committed.previewVolume);
+        setShowGuides(committed.showGuides);
+        setShowSafeFrames(committed.showSafeFrames);
       }
       // Discard the draft but keep the authoritative position handoff so the
       // embedded host resumes where the pop-out left off (no jump).
@@ -5764,9 +5786,8 @@ export default function App() {
                       className="preview-volume-btn"
                       onClick={() => {
                         cancelVolumeCollapse();
-                        setVolumeSliderActive(true);
-                        setPreviewVolume((v) =>
-                          v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
+                        handleVolumeChange(
+                          previewVolume > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
                         );
                       }}
                       aria-label={

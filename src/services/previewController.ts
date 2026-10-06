@@ -123,6 +123,8 @@ export interface PopoutDraftUpdate {
   previewVolume?: number;
   playing?: boolean;
   currentTime?: number;
+  showGuides?: boolean;
+  showSafeFrames?: boolean;
 }
 
 export function isTauriRuntime(): boolean {
@@ -204,6 +206,8 @@ export interface PopoutSyncFields {
   playing?: boolean;
   currentTime?: number;
   previewLayout?: unknown;
+  showGuides?: boolean;
+  showSafeFrames?: boolean;
 }
 
 /**
@@ -254,6 +258,8 @@ export function broadcastPopoutDraft(update: PopoutDraftUpdate): void {
     previewVolume: update.previewVolume,
     playing: update.playing,
     currentTime: update.currentTime,
+    showGuides: update.showGuides,
+    showSafeFrames: update.showSafeFrames,
   });
 }
 
