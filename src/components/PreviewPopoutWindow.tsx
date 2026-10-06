@@ -565,11 +565,17 @@ export const PreviewPopoutWindow: React.FC = () => {
     // local `playing` state below updates only from those authoritative
     // pushes (plus the opening session snapshot), so both windows represent
     // the same timeline with no drift-correction loop.
-    writePlaybackCommandEvent("toggle");
+    //
+    // Single `at` shared by both delivery channels: `toggle` is not
+    // idempotent, so the authoritative owner de-duplicates the dual-channel
+    // delivery by exact `at` match. Two different timestamps would defeat
+    // that guard and double-toggle (net no-op / flicker).
+    const at = Date.now();
+    writePlaybackCommandEvent("toggle", at);
     void emitPopoutEvent(PREVIEW_PLAYBACK_COMMAND_EVENT, {
       source: "popout",
       command: "toggle",
-      at: Date.now(),
+      at,
     });
   }, []);
 
@@ -753,6 +759,13 @@ export const PreviewPopoutWindow: React.FC = () => {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isPreviewPlayPauseShortcut(event)) {
+        // One physical Space press = one toggle command. OS key auto-repeat
+        // fires repeated `keydown` events while held; those must not toggle.
+        // Matches the main-window guard so both hosts behave identically.
+        if (event.repeat) {
+          event.preventDefault();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         togglePlayback();

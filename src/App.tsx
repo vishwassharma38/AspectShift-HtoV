@@ -1715,12 +1715,22 @@ export default function App() {
       (async () => {
         try {
           const { listen } = await import("@tauri-apps/api/event");
-          const u = await listen(PREVIEW_PLAYBACK_COMMAND_EVENT, (ev) =>
+          const u = await listen(PREVIEW_PLAYBACK_COMMAND_EVENT, (ev) => {
+            const payload = (ev.payload as Partial<PreviewPlaybackCommand>) ?? {};
+            // Preserve the sender's original `at` so the dual-channel
+            // delivery (Tauri event + storage event share one `at` per
+            // physical press) de-duplicates by exact match. Re-stamping with
+            // receive-time `Date.now()` would defeat that guard and
+            // double-toggle a single press (toggle is not idempotent).
+            const at =
+              typeof payload.at === "number" && Number.isFinite(payload.at)
+                ? payload.at
+                : Date.now();
             applyCommand({
-              ...((ev.payload as object) ?? {}),
-              at: Date.now(),
-            } as PreviewPlaybackCommand),
-          );
+              ...payload,
+              at,
+            } as PreviewPlaybackCommand);
+          });
           if (disposed) u();
           else unlisten = u;
         } catch {
@@ -2938,7 +2948,13 @@ export default function App() {
       // Single global Space implementation owned by the preview controller:
       // Space toggles play/pause in embedded, pop-out, and fullscreen hosts
       // (same underlying preview state). Protected from editable fields.
+      // One physical press = one toggle: held Space fires repeated `keydown`
+      // events (OS auto-repeat) which must not toggle.
       if (isPreviewPlayPauseShortcut(event)) {
+        if (event.repeat) {
+          event.preventDefault();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         togglePreviewPlayback();

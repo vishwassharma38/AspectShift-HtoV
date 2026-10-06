@@ -267,15 +267,21 @@ export function broadcastPopoutDraft(update: PopoutDraftUpdate): void {
  * Send a playback intent from the pop-out to the authoritative owner
  * (storage-event fallback; Tauri event is primary via `emitPopoutEvent`
  * with `PREVIEW_PLAYBACK_COMMAND_EVENT`). Synchronous and render-free.
+ *
+ * The caller may supply a single `at` timestamp shared with the Tauri
+ * payload so the authoritative owner can de-duplicate the dual-channel
+ * delivery (both channels carry the same `at` for one physical press).
+ * A `toggle` command is not idempotent, so exact-match dedup is required.
  */
 export function writePlaybackCommandEvent(
   command: PreviewPlaybackCommandKind,
+  at?: number,
 ): void {
   try {
     const payload: PreviewPlaybackCommand = {
       source: "popout",
       command,
-      at: Date.now(),
+      at: typeof at === "number" && Number.isFinite(at) ? at : Date.now(),
     };
     window.localStorage.setItem(
       PLAYBACK_COMMAND_STORAGE_KEY,
