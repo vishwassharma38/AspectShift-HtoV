@@ -3095,6 +3095,7 @@ html.theme-transitioning *::after {
   background: var(--bg-base);
   color: var(--text-primary);
   overflow: hidden;
+  position: relative;
 }
 
 .preview-popout-root.is-fullscreen {
@@ -3116,6 +3117,14 @@ html.theme-transitioning *::after {
   padding: 0;
 }
 
+/* Default frame corners (windowed pop-out and embedded preview). */
+.video-canvas-box {
+  border-radius: 10px;
+}
+
+/* True fullscreen: no rounded corners anywhere on the video frame. This
+   rule only works because the radius is no longer set inline on the box
+   (inline styles beat stylesheets). */
 .preview-popout-root.is-fullscreen .video-canvas-box {
   border-radius: 0;
 }
@@ -3129,6 +3138,43 @@ html.theme-transitioning *::after {
   border-top: 1px solid var(--border);
   background: var(--bg-card);
   flex-wrap: wrap;
+  /* Auto-hide/reveal animation: downward slide + fade while the footer's
+     layout slot collapses (max-height/padding/border driven by the measured
+     --popout-footer-full-h), so the stage/video smoothly fills the freed
+     space. Removing the hidden class reverses the same transition (the
+     reveal) back to the exact normal position. */
+  max-height: var(--popout-footer-full-h, 240px);
+  overflow: hidden;
+  transition: transform 0.32s ease, opacity 0.32s ease, max-height 0.32s ease,
+    padding-top 0.32s ease, padding-bottom 0.32s ease, border-top-width 0.32s ease;
+}
+
+/* Hidden state: footer slides down and fades while its slot collapses to
+   zero, letting the stage fill the window. Pointer events are disabled so
+   the reveal strip receives the hover. */
+.preview-popout-root.is-controls-hidden .preview-popout-footer {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Bottom reveal zone: dedicated invisible hover strip anchored to the
+   bottom of the pop-out root (inside the window, element-based so it
+   follows resizes and fullscreen). Mounted only while controls are hidden,
+   so it can never sit above visible clickable controls or block video
+   interaction outside its small bottom footprint. */
+.preview-popout-reveal-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  background: transparent;
+  pointer-events: auto;
 }
 
 .preview-popout-playback {

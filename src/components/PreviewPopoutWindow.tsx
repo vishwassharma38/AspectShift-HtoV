@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PreviewHost } from "./PreviewHost";
 import {
@@ -46,6 +46,18 @@ import {
 // in canonical overlay coordinates (fraction of the video frame per axis).
 const IMAGE_ARROW_NUDGE = 0.005;
 const DEFAULT_POPOUT_VOLUME = 20;
+
+// Pop-out controls auto-hide: no pre-existing timer/animation survived the
+// revert, so this is the single inactivity delay (standard video-player
+// value). The footer hides with a downward slide/fade (CSS) after this many
+// ms without visible-state activity; the bottom reveal zone restores it.
+const POPOUT_CONTROLS_AUTOHIDE_DELAY_MS = 3000;
+// Bottom reveal strip height: covers the footer footprint plus a small
+// comfortable hover margin above it. Element-anchored (absolute bottom of
+// the pop-out root), never screen coordinates, so resize/maximize/
+// fullscreen all follow automatically. Intentionally small — not the lower
+// half of the video.
+const POPOUT_REVEAL_ZONE_HEIGHT_PX = 88;
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -135,6 +147,20 @@ export const PreviewPopoutWindow: React.FC = () => {
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const prevMaximizedRef = useRef(false);
+  // Pop-out controls visibility: the single source of truth for the
+  // auto-hide + bottom-reveal interaction. `true` = footer in its normal
+  // position; `false` = footer translated down + faded (CSS class on the
+  // root) with the bottom reveal strip mounted to restore it.
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsVisibleRef = useRef(true);
+  // Single inactivity timer only: cleared before every (re)schedule and on
+  // unmount. No parallel timers, no polling, no position loops.
+  const hideTimerRef = useRef<number | null>(null);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  // Last measured visible footer height (px): drives the collapse animation
+  // (`max-height`) so the stage/video smoothly fills the freed space when
+  // the controls hide, regardless of footer wrapping at the current width.
+  const [footerFullHeight, setFooterFullHeight] = useState(0);
   const currentTimeRef = useRef<number>(session?.currentTime ?? 0);
   const settledRef = useRef<"open" | "applied" | "cancelled">("open");
   const effectsRef = useRef(effects);
@@ -146,6 +172,126 @@ export const PreviewPopoutWindow: React.FC = () => {
   useEffect(() => {
     volumeRef.current = previewVolume;
   }, [previewVolume]);
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+  }, [controlsVisible]);
+
+  // ── Pop-out controls auto-hide + bottom reveal zone ──
+  // Single-timer lifecycle: visible-state activity (re)starts the delay;
+  // expiry hides the footer (downward slide/fade via CSS). While hidden,
+  // generic pointer movement over the video/stage is deliberately ignored
+  // so normal preview interaction never reveals — only entering the bottom
+  // reveal strip (mounted solely while hidden) restores the controls, after
+  // which the normal inactivity delay resumes. No mouseleave/window-enter
+  // reveal, no screen coordinates, no playback changes.
+  const clearControlsTimer = useCallback(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleControlsHide = useCallback(() => {
+    clearControlsTimer();
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setControlsVisible(false);
+    }, POPOUT_CONTROLS_AUTOHIDE_DELAY_MS);
+  }, [clearControlsTimer]);
+
+  const revealControls = useCallback(() => {
+    // Idempotent: entering the zone while already visible is a no-op in
+    // practice (the zone is unmounted when visible), and re-scheduling
+    // keeps exactly one pending timer — no races, no oscillation.
+    setControlsVisible(true);
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
+
+  // Visible-state activity: restart the inactivity delay. Hidden-state
+  // activity (stage/video pointer movement) is ignored — see above.
+  const handleVisibleActivity = useCallback(() => {
+    if (!controlsVisibleRef.current) return;
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
+
+  const handleRevealZoneEnter = useCallback(() => {
+    if (controlsVisibleRef.current) return;
+    revealControls();
+  }, [revealControls]);
+
+  const handleRootKeyActivity = useCallback(
+    (event: React.KeyboardEvent) => {
+      // Keyboard users have no hover target: any key reveals hidden
+      // controls (and Space/arrows still reach the existing window-level
+      // shortcut handler independently). Visible-state keys just restart
+      // the delay.
+      if (event.defaultPrevented) return;
+      if (!controlsVisibleRef.current) {
+        revealControls();
+      } else {
+        scheduleControlsHide();
+      }
+    },
+    [revealControls, scheduleControlsHide],
+  );
+
+  const handleFooterFocusCapture = useCallback(() => {
+    // Hidden footer stays tab-reachable; focusing into it reveals so
+    // keyboard users never tab through invisible controls.
+    if (!controlsVisibleRef.current) {
+      revealControls();
+    }
+  }, [revealControls]);
+
+  // Track the footer's full content height so hiding collapses its exact layout
+  // slot (the stage/video fills the freed space) instead of leaving empty
+  // space behind. Measured only while visible; wraps/resizes while visible
+  // re-measure automatically. No polling — a single ResizeObserver.
+  //
+  // `scrollHeight` (not `offsetHeight`) is deliberate: during the reveal
+  // transition the observer fires on every intermediate animation frame
+  // while `max-height` still clamps the box. Feeding the clamped
+  // `offsetHeight` back into the `max-height` target converges the animation
+  // prematurely and freezes the footer half-emerged. `scrollHeight` reports
+  // the true content height regardless of the clamp, so the loop always
+  // converges on the fully-open height.
+  useLayoutEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    const measure = () => {
+      if (!controlsVisibleRef.current) return;
+      const h = el.scrollHeight;
+      if (h > 0) {
+        setFooterFullHeight((prev) => (prev === h ? prev : h));
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Initial delay on mount; single cleanup on unmount.
+  useEffect(() => {
+    scheduleControlsHide();
+    return () => {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [scheduleControlsHide]);
+
+  // Fullscreen transitions surface the controls so the new layout is never
+  // entered blind; the reveal strip (element-anchored to the root) follows
+  // automatically in both modes.
+  const wasFullscreenRef = useRef(isFullscreen);
+  useEffect(() => {
+    if (wasFullscreenRef.current !== isFullscreen) {
+      wasFullscreenRef.current = isFullscreen;
+      revealControls();
+    }
+  }, [isFullscreen, revealControls]);
 
   const orientation: OrientationInfo | null =
     session?.orientation && typeof session.orientation === "object"
@@ -884,8 +1030,13 @@ export const PreviewPopoutWindow: React.FC = () => {
 
   return (
     <div
-      className={`preview-popout-root${isFullscreen ? " is-fullscreen" : ""}`}
+      className={`preview-popout-root${isFullscreen ? " is-fullscreen" : ""}${controlsVisible ? "" : " is-controls-hidden"}`}
       data-preview-mode={isFullscreen ? "fullscreen" : "popout"}
+      data-controls-visible={controlsVisible ? "true" : "false"}
+      onPointerMove={handleVisibleActivity}
+      onPointerDown={handleVisibleActivity}
+      onWheel={handleVisibleActivity}
+      onKeyDown={handleRootKeyActivity}
     >
       <div className="preview-popout-stage">
         <PreviewHost
@@ -906,7 +1057,17 @@ export const PreviewPopoutWindow: React.FC = () => {
           onTimeUpdate={handleTimeUpdate}
         />
       </div>
-      <div className="preview-popout-footer">
+      <div
+        ref={footerRef}
+        className="preview-popout-footer"
+        style={
+          {
+            "--popout-footer-full-h":
+              footerFullHeight > 0 ? `${footerFullHeight}px` : undefined,
+          } as React.CSSProperties
+        }
+        onFocusCapture={handleFooterFocusCapture}
+      >
         <div className="preview-popout-playback">
           <button
             type="button"
@@ -1009,6 +1170,17 @@ export const PreviewPopoutWindow: React.FC = () => {
           </button>
         </div>
       </div>
+      {!controlsVisible && (
+        <div
+          className="preview-popout-reveal-zone"
+          aria-hidden="true"
+          data-testid="preview-popout-reveal-zone"
+          style={{ height: POPOUT_REVEAL_ZONE_HEIGHT_PX }}
+          onPointerEnter={handleRevealZoneEnter}
+          onMouseEnter={handleRevealZoneEnter}
+          onPointerDown={handleRevealZoneEnter}
+        />
+      )}
     </div>
   );
 };

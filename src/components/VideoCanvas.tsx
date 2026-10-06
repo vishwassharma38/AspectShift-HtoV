@@ -1591,7 +1591,10 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
               position: "relative",
               overflow: "hidden",
               backgroundColor: showWhiteBackground ? "#fff" : "#000",
-              borderRadius: "10px",
+              // Corner radius lives in App.css (`.video-canvas-box`), not
+              // here: the pop-out fullscreen override must be able to drop it
+              // to 0, which a stylesheet rule can never do against an inline
+              // style.
               // Only animate width/height after the video is ready to avoid
               // the layout-shift frame being visible during ratio transitions.
               transition: "width 0.3s ease, height 0.3s ease",
