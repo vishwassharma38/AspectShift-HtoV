@@ -643,6 +643,7 @@ impl OutputFormat {
 pub struct VideoEffectsSettings {
     pub blur: Option<bool>,
     pub white_background: Option<bool>,
+    pub background_color: Option<String>,
     pub overlays: Option<Vec<String>>,
     pub subtitles: Option<String>,
     pub color_filter: Option<String>,
@@ -661,13 +662,43 @@ pub struct VideoEffectsSettings {
     pub transform: Option<VideoTransform>,
 }
 
+fn default_background_color() -> String {
+    "#000000".to_string()
+}
+
+fn is_background_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 impl VideoEffectsSettings {
     pub fn blur_enabled(&self) -> bool {
         self.blur.unwrap_or(false) && !self.white_background_enabled()
     }
 
+    /// Background Color enabled flag.
+    ///
+    /// Backed by the legacy `whiteBackground` boolean for persisted-config
+    /// and IPC compatibility; `true` means "fill the letterbox with
+    /// `background_color_value()`" (default black).
     pub fn white_background_enabled(&self) -> bool {
         self.white_background.unwrap_or(false)
+    }
+
+    /// Selected background color in `#RRGGBB`. Falls back to black when
+    /// unset or malformed.
+    pub fn background_color_value(&self) -> String {
+        match &self.background_color {
+            Some(color) if is_background_hex_color(color) => color.clone(),
+            _ => default_background_color(),
+        }
+    }
+
+    /// `background_color_value()` in FFmpeg `color=` syntax (`0xRRGGBB`).
+    /// The `#` form is avoided: `#` starts a comment inside filtergraphs.
+    pub fn background_color_ffmpeg(&self) -> String {
+        format!("0x{}", self.background_color_value().trim_start_matches('#'))
     }
 
     pub fn background_effect_enabled(&self) -> bool {
@@ -735,6 +766,7 @@ pub struct AppConfig {
     pub subtitle_overlay: Option<SubtitleOverlaySettings>,
     pub blur: Option<bool>,
     pub white_background: Option<bool>,
+    pub background_color: Option<String>,
     pub blur_sigma: Option<f32>,
     pub enable_subfolders: Option<bool>,
     pub preview_volume: Option<u8>,

@@ -621,6 +621,7 @@ mod tests {
         VideoEffectsSettings {
             blur: None,
             white_background: None,
+            background_color: None,
             overlays: None,
             subtitles: None,
             color_filter: None,

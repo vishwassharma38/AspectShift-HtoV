@@ -60,7 +60,8 @@ pub fn save_app_config(app: &AppHandle, config: AppConfig) -> Result<(), VideoEr
 ///   instead of hiding it.
 /// - `blur_sigma`: same 0.0–100.0 finite domain `validate_effects`
 ///   enforces at render time.
-/// - overlay default sub-objects + `blur`/`white_background`: validated by
+/// - overlay default sub-objects + `blur`/`white_background`/`background_color`:
+///   validated by
 ///   reusing the render boundary's own `validate_effects` on a synthetic
 ///   settings value (no parallel logic), so save and render agree.
 ///
@@ -85,6 +86,7 @@ pub fn validate_app_config_for_save(config: &AppConfig) -> Result<(), VideoError
     let effects = VideoEffectsSettings {
         blur: config.blur,
         white_background: config.white_background,
+        background_color: config.background_color.clone(),
         overlays: None,
         subtitles: None,
         color_filter: None,

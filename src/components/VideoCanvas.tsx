@@ -207,6 +207,11 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   // wrong size.
   const [videoReady, setVideoReady] = useState(false);
   const showWhiteBackground = !!effects.whiteBackground;
+  const backgroundColor =
+    typeof effects.backgroundColor === "string" &&
+    /^#[0-9a-f]{6}$/i.test(effects.backgroundColor)
+      ? effects.backgroundColor
+      : "#000000";
   const showBlur = !!effects.blur && !showWhiteBackground;
   const showBackgroundEffect = showBlur || showWhiteBackground;
   const textOverlay = useMemo<ResolvedTextOverlaySettings>(
@@ -1593,7 +1598,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
               // box is not a scroll container, so an arbitrarily large overlay
               // can never shift the video via box scroll (focus/caret/JS scroll).
               overflow: "clip",
-              backgroundColor: showWhiteBackground ? "#fff" : "#000",
+              backgroundColor: showWhiteBackground ? backgroundColor : "#000",
               // Corner radius lives in App.css (`.video-canvas-box`), not
               // here: the pop-out fullscreen override must be able to drop it
               // to 0, which a stylesheet rule can never do against an inline

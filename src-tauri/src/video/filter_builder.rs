@@ -132,9 +132,10 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
                 fg_filter = fg_filter
             ));
         } else if plan.effects.white_background_enabled() {
+            let bg_color = plan.effects.background_color_ffmpeg();
             filter_stages.push(format!(
                 "[0:v]{transform}[v_transformed];\
-                 color=c=white:s={tw}x{th}[bg_white];\
+                 color=c={bg_color}:s={tw}x{th}[bg_white];\
                  [v_transformed]{fg_filter}[fg_scaled];\
                  [bg_white][fg_scaled]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:shortest=1[v]",
                 transform = transform_filter,
@@ -166,8 +167,9 @@ pub fn build_filter_graph(plan: &RenderPlan, orientation: &OrientationInfo) -> S
             fg_filter = fg_filter
         ));
     } else if plan.effects.white_background_enabled() {
+        let bg_color = plan.effects.background_color_ffmpeg();
         filter_stages.push(format!(
-            "color=c=white:s={tw}x{th}[bg_white];\
+            "color=c={bg_color}:s={tw}x{th}[bg_white];\
              [0:v]{fg_filter}[fg_scaled];\
              [bg_white][fg_scaled]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:shortest=1[v]",
             tw = tw,

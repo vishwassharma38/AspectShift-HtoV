@@ -39,6 +39,14 @@ pub fn validate_effects(effects: &VideoEffectsSettings) -> Result<(), VideoError
         ));
     }
 
+    if let Some(color) = &effects.background_color {
+        if !is_hex_color(color) {
+            return Err(VideoError::InvalidInput(
+                "effects.backgroundColor must use #RRGGBB format".to_string(),
+            ));
+        }
+    }
+
     if let Some(blur_sigma) = effects.blur_sigma {
         if !blur_sigma.is_finite() || !(0.0..=100.0).contains(&blur_sigma) {
             return Err(VideoError::InvalidInput(

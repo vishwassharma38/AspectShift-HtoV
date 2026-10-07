@@ -283,6 +283,7 @@ const EMPTY_ENCODING_OVERRIDES: EncodingOverrides = {
 const DEFAULT_EFFECTS: VideoEffectsSettings = {
   blur: false,
   whiteBackground: false,
+  backgroundColor: "#000000",
   overlays: null,
   subtitles: null,
   colorFilter: null,
@@ -297,6 +298,16 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   subtitleOverlay: DEFAULT_SUBTITLE_OVERLAY,
   transform: { rotate: 0, flip_h: false, flip_v: false },
 };
+
+const DEFAULT_BACKGROUND_COLOR = "#000000";
+
+function normalizeBackgroundColor(
+  value: string | null | undefined,
+): string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)
+    ? value
+    : DEFAULT_BACKGROUND_COLOR;
+}
 
 const NOTIFICATION_ANIMATION_MS = 370;
 const NOTIFICATION_DURATIONS: Record<UpdateNoticeTone, number> = {
@@ -452,6 +463,7 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
     ...effects,
     blur: whiteBackground ? false : !!effects.blur,
     whiteBackground,
+    backgroundColor: normalizeBackgroundColor(effects.backgroundColor),
     imageOverlay: normalizeImageOverlaySettings(effects.imageOverlay),
     textOverlay: normalizeTextOverlay(effects.textOverlay),
     subtitleOverlay: normalizeSubtitleOverlay(effects.subtitleOverlay),
@@ -3477,6 +3489,7 @@ export default function App() {
         config.subtitleOverlay !== null ||
         config.blur !== null ||
         config.whiteBackground !== null ||
+        config.backgroundColor !== null ||
         config.blurSigma !== null
       ) {
         setEffectsState((prev) => ({
@@ -3486,6 +3499,9 @@ export default function App() {
           subtitleOverlay: normalizeSubtitleOverlay(config.subtitleOverlay),
           blur: config.whiteBackground ? false : (config.blur ?? prev.blur),
           whiteBackground: config.whiteBackground ?? prev.whiteBackground,
+          backgroundColor: normalizeBackgroundColor(
+            config.backgroundColor ?? prev.backgroundColor,
+          ),
           blurSigma: config.blurSigma ?? prev.blurSigma,
         }));
       }
@@ -3556,6 +3572,7 @@ export default function App() {
         subtitleOverlay: normalizeSubtitleOverlay(effectsState.subtitleOverlay),
         blur: effectsState.blur ?? null,
         whiteBackground: effectsState.whiteBackground ?? null,
+        backgroundColor: normalizeBackgroundColor(effectsState.backgroundColor),
         blurSigma: effectsState.blurSigma ?? null,
         enableSubfolders: enableSubfolders,
         previewVolume: previewVolume,
@@ -3577,6 +3594,7 @@ export default function App() {
     effectsState.subtitleOverlay,
     effectsState.blur,
     effectsState.whiteBackground,
+    effectsState.backgroundColor,
     effectsState.blurSigma,
     enableSubfolders,
     lastInputDir,
@@ -4744,7 +4762,7 @@ export default function App() {
                         </div>
                       )}
                       <div className="toggle-row">
-                        <span className="toggle-label">White Background</span>
+                        <span className="toggle-label">Background Color</span>
                         <Toggle
                           checked={!!effectsState.whiteBackground}
                           onChange={(v) =>
@@ -4756,6 +4774,35 @@ export default function App() {
                           }
                         />
                       </div>
+                      {!!effectsState.whiteBackground && (
+                        <div className="text-color-row mt-2">
+                          <label
+                            className="input-label"
+                            htmlFor="background-color"
+                          >
+                            Color
+                          </label>
+                          <input
+                            id="background-color"
+                            className="text-color-input"
+                            type="color"
+                            value={normalizeBackgroundColor(
+                              effectsState.backgroundColor,
+                            )}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                backgroundColor: e.target.value,
+                              })
+                            }
+                          />
+                          <span className="text-color-value">
+                            {normalizeBackgroundColor(
+                              effectsState.backgroundColor,
+                            ).toUpperCase()}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="settings-group">

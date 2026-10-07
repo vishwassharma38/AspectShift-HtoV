@@ -43,6 +43,7 @@ export type AppConfig = {
 	subtitleOverlay: SubtitleOverlaySettings | null,
 	blur: boolean | null,
 	whiteBackground: boolean | null,
+	backgroundColor: string | null,
 	blurSigma: number | null,
 	enableSubfolders: boolean | null,
 	previewVolume: number | null,
@@ -543,6 +544,7 @@ export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "n
 export type VideoEffectsSettings = {
 	blur: boolean | null,
 	whiteBackground: boolean | null,
+	backgroundColor: string | null,
 	overlays: string[] | null,
 	subtitles: string | null,
 	colorFilter: string | null,
