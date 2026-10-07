@@ -517,6 +517,12 @@ impl<'de> Deserialize<'de> for TextOverlaySettings {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
+        // Container-vs-legacy rule: an object carrying ANY container key
+        // (`layers`, `panelOpen`, `selectedLayerIds`) is a container, even
+        // with zero layers. This must stay aligned with the frontend mirror
+        // (`src/utils/textOverlay.ts`, `isTextOverlayContainer`).
+        // Contract: frontend normalization is edit-time convenience;
+        // backend validation (`video::validation`) is render authority.
         let is_container = value.get("layers").is_some()
             || value.get("panelOpen").is_some()
             || value.get("selectedLayerIds").is_some();
@@ -1230,6 +1236,32 @@ mod tests {
         assert!(!layer.italic);
         assert!(!layer.underline);
         assert!(!layer.strikethrough);
+    }
+
+    #[test]
+    fn panel_open_without_layers_is_an_empty_container_not_a_legacy_layer() {
+        // Must stay aligned with the frontend `isTextOverlayContainer`
+        // (`src/utils/textOverlay.ts`): `{ panelOpen: true }` with no
+        // `layers` is a container with zero layers, not a legacy single
+        // layer. The old frontend rule (layers-array presence only)
+        // materialized a phantom "Add Text" layer here.
+        let overlay: TextOverlaySettings = serde_json::from_str(r#"{"panelOpen":true}"#)
+            .expect("panel-only overlay should load");
+        assert!(overlay.layers.is_empty());
+        assert!(overlay.panel_open);
+        assert!(overlay.selected_layer_ids.is_empty());
+    }
+
+    #[test]
+    fn empty_object_and_bare_text_carry_no_legacy_layer() {
+        // Mirrors the frontend `resolveTextOverlay` legacy branch: the
+        // legacy wire defaults `enabled` to false, so shapes without an
+        // explicit `enabled: true` plus non-empty `text` collapse to empty.
+        for raw in [r#"{}"#, r#"{"text":"Hi"}"#, r#"{"enabled":false,"text":"Hi"}"#] {
+            let overlay: TextOverlaySettings =
+                serde_json::from_str(raw).expect("shape should load");
+            assert!(overlay.layers.is_empty(), "{raw}");
+        }
     }
 
     #[test]

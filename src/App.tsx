@@ -2198,7 +2198,7 @@ export default function App() {
 
         updateDependencyOperation("verifying");
         const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
-          scan_source: "post_download",
+          scanSource: "post_download",
         });
         setDepsState(refreshed);
         updateDependencyOperation("completed");
@@ -2253,7 +2253,7 @@ export default function App() {
       updateDependencyOperation("checking");
       setDepsInstallMessage("Checking dependency health...");
       const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
-        scan_source: "manual",
+        scanSource: "manual",
       });
       setDepsState(refreshed);
       updateDependencyOperation("completed");
@@ -3767,7 +3767,7 @@ export default function App() {
             }
             dependencyRescanTimerRef.current = setTimeout(() => {
               invoke<AppDepsState>("rescan_dependencies", {
-                scan_source: "post_download",
+                scanSource: "post_download",
               })
                 .then((state) => {
                   setDepsState(state);
@@ -4318,11 +4318,37 @@ export default function App() {
     // effective configuration exactly as displayed when saved. It keeps no
     // parent-preset reference, so later changes to built-in presets never
     // mutate it. Transient overrides themselves are not persisted.
+    // Freshness guard: `encodingState` is the last *completed* backend
+    // preview, debounced ~120 ms behind the controls and sticky when a
+    // preview fails (errors swallowed). Re-resolve for the CURRENT
+    // baseline+overrides here so Save can never persist a stale display
+    // value; on failure abort instead of saving stale data.
+    let effective: EncodingProfile;
+    try {
+      const res = await invoke<EncodingPreviewResponse>(
+        "resolve_encoding_preview",
+        {
+          request: {
+            baseline: activeBaseline,
+            overrides: { ...manualEncodingOverrides },
+            outputFormat: effectsState.outputFormat ?? "mp4",
+            removeAudio: !!effectsState.removeAudio,
+          },
+        },
+      );
+      effective = res.effective;
+    } catch (e) {
+      addLog(
+        `Save preset failed: could not resolve current encoding (${errorMessage(e)})`,
+        "error",
+      );
+      return;
+    }
     const p: CustomPreset = {
-      id: Date.now().toString(),
+      id: generateId(),
       name: newPresetName.trim(),
       ratio,
-      encoding: deepClone(encodingState),
+      encoding: deepClone(effective),
     };
     try {
       await invoke("save_preset", { preset: p });

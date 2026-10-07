@@ -29,6 +29,15 @@ use specta_typescript::{BigIntExportBehavior, Typescript};
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Contract caveats (intentional, do not "fix"):
+    // - Rust `u8/u32/usize/u64/i32/f32/f64` all export as TS `number`
+    //   (`BigIntExportBehavior::Number` below). Precision loss above 2^53
+    //   is irrelevant for the counts/sizes crossing this boundary.
+    // - `Option<T>` with `#[serde(default)]` exports as optional (`?`);
+    //   missing and `null` both deserialize to `None`.
+    // - `VideoProgress.ratio` (FFmpeg event payload) is a free `String`
+    //   label, while `FileProgress.ratio` is the typed `AspectRatio` enum;
+    //   the shared name is historical, not a type error.
     let types = TypeCollection::default()
         .register::<AspectRatio>()
         .register::<EncodingProfile>()

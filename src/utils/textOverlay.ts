@@ -156,7 +156,22 @@ type LegacyTextOverlaySettings = Omit<TextLayerSettings, "id"> & {
 function isTextOverlayContainer(
   overlay: TextOverlaySettings | LegacyTextOverlaySettings,
 ): overlay is TextOverlaySettings {
-  return Array.isArray((overlay as TextOverlaySettings).layers);
+  // Container-vs-legacy rule mirrors the Rust backend
+  // (`src-tauri/src/video/types.rs`, `TextOverlaySettings::deserialize`):
+  // an object carrying ANY container key (`layers`, `panelOpen`,
+  // `selectedLayerIds`) is a container, even with zero layers. Checking
+  // only `layers` misclassifies `{ panelOpen: true }` (no `layers`) as a
+  // legacy single layer and materializes a phantom "Add Text" layer the
+  // backend never creates.
+  // Contract: frontend normalization is edit-time convenience; backend
+  // validation is render authority. Domains must stay aligned:
+  // text ≤500 chars, fontSize 12–240, opacity 0–1, x/y any finite,
+  // rotation ±720, #RRGGBB colors, outlineWidth 0–20 (see `validation.rs`).
+  return (
+    Array.isArray((overlay as TextOverlaySettings).layers) ||
+    "panelOpen" in overlay ||
+    "selectedLayerIds" in overlay
+  );
 }
 
 function legacyLayerId(index: number): string {
@@ -200,10 +215,15 @@ export function resolveTextOverlay(
     };
   }
 
-  const legacyLayer = resolveTextLayer(overlay, 0);
-  if (!legacyLayer.enabled || !legacyLayer.text.trim()) {
+  const legacyEnabled =
+    (overlay as Partial<LegacyTextOverlaySettings>).enabled ?? false;
+  const legacyText =
+    (overlay as Partial<LegacyTextOverlaySettings>).text ??
+    DEFAULT_TEXT_LAYER.text;
+  if (!legacyEnabled || !legacyText.trim()) {
     return DEFAULT_TEXT_OVERLAY;
   }
+  const legacyLayer = resolveTextLayer(overlay, 0);
   return {
     panelOpen: !!overlay.enabled,
     layers: [legacyLayer],
