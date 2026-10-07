@@ -3145,8 +3145,8 @@ html.theme-transitioning *::after {
      reveal) back to the exact normal position. */
   max-height: var(--popout-footer-full-h, 240px);
   overflow: hidden;
-  transition: transform 0.32s ease, opacity 0.32s ease, max-height 0.32s ease,
-    padding-top 0.32s ease, padding-bottom 0.32s ease, border-top-width 0.32s ease;
+  transition: transform 0.22s ease, opacity 0.22s ease, max-height 0.22s ease,
+    padding-top 0.22s ease, padding-bottom 0.22s ease, border-top-width 0.22s ease;
 }
 
 /* Hidden state: footer slides down and fades while its slot collapses to

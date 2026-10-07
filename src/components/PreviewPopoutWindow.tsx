@@ -175,6 +175,12 @@ export const PreviewPopoutWindow: React.FC = () => {
   // root) with the bottom reveal strip mounted to restore it.
   const [controlsVisible, setControlsVisible] = useState(true);
   const controlsVisibleRef = useRef(true);
+  // Whether the pointer is currently inside the controls interaction area
+  // (footer while visible, reveal strip while hidden). While true, no hide
+  // timer may be pending and no hide transition may start. Plain ref (never
+  // state): hover is read synchronously inside timer callbacks and event
+  // handlers, so it must never go stale behind a render.
+  const controlsHoverRef = useRef(false);
   // Single inactivity timer only: cleared before every (re)schedule and on
   // unmount. No parallel timers, no polling, no position loops.
   const hideTimerRef = useRef<number | null>(null);
@@ -199,13 +205,13 @@ export const PreviewPopoutWindow: React.FC = () => {
   }, [controlsVisible]);
 
   // ── Pop-out controls auto-hide + bottom reveal zone ──
-  // Single-timer lifecycle: visible-state activity (re)starts the delay;
-  // expiry hides the footer (downward slide/fade via CSS). While hidden,
-  // generic pointer movement over the video/stage is deliberately ignored
-  // so normal preview interaction never reveals — only entering the bottom
-  // reveal strip (mounted solely while hidden) restores the controls, after
-  // which the normal inactivity delay resumes. No mouseleave/window-enter
-  // reveal, no screen coordinates, no playback changes.
+  // Hover-gated single-timer lifecycle. Invariant: while the pointer is
+  // inside the controls interaction area (footer or reveal strip), the
+  // controls stay visible with NO pending hide timer and NO hide attempt.
+  // Leaving that area schedules exactly one hide countdown; re-entering
+  // before expiry cancels it. Pointer movement over the stage (outside the
+  // controls area) restarts the normal inactivity countdown. Generic stage
+  // movement while hidden is ignored — only the reveal strip restores.
   const clearControlsTimer = useCallback(() => {
     if (hideTimerRef.current !== null) {
       window.clearTimeout(hideTimerRef.current);
@@ -215,31 +221,64 @@ export const PreviewPopoutWindow: React.FC = () => {
 
   const scheduleControlsHide = useCallback(() => {
     clearControlsTimer();
+    // Never arm a hide countdown that would expire against a hovered UI:
+    // hidden state has nothing to hide, and a hovered UI must stay visible.
+    if (!controlsVisibleRef.current) return;
+    if (controlsHoverRef.current) return;
     hideTimerRef.current = window.setTimeout(() => {
       hideTimerRef.current = null;
+      // Re-check at expiry: a hover that began after scheduling (or a
+      // concurrent hide) cancels the transition instead of fighting it.
+      if (!controlsVisibleRef.current) return;
+      if (controlsHoverRef.current) return;
       setControlsVisible(false);
     }, POPOUT_CONTROLS_AUTOHIDE_DELAY_MS);
   }, [clearControlsTimer]);
 
+  // Pointer entered the footer or the reveal strip: hold the controls
+  // visible with no pending timer. Never schedules — the countdown only
+  // starts on leave (footer) or on non-hover activity elsewhere.
+  const holdControlsVisible = useCallback(() => {
+    controlsHoverRef.current = true;
+    clearControlsTimer();
+    if (!controlsVisibleRef.current) {
+      setControlsVisible(true);
+    }
+  }, [clearControlsTimer]);
+
   const revealControls = useCallback(() => {
-    // Idempotent: entering the zone while already visible is a no-op in
-    // practice (the zone is unmounted when visible), and re-scheduling
-    // keeps exactly one pending timer — no races, no oscillation.
+    // Programmatic reveal (keyboard, fullscreen, mount): show, then arm the
+    // countdown only if the pointer is not currently holding the UI visible.
+    // The hover guard inside scheduleControlsHide enforces that.
     setControlsVisible(true);
     scheduleControlsHide();
   }, [scheduleControlsHide]);
 
-  // Visible-state activity: restart the inactivity delay. Hidden-state
+  // Visible-state activity: restart the inactivity delay — unless the
+  // pointer is holding the controls area, in which case any pending timer
+  // is simply dropped (no reschedule, no churn while hovering). Hidden-state
   // activity (stage/video pointer movement) is ignored — see above.
   const handleVisibleActivity = useCallback(() => {
     if (!controlsVisibleRef.current) return;
+    if (controlsHoverRef.current) {
+      clearControlsTimer();
+      return;
+    }
     scheduleControlsHide();
-  }, [scheduleControlsHide]);
+  }, [clearControlsTimer, scheduleControlsHide]);
 
   const handleRevealZoneEnter = useCallback(() => {
-    if (controlsVisibleRef.current) return;
-    revealControls();
-  }, [revealControls]);
+    holdControlsVisible();
+  }, [holdControlsVisible]);
+
+  const handleFooterEnter = useCallback(() => {
+    holdControlsVisible();
+  }, [holdControlsVisible]);
+
+  const handleFooterLeave = useCallback(() => {
+    controlsHoverRef.current = false;
+    scheduleControlsHide();
+  }, [scheduleControlsHide]);
 
   const handleRootKeyActivity = useCallback(
     (event: React.KeyboardEvent) => {
@@ -1095,6 +1134,8 @@ export const PreviewPopoutWindow: React.FC = () => {
           } as React.CSSProperties
         }
         onFocusCapture={handleFooterFocusCapture}
+        onPointerEnter={handleFooterEnter}
+        onPointerLeave={handleFooterLeave}
       >
         <div className="preview-popout-playback">
           <button
@@ -1205,7 +1246,6 @@ export const PreviewPopoutWindow: React.FC = () => {
           data-testid="preview-popout-reveal-zone"
           style={{ height: POPOUT_REVEAL_ZONE_HEIGHT_PX }}
           onPointerEnter={handleRevealZoneEnter}
-          onMouseEnter={handleRevealZoneEnter}
           onPointerDown={handleRevealZoneEnter}
         />
       )}
