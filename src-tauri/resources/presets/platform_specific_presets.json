@@ -49,7 +49,8 @@
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1080,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -70,7 +71,8 @@
       "enforceDimensions": true,
       "videoMaxRate": "25M",
       "videoBufferSize": "25M",
-      "maxFrameRate": 60
+      "maxFrameRate": 60,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -88,7 +90,8 @@
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1920,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -109,7 +112,8 @@
       "enforceDimensions": true,
       "videoMaxRate": "8M",
       "videoBufferSize": "16M",
-      "maxFrameRate": 60
+      "maxFrameRate": 60,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -127,7 +131,8 @@
     "platformConfig": {
       "targetWidth": 1200,
       "targetHeight": 1500,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   }
