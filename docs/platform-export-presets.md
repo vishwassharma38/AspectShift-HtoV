@@ -10,7 +10,7 @@ The presets now use an x264 `fast` speed preset instead of `slow`, have consiste
 
 Two platform-targeted H.264 VBV ceilings are represented in the existing `PlatformConfig`: X's 720p 8 Mbps upper ceiling, and Instagram Reels Publishing API's 25 Mbps upper ceiling. FFmpeg receives `-maxrate` and `-bufsize` together with CRF, rather than conflicting CRF with a fixed average `-b:v` target. These ceilings constrain bitrate peaks; they do **not** guarantee that average bitrate will equal the platform's recommended upload bitrate.
 
-This is intentionally a conservative H.264/MP4-oriented update. The app's current output-format control is global, not preset-specific; selecting WebM still selects the existing VP9/Opus path. The platform H.264 profile and H.264-only VBV ceiling are therefore omitted for WebM output. The app does not upsample or force a new frame rate: it keeps source FPS.
+This is intentionally a conservative H.264/MP4-oriented update. The app's current output-format control is global, not preset-specific; selecting WebM still selects the existing VP9/Opus path. The platform H.264 profile and H.264-only VBV ceiling are therefore omitted for WebM output. The app does not force one frame rate globally: it retains source FPS unless an X/Reels 60 fps ceiling is explicitly configured.
 
 ## Built-in settings
 
@@ -60,7 +60,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 
 **Preset choice:** 1280×720 is enforced instead of being shown as a nominal resolution while the layout is calculated from the source. CRF 22 plus `-maxrate 8M -bufsize 16M` retains CRF-based quality control while limiting peaks to the upper end of X's published 720p bitrate range. This is not a fixed average bitrate target, so average bitrate may be below 5 Mb/s on simple content or still vary with complexity. `-fpsmax 60` caps only high output rates and does not upsample ordinary 24/25/30 fps footage. AAC at 128 kb/s and 48 kHz is the app's compatibility-oriented choice; X specifies AAC-LC but does not require this exact audio bitrate in its Media Studio page.
 
-**Trade-off:** The ceiling may raise quantization on very complex/high-motion clips; in exchange it reduces excessive bitrate peaks. If a future dedicated ad-export mode is added, frame-rate capping/normalization should be a separate explicit policy: current exports preserve the source frame rate rather than silently changing it.
+**Trade-off:** The ceiling may raise quantization on very complex/high-motion clips; in exchange it reduces excessive bitrate peaks. If a dedicated ad-export mode is added, any 30 fps normalization or other ad-specific frame policy should be explicit: the current X preset only clamps rates above 60 fps and otherwise preserves the source rate.
 
 ### Reddit
 
