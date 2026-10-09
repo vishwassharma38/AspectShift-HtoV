@@ -123,11 +123,24 @@ pub fn build_ffmpeg_args(
             "-b:a".to_string(),
             plan.encoding.audio_bitrate.clone(),
         ]);
+        // Platform upload specs commonly use 48 kHz AAC/Opus audio. Do not
+        // alter ordinary aspect-ratio/custom exports or downmix channels.
+        if plan.platform_config.is_some() {
+            args.push("-ar".to_string());
+            args.push("48000".to_string());
+        }
     }
 
     let codec = get_video_codec(output);
     args.push("-c:v".to_string());
     args.push(codec.to_string());
+
+    // H.264 High Profile is the documented upload profile for YouTube and is
+    // also accepted by X and common MP4/MOV social upload workflows.
+    if codec == "libx264" && plan.platform_config.is_some() {
+        args.push("-profile:v".to_string());
+        args.push("high".to_string());
+    }
 
     if supports_crf(codec) {
         args.push("-crf".to_string());
@@ -137,6 +150,24 @@ pub fn build_ffmpeg_args(
     if supports_preset(codec) {
         args.push("-preset".to_string());
         args.push(plan.encoding.speed_preset.clone());
+    }
+
+    // Constrained CRF uses VBV maxrate/buffer together; it limits peaks without
+    // replacing CRF with a target average bitrate. These fields are populated
+    // only for platform presets whose official guidance warrants a ceiling.
+    // The current platform bitrate ceilings are H.264-specific; do not inject
+    // them into VP9/Opus output where the rate-control mode differs.
+    if codec == "libx264" {
+        if let Some(config) = &plan.platform_config {
+            if let (Some(max_rate), Some(buffer_size)) =
+                (&config.video_max_rate, &config.video_buffer_size)
+            {
+                args.push("-maxrate".to_string());
+                args.push(max_rate.clone());
+                args.push("-bufsize".to_string());
+                args.push(buffer_size.clone());
+            }
+        }
     }
 
     // Optional `-threads` override, exposed as a *capability* retained for
@@ -260,6 +291,67 @@ mod tests {
             None,
             threads_per_job,
         )
+    }
+
+    fn platform_test_plan() -> RenderPlan {
+        let mut plan = test_plan();
+        plan.platform_config = Some(crate::video::types::PlatformConfig {
+            target_width: 1080,
+            target_height: 1920,
+            enforce_dimensions: true,
+            video_max_rate: Some("8M".to_string()),
+            video_buffer_size: Some("16M".to_string()),
+        });
+        plan
+    }
+
+    fn build_platform_args(output: &str) -> Vec<String> {
+        let plan = platform_test_plan();
+        build_ffmpeg_args(
+            "input.mp4",
+            output,
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn platform_h264_exports_use_high_profile_48khz_and_vbv_ceiling() {
+        let args = build_platform_args("output.mp4");
+        let profile_pos = args.iter().position(|a| a == "-profile:v").unwrap();
+        assert_eq!(args[profile_pos + 1], "high");
+        let rate_pos = args.iter().position(|a| a == "-maxrate").unwrap();
+        assert_eq!(args[rate_pos + 1], "8M");
+        let buffer_pos = args.iter().position(|a| a == "-bufsize").unwrap();
+        assert_eq!(args[buffer_pos + 1], "16M");
+        let rate_pos = args.iter().position(|a| a == "-ar").unwrap();
+        assert_eq!(args[rate_pos + 1], "48000");
+        assert!(args.contains(&"-crf".to_string()));
+    }
+
+    #[test]
+    fn platform_vp9_export_does_not_receive_h264_profile_or_vbv_flags() {
+        let args = build_platform_args("output.webm");
+        assert!(args.contains(&"libvpx-vp9".to_string()));
+        assert!(!args.contains(&"-profile:v".to_string()));
+        assert!(!args.contains(&"-maxrate".to_string()));
+        assert!(!args.contains(&"-bufsize".to_string()));
+        let audio_rate_pos = args.iter().position(|a| a == "-ar").unwrap();
+        assert_eq!(args[audio_rate_pos + 1], "48000");
+    }
+
+    #[test]
+    fn non_platform_exports_keep_existing_audio_rate_and_profile_behavior() {
+        let args = build_args("output.mp4", None);
+        assert!(!args.contains(&"-ar".to_string()));
+        assert!(!args.contains(&"-profile:v".to_string()));
+        assert!(!args.contains(&"-maxrate".to_string()));
+        assert!(!args.contains(&"-bufsize".to_string()));
     }
 
     // --- Existing filter-graph tests (unchanged) ---
