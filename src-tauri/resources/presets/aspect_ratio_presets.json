@@ -4,7 +4,7 @@
     "ratio": "ratio9x16",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
+      "qualityPreset": "good",
       "speedPreset": "ultrafast",
       "audioBitrate": "192k"
     }
@@ -14,7 +14,7 @@
     "ratio": "ratio1x1",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
+      "qualityPreset": "good",
       "speedPreset": "ultrafast",
       "audioBitrate": "192k"
     }
@@ -24,7 +24,7 @@
     "ratio": "ratio4x5",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
+      "qualityPreset": "good",
       "speedPreset": "ultrafast",
       "audioBitrate": "192k"
     }
@@ -34,7 +34,7 @@
     "ratio": "ratio2x3",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
+      "qualityPreset": "good",
       "speedPreset": "ultrafast",
       "audioBitrate": "192k"
     }
@@ -44,7 +44,7 @@
     "ratio": "ratio16x9",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
+      "qualityPreset": "good",
       "speedPreset": "ultrafast",
       "audioBitrate": "256k"
     }

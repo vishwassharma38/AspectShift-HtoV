@@ -30,8 +30,8 @@
 //! Ten levels give meaningful coverage across the CRF 0–51 slider instead of
 //! three widely separated choices. Anchors consolidate values the repo
 //! already used:
-//! - `high → 18` (all `aspect_ratio_presets.json` entries, YouTube/Shorts
-//!   presets; x264 visually-transparent neighborhood)
+//! - `high → 18` (YouTube/Shorts presets;
+//!   x264 visually-transparent neighborhood)
 //! - `standard → 23` (`EncodingProfile::standard()`, x264 default)
 //! - `lossless → 0` (x264 lossless mode, covers the slider floor)
 //! - `very_high → 14` (archive grade), `good → 21` (high-quality streaming

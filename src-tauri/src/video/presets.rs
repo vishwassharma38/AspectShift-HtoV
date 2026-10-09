@@ -238,4 +238,27 @@ mod tests {
         assert_eq!(presets.len(), 1);
         assert!(validate_custom_preset(&presets[0]).is_err());
     }
+
+    #[test]
+    fn aspect_ratio_targets_keep_crf_with_matching_quality_band_label() {
+        // Guards the F-05 label correction: every shipped aspect-ratio target
+        // must parse and validate through the production loader, keep its
+        // tuned CRF, and carry a `qualityPreset` label that matches the CRF's
+        // authoritative band (so UI display and derived labels agree).
+        let targets = super::get_aspect_ratio_targets();
+        assert_eq!(targets.len(), 5, "all five aspect-ratio targets must load");
+        for target in &targets {
+            assert_eq!(
+                target.encoding.crf, 20,
+                "tuned baseline CRF must be preserved for {}",
+                target.id
+            );
+            assert_eq!(
+                target.encoding.quality_preset,
+                crate::video::encoding::quality_for_crf(target.encoding.crf),
+                "stored qualityPreset must match the CRF band for {}",
+                target.id
+            );
+        }
+    }
 }

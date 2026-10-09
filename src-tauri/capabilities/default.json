@@ -37,34 +37,5 @@
         }
       ]
     }
-  ],
-  "commands": {
-    "allow": [
-      "allow_path_scope",
-      "compute_preview_layout",
-      "detect_orientation",
-      "convert_to_ratio",
-      "check_file_ready",
-      "start_batch",
-      "cancel_batch",
-      "get_batch_status",
-      "clear_batch",
-      "open_output_folder",
-      "get_all_presets",
-      "get_builtin_platform_presets",
-      "get_all_aspect_ratio_targets",
-      "save_preset",
-      "delete_preset",
-      "get_encoding_metadata",
-      "resolve_encoding_preview",
-      "get_dependency_state",
-      "rescan_dependencies",
-      "install_dependency",
-      "reinstall_dependencies",
-      "get_auth_state",
-      "activate_license",
-      "refresh_license",
-      "clear_license"
-    ]
-  }
+  ]
 }

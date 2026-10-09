@@ -380,24 +380,21 @@ pub async fn start_batch(
             disk_source,
             crate::video::concurrency::DISK_SAFETY_MARGIN_BYTES,
         );
-        let _summary =
-            scheduler::run_scheduler(&state_clone, total_capacity, &disk_gate, process_fn).await;
+        // F-06: the session value was fixed before this driver was spawned and
+        // travels inside the future, so the scheduler is bound to this batch
+        // even if its first poll happens after a clear() + newer batch.
+        let _summary = scheduler::run_scheduler(
+            &state_clone,
+            Some(session_id.clone()),
+            total_capacity,
+            &disk_gate,
+            process_fn,
+        )
+        .await;
 
-        // Final batch status: the scheduler handles per-job outcomes but
-        // does not set the terminal batch-level status.
-        {
-            let mut s = state_clone.lock().await;
-            if s.status == BatchStatus::Processing {
-                s.status = if s.failed_jobs > 0 {
-                    BatchStatus::Failed
-                } else {
-                    BatchStatus::Completed
-                };
-            }
-            sanitize_terminal_state(&mut s);
-        }
-
-        // Cleanup temporary subtitle files
+        // Cleanup temporary subtitle files. These lists are batch-local
+        // (owned by this driver task), so draining them is always safe, even
+        // for a superseded driver whose shared state has moved on.
         {
             let paths = temp_srt_paths.lock().await;
             for path in paths.iter() {
@@ -409,6 +406,26 @@ pub async fn start_batch(
             for path in dirs.iter() {
                 let _ = std::fs::remove_dir_all(path);
             }
+        }
+
+        // Final batch status: the scheduler handles per-job outcomes but
+        // does not set the terminal batch-level status. A stale driver
+        // (superseded by clear() + a newer batch, F-06) must neither flip
+        // the new batch's status nor emit a stale terminal snapshot for it:
+        // both would carry this driver's old outcome under the new session.
+        {
+            let mut s = state_clone.lock().await;
+            if s.session_id.as_deref() != Some(session_id.as_str()) {
+                return;
+            }
+            if s.status == BatchStatus::Processing {
+                s.status = if s.failed_jobs > 0 {
+                    BatchStatus::Failed
+                } else {
+                    BatchStatus::Completed
+                };
+            }
+            sanitize_terminal_state(&mut s);
         }
 
         emit_batch_progress(&app_clone, &state_clone).await;
@@ -711,7 +728,13 @@ async fn process_batch_job(
             .await
             {
                 Ok(path) => {
-                    if !is_export {
+                    // Batch-end cleanup must cover temp burn-in artifacts in
+                    // every mode. When burn-in is on, `path.path` is the temp
+                    // ASS file (it overwrites the SRT export path above), so
+                    // it is tracked even when SRT export is also on. When
+                    // only SRT export is on, the path is user output and must
+                    // persist, so nothing is tracked.
+                    if path.owns_temp_burn_artifacts() {
                         {
                             let mut paths = temp_srt_paths.lock().await;
                             paths.push(path.path.clone());

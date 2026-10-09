@@ -24,6 +24,56 @@ pub struct PreparedSubtitle {
     pub fonts_dir: Option<PathBuf>,
 }
 
+impl PreparedSubtitle {
+    /// Whether this result owns temp burn-in artifacts that the batch
+    /// lifecycle must delete at the end (ASS file + copied fonts dir).
+    ///
+    /// When burn-in is on, `path` is the temp ASS file (it overwrites the
+    /// SRT export path) and `fonts_dir` is set. When only SRT export is on,
+    /// `fonts_dir` is `None` and `path` is user output that must persist.
+    pub fn owns_temp_burn_artifacts(&self) -> bool {
+        self.fonts_dir.is_some()
+    }
+}
+
+/// RAII guard for temp ASS + font-dir preparation (F-04).
+///
+/// `prepare_text_overlay` / `prepare_subtitles` create their temp artifacts
+/// before several fallible steps (font copy, ASS write). Without this guard,
+/// a `?` failure partway through leaks the already-created dir/file in the
+/// temp directory. The guard removes both on drop unless `disarm()` was
+/// called after ownership was handed to the caller. Cleanup is best-effort
+/// and never touches user-owned files (the SRT export path is never
+/// enrolled in the guard).
+struct TempAssPrep {
+    ass_path: PathBuf,
+    fonts_dir: PathBuf,
+    armed: bool,
+}
+
+impl TempAssPrep {
+    fn new(ass_path: PathBuf, fonts_dir: PathBuf) -> Self {
+        Self {
+            ass_path,
+            fonts_dir,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempAssPrep {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.ass_path);
+            let _ = std::fs::remove_dir_all(&self.fonts_dir);
+        }
+    }
+}
+
 fn ass_colour(hex: &str, opacity: f32) -> String {
     let rgb = hex.strip_prefix('#').unwrap_or(hex);
     let (red, green, blue) = if rgb.len() == 6 {
@@ -50,6 +100,9 @@ fn prepare_text_overlay(
     let temp_dir = crate::os_utils::OsUtils::get_temp_dir(app);
     let path = temp_dir.join(format!("{stem}_text_{}.ass", uuid::Uuid::new_v4()));
     let fonts_dir = temp_dir.join(format!("text_fonts_{}", uuid::Uuid::new_v4()));
+    // Enroll temp artifacts before any fallible step so font-copy or
+    // ASS-write failures clean up instead of leaking in the temp dir.
+    let mut prep_guard = TempAssPrep::new(path.clone(), fonts_dir.clone());
     std::fs::create_dir_all(&fonts_dir)?;
     let mut copied_fonts = HashSet::new();
     let mut prepared_layers = Vec::new();
@@ -134,6 +187,7 @@ fn prepare_text_overlay(
             .map(|(text, style, x, y)| (text.as_str(), style, *x, *y))
             .collect();
     crate::subtitles::ass_writer::write_text_overlays_ass(&path, &layer_entries, duration_ms)?;
+    prep_guard.disarm();
     Ok(Some(PreparedTextOverlay {
         ass_path: path,
         fonts_dir,
@@ -257,6 +311,10 @@ pub async fn prepare_subtitles(
             .unwrap_or("subtitle");
         let ass_path = temp_dir.join(format!("{}_{}.ass", stem, uuid::Uuid::new_v4()));
         let fonts_dir = temp_dir.join(format!("subtitle_fonts_{}", uuid::Uuid::new_v4()));
+        // Same enrollment as text overlays: font-copy or ASS-write failures
+        // must not leak the temp dir/file. The SRT export path above is a
+        // user file and is never enrolled.
+        let mut prep_guard = TempAssPrep::new(ass_path.clone(), fonts_dir.clone());
         std::fs::create_dir_all(&fonts_dir)?;
         for font_path in crate::video::text_fonts::resolve_subtitle_overlay_font_files(
             app,
@@ -280,6 +338,9 @@ pub async fn prepare_subtitles(
         );
         crate::subtitles::ass_writer::write_ass(&ass_path, &segments, &style)?;
 
+        // Preparation succeeded: hand ownership to the caller (batch-end
+        // cleanup) instead of deleting here.
+        prep_guard.disarm();
         info!(
             "Generated ASS for burn-in for {} at {}",
             input_path.display(),
@@ -510,4 +571,82 @@ pub async fn render_single(
         ratio: job.ratio,
         skipped: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PreparedSubtitle, TempAssPrep};
+    use std::path::PathBuf;
+
+    fn unique_scratch_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "aspectshift-prep-guard-test-{tag}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn armed_guard_removes_temp_artifacts_on_drop() {
+        // Simulates a font-copy / ASS-write failure: the guard is dropped
+        // via `?` propagation without `disarm()`.
+        let ass_path = unique_scratch_path("ass");
+        let fonts_dir = unique_scratch_path("fonts");
+        std::fs::write(&ass_path, "partial").expect("fixture ASS must be writable");
+        std::fs::create_dir_all(&fonts_dir).expect("fixture fonts dir must be creatable");
+        {
+            let _guard = TempAssPrep::new(ass_path.clone(), fonts_dir.clone());
+            // Dropped armed here.
+        }
+        assert!(!ass_path.exists(), "armed guard must remove the ASS file");
+        assert!(!fonts_dir.exists(), "armed guard must remove the fonts dir");
+    }
+
+    #[test]
+    fn disarmed_guard_keeps_handed_off_artifacts() {
+        // Simulates successful preparation: ownership moves to the caller
+        // (render / batch-end cleanup), so the guard must not delete.
+        let ass_path = unique_scratch_path("ass");
+        let fonts_dir = unique_scratch_path("fonts");
+        std::fs::write(&ass_path, "complete").expect("fixture ASS must be writable");
+        std::fs::create_dir_all(&fonts_dir).expect("fixture fonts dir must be creatable");
+        {
+            let mut guard = TempAssPrep::new(ass_path.clone(), fonts_dir.clone());
+            guard.disarm();
+        }
+        assert!(ass_path.exists(), "disarmed guard must keep the ASS file");
+        assert!(fonts_dir.exists(), "disarmed guard must keep the fonts dir");
+        let _ = std::fs::remove_file(&ass_path);
+        let _ = std::fs::remove_dir_all(&fonts_dir);
+    }
+
+    #[test]
+    fn burn_in_result_enrolls_temp_artifacts_but_srt_export_does_not() {
+        // Export + burn: `path` is the temp ASS (overwrites the SRT path).
+        let burn = PreparedSubtitle {
+            path: PathBuf::from("/tmp/fixture.ass"),
+            fonts_dir: Some(PathBuf::from("/tmp/fixture-fonts")),
+        };
+        assert!(
+            burn.owns_temp_burn_artifacts(),
+            "burn-in result must be enrolled for batch-end cleanup"
+        );
+        // Burn only (no SRT export): same temp ownership.
+        let burn_only = PreparedSubtitle {
+            path: PathBuf::from("/tmp/fixture.ass"),
+            fonts_dir: Some(PathBuf::from("/tmp/fixture-fonts")),
+        };
+        assert!(
+            burn_only.owns_temp_burn_artifacts(),
+            "burn-only result must be enrolled for batch-end cleanup"
+        );
+        // Export only: `path` is user output that must persist.
+        let export_only = PreparedSubtitle {
+            path: PathBuf::from("/outputs/fixture.srt"),
+            fonts_dir: None,
+        };
+        assert!(
+            !export_only.owns_temp_burn_artifacts(),
+            "SRT export result must never be enrolled for deletion"
+        );
+    }
 }

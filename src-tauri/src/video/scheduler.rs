@@ -512,8 +512,17 @@ pub(crate) struct SchedulerSummary {
 /// Panics that unwind the processing boundary are caught here, converted into
 /// a `JobOutcome::Failed`, recorded in the shared batch state, and cannot
 /// crash the dispatcher or poison other jobs.
+///
+/// `expected_session` binds this run to its batch **before the first poll**:
+/// callers must pass the session that owns the queued jobs, captured before
+/// spawning or scheduling the returned future. A spawned-but-unpolled future
+/// cannot read shared state, so reading the session inside (on first poll)
+/// could pick up a *newer* batch's session after `clear()`. Every shared-state
+/// mutation below re-checks the bound session so a stale run silently stands
+/// down instead of corrupting the new batch.
 pub(crate) async fn run_scheduler<F, Fut>(
     state: &Arc<Mutex<BatchState>>,
+    expected_session: Option<String>,
     total_capacity: usize,
     disk_gate: &DiskAdmissionGate,
     process_fn: F,
@@ -528,6 +537,11 @@ where
     // Stage 3.4: track which jobs have already consumed their one retry.
     let mut retried_jobs: HashSet<String> = HashSet::new();
 
+    // F-06: session bound by the caller before scheduling (see doc comment).
+    // Runs that own the state never change its session mid-run, so the checks
+    // below always pass for the legitimate run.
+    let run_session = expected_session;
+
     // Outer loop: re-enters the admit/join cycle when retried jobs are
     // enqueued by the join loop below. Each iteration admits jobs, spawns
     // tasks, then joins all tasks. If a resource-related failure re-enqueues
@@ -539,6 +553,11 @@ where
         loop {
             let (job, job_id) = {
                 let mut s = state.lock().await;
+                if s.session_id != run_session {
+                    // Superseded by clear() / a newer batch: stand down
+                    // without touching the new queue.
+                    break;
+                }
                 if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
                     break;
                 }
@@ -570,6 +589,9 @@ where
                 );
                 tracing::warn!("{}: {}", job_id, message);
                 let mut s = state.lock().await;
+                if s.session_id != run_session {
+                    break;
+                }
                 s.failed_jobs += 1;
                 s.current_job_lifecycle_progress = 100.0;
                 s.job_lifecycle_progress.insert(job_id.clone(), 100.0);
@@ -593,6 +615,10 @@ where
                     message
                 );
                 let mut s = state.lock().await;
+                if s.session_id != run_session {
+                    // Never drain a newer batch's queue on a stale verdict.
+                    break;
+                }
                 s.failed_jobs += 1;
                 s.current_job_lifecycle_progress = 100.0;
                 s.job_lifecycle_progress.insert(job_id.clone(), 100.0);
@@ -616,6 +642,9 @@ where
             // Cancellation may have arrived while we waited for capacity.
             {
                 let mut s = state.lock().await;
+                if s.session_id != run_session {
+                    break;
+                }
                 if s.cancellation_token.is_cancelled() || s.status == BatchStatus::Cancelled {
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                         if matches!(p.status, JobStatus::Queued | JobStatus::Pending) {
@@ -661,6 +690,9 @@ where
             match outcome {
                 JobOutcome::Cancelled => {
                     let mut s = state.lock().await;
+                    if s.session_id != run_session {
+                        continue;
+                    }
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                         p.status = JobStatus::Cancelled;
                     }
@@ -670,6 +702,9 @@ where
                 }
                 JobOutcome::Failed(message) => {
                     let mut s = state.lock().await;
+                    if s.session_id != run_session {
+                        continue;
+                    }
                     let mut duration = 0.0;
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                         p.status = JobStatus::Failed(message);
@@ -698,6 +733,9 @@ where
                             let old_ceiling = gate.admission_ceiling();
                             let new_ceiling = gate.reduce_ceiling_for_failure(1);
                             let mut s = state.lock().await;
+                            if s.session_id != run_session {
+                                continue;
+                            }
                             let mut duration = 0.0;
                             if let Some(p) = s.job_progress.get_mut(&job_id) {
                                 p.status = JobStatus::Failed(message);
@@ -746,6 +784,9 @@ where
                                     new_ceiling, job_cost
                                 );
                                 let mut s = state.lock().await;
+                                if s.session_id != run_session {
+                                    continue;
+                                }
                                 let mut duration = 0.0;
                                 if let Some(p) = s.job_progress.get_mut(&job_id) {
                                     p.status = JobStatus::Failed(message.clone());
@@ -762,6 +803,11 @@ where
                             } else {
                                 {
                                     let mut s = state.lock().await;
+                                    if s.session_id != run_session {
+                                        // Stale run: drop the retry instead of
+                                        // re-enqueuing an old job into the new batch.
+                                        continue;
+                                    }
                                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                                         p.status = JobStatus::Queued;
                                     }
@@ -775,6 +821,9 @@ where
                     }
                     FailureClass::Deterministic => {
                         let mut s = state.lock().await;
+                        if s.session_id != run_session {
+                            continue;
+                        }
                         let mut duration = 0.0;
                         if let Some(p) = s.job_progress.get_mut(&job_id) {
                             p.status = JobStatus::Failed(message);
@@ -803,6 +852,10 @@ where
         // we are done.
         {
             let mut s = state.lock().await;
+            if s.session_id != run_session {
+                // Superseded mid-run: leave the new batch's queue alone.
+                break;
+            }
             if s.queue.is_empty() {
                 break;
             }
@@ -825,7 +878,10 @@ where
     // running jobs left for this batch.
     {
         let mut s = state.lock().await;
-        if s.cancellation_token.is_cancelled() && s.status != BatchStatus::Cancelled {
+        if s.session_id == run_session
+            && s.cancellation_token.is_cancelled()
+            && s.status != BatchStatus::Cancelled
+        {
             s.status = BatchStatus::Cancelled;
         }
     }
@@ -1068,7 +1124,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &healthy_disk_gate(), runner).await;
 
         assert_eq!(
             executions.load(Ordering::SeqCst),
@@ -1124,6 +1180,7 @@ mod tests {
 
             let summary = run_scheduler(
                 &state,
+                Some("test-session".to_string()),
                 capacity,
                 &healthy_disk_gate(),
                 sleeping_runner(
@@ -1186,7 +1243,7 @@ mod tests {
 
         let scheduler_state = state.clone();
         let scheduler_task = tokio::spawn(async move {
-            run_scheduler(&scheduler_state, 1, &healthy_disk_gate(), runner).await
+            run_scheduler(&scheduler_state, Some("test-session".to_string()), 1, &healthy_disk_gate(), runner).await
         });
 
         // Job 0 starts first and is held until we release it.
@@ -1267,7 +1324,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(executions.load(Ordering::SeqCst), 4);
         assert_eq!(
@@ -1292,6 +1349,7 @@ mod tests {
 
         let summary = run_scheduler(
             &state,
+            Some("test-session".to_string()),
             capacity,
             &healthy_disk_gate(),
             sleeping_runner(capacity, active, max_active.clone(), executions.clone()),
@@ -1334,7 +1392,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &healthy_disk_gate(), runner).await;
 
         assert_eq!(
             executions.load(Ordering::SeqCst),
@@ -1387,7 +1445,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 3, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 3, &healthy_disk_gate(), runner).await;
 
         // Every job's task began; the panicking job is contained as Failed and
         // the remaining jobs still completed.
@@ -1460,7 +1518,7 @@ mod tests {
 
         let scheduler_state = state.clone();
         let scheduler_task = tokio::spawn(async move {
-            run_scheduler(&scheduler_state, 1, &healthy_disk_gate(), runner).await
+            run_scheduler(&scheduler_state, Some("test-session".to_string()), 1, &healthy_disk_gate(), runner).await
         });
 
         // Job 0 starts first and holds the only permit.
@@ -1546,7 +1604,7 @@ mod tests {
 
         let scheduler_state = state.clone();
         let scheduler_task = tokio::spawn(async move {
-            run_scheduler(&scheduler_state, capacity, &healthy_disk_gate(), runner).await
+            run_scheduler(&scheduler_state, Some("test-session".to_string()), capacity, &healthy_disk_gate(), runner).await
         });
 
         // Wait for exactly `capacity` jobs to be admitted and in flight.
@@ -1665,7 +1723,7 @@ mod tests {
                     }
                 }
             };
-            let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+            let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &healthy_disk_gate(), runner).await;
             assert_eq!(executions.load(Ordering::SeqCst), 4);
             assert_eq!(summary.in_flight_cost, 0, "batch 1 must not leak capacity");
             assert_eq!(summary.available_capacity, 2);
@@ -1702,7 +1760,7 @@ mod tests {
                     }
                 }
             };
-            let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+            let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
             assert_eq!(
                 summary.total_capacity, 4,
                 "the next batch owns a brand-new capacity value, not a stale one"
@@ -1869,7 +1927,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &healthy_disk_gate(), runner).await;
 
         assert_eq!(summary.in_flight_cost, 0);
         assert_eq!(summary.available_capacity, 2);
@@ -1907,7 +1965,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 1, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 1, &healthy_disk_gate(), runner).await;
 
         assert_eq!(summary.in_flight_cost, 0);
         let order: Vec<usize> = std::iter::from_fn(|| started_rx.try_recv().ok()).collect();
@@ -2010,6 +2068,7 @@ mod tests {
 
         let summary = run_scheduler(
             &state,
+            Some("test-session".to_string()),
             4,
             &healthy_disk_gate(),
             cost_tracking_runner(
@@ -2052,6 +2111,7 @@ mod tests {
 
         let summary = run_scheduler(
             &state,
+            Some("test-session".to_string()),
             4,
             &healthy_disk_gate(),
             cost_tracking_runner(
@@ -2090,6 +2150,7 @@ mod tests {
 
         let summary = run_scheduler(
             &state,
+            Some("test-session".to_string()),
             4,
             &healthy_disk_gate(),
             cost_tracking_runner(
@@ -2122,7 +2183,7 @@ mod tests {
         let state = build_state_with_jobs(jobs);
         let runner = |_job: BatchJob| async { JobOutcome::Processed };
 
-        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(
             summary.in_flight_cost, 0,
@@ -2146,7 +2207,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(
             summary.in_flight_cost, 0,
@@ -2183,7 +2244,7 @@ mod tests {
 
         let scheduler_state = state.clone();
         let scheduler_task = tokio::spawn(async move {
-            run_scheduler(&scheduler_state, 4, &healthy_disk_gate(), runner).await
+            run_scheduler(&scheduler_state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await
         });
 
         let first = started_rx.recv().await.expect("subtitle job starts");
@@ -2214,7 +2275,7 @@ mod tests {
             JobOutcome::Processed
         };
 
-        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(
             summary.in_flight_cost, 0,
@@ -2268,7 +2329,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 4, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 4, &healthy_disk_gate(), runner).await;
 
         assert_eq!(executions.load(Ordering::SeqCst), 4, "all 4 jobs execute");
         assert!(
@@ -2309,7 +2370,7 @@ mod tests {
         let executions: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let (gate, source) = scripted_gate(vec![0; n]);
 
-        let summary = run_scheduler(&state, 2, &gate, {
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &gate, {
             let executions = executions.clone();
             move |_job: BatchJob| {
                 let executions = executions.clone();
@@ -2383,7 +2444,7 @@ mod tests {
             DISK_SAFETY_MARGIN_BYTES,
         ]);
 
-        let summary = run_scheduler(&state, 2, &gate, {
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &gate, {
             let executions = executions.clone();
             move |_job: BatchJob| {
                 let executions = executions.clone();
@@ -2456,7 +2517,7 @@ mod tests {
         let executions: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
         let gate = DiskAdmissionGate::new(Arc::new(FailingDiskSource), DISK_SAFETY_MARGIN_BYTES);
 
-        let summary = run_scheduler(&state, 2, &gate, {
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &gate, {
             let executions = executions.clone();
             move |_job: BatchJob| {
                 let executions = executions.clone();
@@ -2559,7 +2620,7 @@ mod tests {
             let state = build_state(3);
             let executions: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let (gate, _) = scripted_gate(vec![0; 3]);
-            let summary = run_scheduler(&state, 2, &gate, {
+            let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &gate, {
                 let executions = executions.clone();
                 move |_job: BatchJob| {
                     let executions = executions.clone();
@@ -2581,7 +2642,7 @@ mod tests {
             let state = build_state(3);
             let executions: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let gate = healthy_disk_gate();
-            let summary = run_scheduler(&state, 2, &gate, {
+            let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &gate, {
                 let executions = executions.clone();
                 move |_job: BatchJob| {
                     let executions = executions.clone();
@@ -2697,7 +2758,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 3, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 3, &healthy_disk_gate(), runner).await;
 
         let attempts = attempts.lock().await;
         assert_eq!(
@@ -2746,7 +2807,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 3, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 3, &healthy_disk_gate(), runner).await;
 
         let attempts = attempts.lock().await;
         assert_eq!(
@@ -2803,7 +2864,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 3, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 3, &healthy_disk_gate(), runner).await;
 
         let attempts = attempts.lock().await;
         assert_eq!(
@@ -2894,7 +2955,7 @@ mod tests {
 
         let scheduler_state = state.clone();
         let scheduler_task = tokio::spawn(async move {
-            run_scheduler(&scheduler_state, 3, &healthy_disk_gate(), runner).await
+            run_scheduler(&scheduler_state, Some("test-session".to_string()), 3, &healthy_disk_gate(), runner).await
         });
 
         // Wait until job-2's first failure is processed and its retry is back
@@ -3007,7 +3068,7 @@ mod tests {
             }
         };
 
-        let summary = run_scheduler(&state, 2, &healthy_disk_gate(), runner).await;
+        let summary = run_scheduler(&state, Some("test-session".to_string()), 2, &healthy_disk_gate(), runner).await;
 
         let attempts = attempts.lock().await;
         assert_eq!(
@@ -3027,5 +3088,260 @@ mod tests {
         assert_eq!(summary.in_flight_cost, 0);
         assert_eq!(summary.available_capacity, 2);
         assert_eq!(state.lock().await.failed_jobs, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // F-06 — a stale scheduler run must not mutate a newer batch
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    async fn stale_run_after_clear_cannot_mutate_new_batch() {
+        // Batch A admits one job whose task blocks until the test releases
+        // it, simulating an in-flight FFmpeg job during cancel/clear.
+        let state = build_state(1);
+        let release: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+        let admitted = Arc::new(AtomicUsize::new(0));
+        let runner = {
+            let release = release.clone();
+            let admitted = admitted.clone();
+            move |_job: BatchJob| {
+                let release = release.clone();
+                let admitted = admitted.clone();
+                async move {
+                    if admitted.fetch_add(1, Ordering::SeqCst) == 0 {
+                        // First admission blocks until the test has simulated
+                        // clear() + the start of batch B.
+                        release.notified().await;
+                        JobOutcome::Failed("old batch failure".into())
+                    } else {
+                        // Anything admitted afterwards must not hang the test.
+                        JobOutcome::Processed
+                    }
+                }
+            }
+        };
+
+        let run_a = tokio::spawn({
+            let state = state.clone();
+            let gate = healthy_disk_gate();
+            async move { run_scheduler(&state, Some("test-session".to_string()), 2, &gate, runner).await }
+        });
+
+        // Bounded wait until batch A's job is admitted and blocked in-flight
+        // (deterministic synchronization, not an arbitrary sleep).
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while admitted.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "batch A job was never admitted"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Simulate `BatchManager::clear()` + the `start_batch` tail for batch
+        // B on the same shared state: cancel, wipe, fresh token, new session,
+        // one new job, status back to Processing.
+        let mut b_job = build_job(1);
+        b_job.id = "job-B".into();
+        {
+            let mut s = state.lock().await;
+            s.cancellation_token.cancel();
+            s.queue.clear();
+            s.job_progress.clear();
+            s.all_job_ids.clear();
+            s.current_job_id = None;
+            s.completed_jobs = 0;
+            s.failed_jobs = 0;
+            s.total_jobs = 1;
+            s.status = BatchStatus::Idle;
+            s.cancellation_token = CancellationToken::new();
+            s.session_id = Some("session-B".into());
+            s.job_lifecycle_progress.clear();
+            s.current_job_lifecycle_progress = 0.0;
+            s.queue.push_back(b_job.clone());
+            s.all_job_ids.push(b_job.id.clone());
+            s.job_progress.insert(
+                b_job.id.clone(),
+                FileProgress {
+                    session_id: "session-B".into(),
+                    job_id: b_job.id.clone(),
+                    file_path: b_job.input_path.clone(),
+                    ratio: AspectRatio::Ratio9x16,
+                    progress: 0.0,
+                    status: JobStatus::Queued,
+                    thumbnail_path: None,
+                    duration_secs: 10.0,
+                    selection: SelectionMetadata {
+                        source_type: TargetType::AspectRatio,
+                        source_id: "test-source".into(),
+                        label: "test".into(),
+                    },
+                },
+            );
+            s.status = BatchStatus::Processing;
+        }
+
+        // Release A's blocked task; its Failed outcome lands in A's join loop
+        // after batch B owns the shared state.
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), run_a)
+            .await
+            .expect("stale run must terminate")
+            .expect("stale run must not panic");
+
+        // The stale run must not have touched batch B's records.
+        let s = state.lock().await;
+        assert_eq!(
+            s.failed_jobs, 0,
+            "old-batch failure must not inflate the new batch"
+        );
+        assert!(
+            !s.job_progress.contains_key("job-0"),
+            "old-batch entries must not appear in the new batch"
+        );
+        assert!(
+            !s.job_lifecycle_progress.contains_key("job-0"),
+            "old-batch lifecycle progress must not leak into the new batch"
+        );
+        assert_eq!(
+            s.queue.len(),
+            1,
+            "new-batch queue must be intact (stale dispatcher must not pop it)"
+        );
+        assert_eq!(s.queue[0].id, "job-B");
+        assert!(
+            matches!(s.job_progress["job-B"].status, JobStatus::Queued),
+            "new-batch job must still be queued"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // F-06 (pre-poll window) — a scheduler future created for batch A but
+    // first polled after batch B replaced the state must still stand down
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    async fn unpolled_stale_run_cannot_claim_new_batch() {
+        // Batch A owns the state. Its session is bound BEFORE the scheduler
+        // future is created — mirroring the production driver, which fixes
+        // the session value before spawning.
+        let state = build_state(1);
+        let expected_a = state.lock().await.session_id.clone();
+        assert_eq!(expected_a.as_deref(), Some("test-session"));
+
+        let executed_a: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let runner_a = {
+            let executed_a = executed_a.clone();
+            move |_job: BatchJob| {
+                let executed_a = executed_a.clone();
+                async move {
+                    executed_a.fetch_add(1, Ordering::SeqCst);
+                    JobOutcome::Processed
+                }
+            }
+        };
+
+        // Create A's scheduler future WITHOUT polling it: Rust futures are
+        // lazy, so no code inside `run_scheduler` — including any state read
+        // — has executed at this point. This is the timing window the
+        // in-flight test cannot cover (there, A was already admitted).
+        let gate_a = healthy_disk_gate();
+        let run_a_future = run_scheduler(
+            &state,
+            expected_a,
+            2,
+            &gate_a,
+            runner_a,
+        );
+
+        // While A's future is still unpolled, replace the active state with
+        // batch B (new session, new queue), mirroring clear() + start_batch.
+        let mut b_job = build_job(1);
+        b_job.id = "job-B".into();
+        {
+            let mut s = state.lock().await;
+            s.cancellation_token.cancel();
+            s.queue.clear();
+            s.job_progress.clear();
+            s.all_job_ids.clear();
+            s.current_job_id = None;
+            s.completed_jobs = 0;
+            s.failed_jobs = 0;
+            s.total_jobs = 1;
+            s.status = BatchStatus::Idle;
+            s.cancellation_token = CancellationToken::new();
+            s.session_id = Some("session-B".into());
+            s.job_lifecycle_progress.clear();
+            s.current_job_lifecycle_progress = 0.0;
+            s.queue.push_back(b_job.clone());
+            s.all_job_ids.push(b_job.id.clone());
+            s.job_progress.insert(
+                b_job.id.clone(),
+                FileProgress {
+                    session_id: "session-B".into(),
+                    job_id: b_job.id.clone(),
+                    file_path: b_job.input_path.clone(),
+                    ratio: AspectRatio::Ratio9x16,
+                    progress: 0.0,
+                    status: JobStatus::Queued,
+                    thumbnail_path: None,
+                    duration_secs: 10.0,
+                    selection: SelectionMetadata {
+                        source_type: TargetType::AspectRatio,
+                        source_id: "test-source".into(),
+                        label: "test".into(),
+                    },
+                },
+            );
+            s.status = BatchStatus::Processing;
+        }
+
+        // NOW first-poll A's future. Bound to session A, it must stand down
+        // immediately instead of adopting batch B.
+        tokio::time::timeout(Duration::from_secs(10), run_a_future)
+            .await
+            .expect("stale run must terminate");
+
+        assert_eq!(
+            executed_a.load(Ordering::SeqCst),
+            0,
+            "stale run must not execute any job after its session went stale"
+        );
+        {
+            let s = state.lock().await;
+            assert_eq!(s.failed_jobs, 0);
+            assert_eq!(s.queue.len(), 1, "batch B queue must be intact");
+            assert_eq!(s.queue[0].id, "job-B");
+            assert!(
+                matches!(s.job_progress["job-B"].status, JobStatus::Queued),
+                "batch B job must still be queued"
+            );
+            assert_eq!(s.session_id.as_deref(), Some("session-B"));
+            assert_eq!(s.status, BatchStatus::Processing);
+        }
+
+        // The legitimate batch B scheduler still operates normally on the
+        // same state when bound to the current session.
+        let executed_b: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let runner_b = {
+            let executed_b = executed_b.clone();
+            move |job: BatchJob| {
+                let executed_b = executed_b.clone();
+                async move {
+                    assert_eq!(job.id, "job-B");
+                    executed_b.fetch_add(1, Ordering::SeqCst);
+                    JobOutcome::Processed
+                }
+            }
+        };
+        let summary_b = run_scheduler(
+            &state,
+            Some("session-B".to_string()),
+            2,
+            &healthy_disk_gate(),
+            runner_b,
+        )
+        .await;
+        assert_eq!(executed_b.load(Ordering::SeqCst), 1);
+        assert!(state.lock().await.queue.is_empty());
+        assert_eq!(summary_b.in_flight_cost, 0);
     }
 }
