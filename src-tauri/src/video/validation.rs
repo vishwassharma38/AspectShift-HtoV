@@ -405,8 +405,52 @@ fn validate_platform_ratio(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_effects;
-    use crate::video::types::VideoEffectsSettings;
+    use super::{validate_effects, validate_platform_rate_control};
+    use crate::video::types::{PlatformConfig, VideoEffectsSettings};
+
+    fn platform_config() -> PlatformConfig {
+        PlatformConfig {
+            target_width: 1080,
+            target_height: 1920,
+            enforce_dimensions: true,
+            video_max_rate: None,
+            video_buffer_size: None,
+        }
+    }
+
+    #[test]
+    fn platform_rate_control_is_optional() {
+        assert!(validate_platform_rate_control(&platform_config()).is_ok());
+    }
+
+    #[test]
+    fn platform_rate_control_accepts_paired_positive_ffmpeg_values() {
+        let mut config = platform_config();
+        config.video_max_rate = Some("25M".to_string());
+        config.video_buffer_size = Some("25M".to_string());
+        assert!(validate_platform_rate_control(&config).is_ok());
+    }
+
+    #[test]
+    fn platform_rate_control_rejects_missing_pair_member() {
+        let mut config = platform_config();
+        config.video_max_rate = Some("8M".to_string());
+        let error = validate_platform_rate_control(&config)
+            .expect_err("maxrate without bufsize must fail");
+        assert!(error.to_string().contains("must be provided together"));
+    }
+
+    #[test]
+    fn platform_rate_control_rejects_invalid_or_zero_values() {
+        let mut config = platform_config();
+        config.video_max_rate = Some("8MB".to_string());
+        config.video_buffer_size = Some("16M".to_string());
+        assert!(validate_platform_rate_control(&config).is_err());
+
+        config.video_max_rate = Some("8M".to_string());
+        config.video_buffer_size = Some("0M".to_string());
+        assert!(validate_platform_rate_control(&config).is_err());
+    }
 
     fn default_effects() -> VideoEffectsSettings {
         serde_json::from_str("{}").expect("default effects should deserialize")
