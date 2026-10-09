@@ -69,7 +69,8 @@
       "targetHeight": 1920,
       "enforceDimensions": true,
       "videoMaxRate": "25M",
-      "videoBufferSize": "25M"
+      "videoBufferSize": "25M",
+      "maxFrameRate": 60
     },
     "isBuiltin": true
   },
@@ -107,7 +108,8 @@
       "targetHeight": 720,
       "enforceDimensions": true,
       "videoMaxRate": "8M",
-      "videoBufferSize": "16M"
+      "videoBufferSize": "16M",
+      "maxFrameRate": 60
     },
     "isBuiltin": true
   },
