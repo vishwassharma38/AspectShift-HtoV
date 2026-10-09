@@ -14,17 +14,17 @@ This is intentionally a conservative H.264/MP4-oriented update. The app's curren
 
 ## Built-in settings
 
-| Preset | Output canvas | CRF / quality label | x264 preset | Audio bitrate | Additional platform parameters |
+| Preset | Output canvas | CRF / quality label | x264 preset | Audio settings | Additional platform parameters |
 |---|---:|---|---|---:|---|
-| YouTube | 1920×1080 (16:9) | 18 / `high` | `fast` | 384 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
-| YouTube Shorts | 1080×1920 (9:16) | 18 / `high` | `fast` | 384 kb/s | Same upload encoding guidance as YouTube; vertical canvas |
-| Instagram Square | 1080×1080 (1:1) | 20 / `good` | `fast` | 128 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
-| Instagram Reels | 1080×1920 (9:16) | 20 / `good` | `fast` | 128 kb/s | Maximum 60 fps; H.264 VBV `-maxrate 25M -bufsize 25M`; 48 kHz AAC |
-| TikTok | 1080×1920 (9:16) | 20 / `good` | `fast` | 160 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
-| X | 1280×720 (16:9) | 22 / `good` | `fast` | 128 kb/s | Maximum 60 fps; H.264 VBV `-maxrate 8M -bufsize 16M`; 48 kHz AAC |
-| Reddit | 1200×1500 (4:5 portrait) | 22 / `good` | `fast` | 128 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
+| YouTube | 1920×1080 (16:9) | 18 / `high` | `fast` | 384 kb/s; source layout | H.264 High Profile, 4:2:0, 48 kHz audio |
+| YouTube Shorts | 1080×1920 (9:16) | 18 / `high` | `fast` | 384 kb/s; source layout | Same upload encoding guidance as YouTube; vertical canvas |
+| Instagram Square | 1080×1080 (1:1) | 20 / `good` | `fast` | 128 kb/s; stereo | H.264 High Profile, 4:2:0, 48 kHz audio |
+| Instagram Reels | 1080×1920 (9:16) | 20 / `good` | `fast` | 128 kb/s; stereo | Maximum 60 fps; H.264 VBV `-maxrate 25M -bufsize 25M`; 48 kHz AAC |
+| TikTok | 1080×1920 (9:16) | 20 / `good` | `fast` | 160 kb/s; stereo | H.264 High Profile, 4:2:0, 48 kHz audio |
+| X | 1280×720 (16:9) | 22 / `good` | `fast` | 128 kb/s; stereo | Maximum 60 fps; H.264 VBV `-maxrate 8M -bufsize 16M`; 48 kHz AAC |
+| Reddit | 1200×1500 (4:5 portrait) | 22 / `good` | `fast` | 128 kb/s; stereo | H.264 High Profile, 4:2:0, 48 kHz audio |
 
-**Common FFmpeg behavior:** H.264 output uses `libx264`; a `.webm` output uses the existing `libvpx-vp9` + `libopus` path. Platform exports with audio add `-ar 48000`; H.264 platform exports add `-profile:v high`. `-pix_fmt yuv420p` and MP4 `-movflags +faststart` are already part of the builder and remain so. Audio channels are not forcibly downmixed. If audio removal is enabled, audio codec/bitrate/sample-rate flags are not emitted.
+**Common FFmpeg behavior:** H.264 output uses `libx264`; a `.webm` output uses the existing `libvpx-vp9` + `libopus` path. Platform exports with audio add `-ar 48000`; H.264 platform exports add `-profile:v high`. `-pix_fmt yuv420p` and MP4 `-movflags +faststart` are already part of the builder and remain so. Presets that specify stereo emit `-ac 2`; YouTube leaves the source-supported channel layout untouched. If audio removal is enabled, audio codec/bitrate/sample-rate/channel flags are not emitted.
 
 The values under `qualityPreset` are UI representatives, not a separate FFmpeg control. The application's Rust quality table maps CRF 18 to `high` and CRF values 20–22 to `good`; this makes each built-in label consistent with its actual CRF. Rust remains the final authority for transient encoding overrides.
 
@@ -34,7 +34,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 
 **Official guidance:** MP4; H.264 High Profile; progressive video; 4:2:0; source-matched frame rate; AAC-LC or Opus at 48 kHz. YouTube publishes reference upload bitrates—8 Mb/s for 1080p at 24/25/30 fps and 12 Mb/s at 48/50/60 fps—but says a bitrate limit is not required. That makes CRF a better default than a rigid average bitrate target for this quality-oriented workflow.
 
-**Preset choice:** CRF 18 is a high-quality H.264 setting; `fast` favors turnaround time over `slow` while remaining a good compression preset. AAC at 384 kb/s is intentionally aligned with YouTube's published stereo audio recommendation. Shorts use the same encoding baseline with a 1080×1920 vertical canvas. No video `-maxrate` is attached because YouTube explicitly does not require a bitrate cap and its reference average bitrates should not be copied into CRF as if they were limits.
+**Preset choice:** CRF 18 is a high-quality H.264 setting; `fast` favors turnaround time over `slow` while remaining a good compression preset. AAC at 384 kb/s is aligned with YouTube's published stereo recommendation. The preset preserves the source channel layout (YouTube allows stereo or stereo + 5.1); its single fixed bitrate is best aligned with stereo sources, while YouTube recommends 512 kb/s for 5.1 audio. Shorts use the same encoding baseline with a 1080×1920 vertical canvas. No video `-maxrate` is attached because YouTube explicitly does not require a bitrate cap and its reference average bitrates should not be copied into CRF as if they were limits.
 
 **Trade-off:** Compared with `slow`, `fast` generally completes sooner but may produce a larger file at comparable subjective quality. CRF does not promise a file size or specific average bitrate.
 
@@ -76,7 +76,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 - **VBV options are paired.** A configured platform cap emits both `-maxrate` and `-bufsize`; validation rejects an incomplete pair, zero, or malformed values before rendering. They are applied only for `libx264`, not to the VP9 path.
 - **Speed:** all seven built-ins move from x264 `slow` to `fast`. This is a deliberate turnaround-time optimization; actual speedup depends on source, CPU, filter work (subtitles/blur/overlays), and concurrent batch load.
 - **Pixel format/profile:** the existing output pixel format `yuv420p` is preserved. `-profile:v high` is explicit for H.264 platform jobs; X explicitly permits Baseline, Main, or High with 4:2:0, and YouTube lists High.
-- **Audio:** 48 kHz is emitted only for platform jobs with audio. The existing AAC/Opus codec selection remains bound to output extension. Channel count is preserved rather than forcing stereo, since YouTube permits stereo or stereo+5.1 and X accepts stereo/mono.
+- **Audio:** 48 kHz is emitted only for platform jobs with audio. The existing AAC/Opus codec selection remains bound to output extension. Instagram, TikTok, X and Reddit preset jobs explicitly emit stereo `-ac 2`; YouTube preserves source layout because its upload guidance accepts stereo or stereo + 5.1. Stereo is an interoperability choice for those non-YouTube presets, not an official channel-count requirement where the cited platform docs are silent.
 - **FPS:** YouTube, TikTok and Reddit preserve the source-FPS policy. X and Instagram Reels use FFmpeg `-fpsmax 60` because the applicable official documentation sets a 60 fps maximum. `-fpsmax` only clamps a higher automatically selected rate; unlike forced `-r`, it does not upsample sources below that ceiling. Reddit's 30 fps limit is from Reddit Ads creative rules and is not imposed on the generic organic-post preset.
 - **Container:** `+faststart` remains enabled for MP4. The output-format chooser is global today, not attached to individual platform presets. The built-ins therefore do not silently override a user's format choice; for the strongest documented upload compatibility, leave the app's output format at MP4. WebM intentionally uses the app's VP9/Opus implementation, and H.264-only options are omitted.
 
