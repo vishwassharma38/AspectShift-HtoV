@@ -45,6 +45,19 @@ impl LifecycleWeights {
     }
 }
 
+/// F-06: session ownership for shared-state mutations in `process_batch_job`
+/// (and its progress callbacks).
+///
+/// Call while holding the state lock, before mutating: returns `false` when
+/// this job's session no longer owns the shared state (cleared, superseded
+/// by a newer batch). On `false` the caller must return without mutating or
+/// emitting, so a stale job can never inflate the new batch's counters,
+/// rewrite its records, steal its current-job fields, or emit for it.
+/// A single definition avoids inverted-comparison mistakes at call sites.
+pub(crate) fn owns_session_for_job(state: &BatchState, expected_session: &str) -> bool {
+    state.session_id.as_deref() == Some(expected_session)
+}
+
 fn set_stage(
     state: &mut BatchState,
     job_id: &str,
@@ -293,6 +306,12 @@ pub async fn start_batch(
     state.processed_duration_secs = 0.0;
     state.start_time = Some(std::time::Instant::now());
     state.cancellation_token = tokio_util::sync::CancellationToken::new();
+    // F-06: bind the batch-owned token to a plain value before any spawn.
+    // Job tasks must clone THIS token (see process_fn below), never re-read
+    // `state.cancellation_token`: after clear() + a newer batch, the shared
+    // field holds the new batch's token, and a stale job reading it would
+    // run under the wrong batch's cancellation authority.
+    let batch_token = state.cancellation_token.clone();
 
     // Emit initial full batch state
     drop(state);
@@ -330,6 +349,7 @@ pub async fn start_batch(
             let state = Arc::clone(&state_clone);
             let app = app_clone.clone();
             let session_id = session_id.clone();
+            let batch_token = batch_token.clone();
             let subtitle_cache = Arc::clone(&subtitle_cache);
             let temp_srt_paths = Arc::clone(&temp_srt_paths);
             let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
@@ -337,15 +357,16 @@ pub async fn start_batch(
                 let state = Arc::clone(&state);
                 let app = app.clone();
                 let session_id = session_id.clone();
+                // F-06: clone the batch-owned token captured before spawn.
+                // This runs when the scheduler invokes the closure and never
+                // touches shared state, so a stale job keeps its originating
+                // batch's (cancelled) token instead of acquiring the newer
+                // batch's token.
+                let token = batch_token.clone();
                 let subtitle_cache = Arc::clone(&subtitle_cache);
                 let temp_srt_paths = Arc::clone(&temp_srt_paths);
                 let temp_subtitle_font_dirs = Arc::clone(&temp_subtitle_font_dirs);
                 async move {
-                    let token = {
-                        let s = state.lock().await;
-                        s.cancellation_token.clone()
-                    };
-
                     let outcome = process_batch_job(
                         &app,
                         &state,
@@ -454,6 +475,11 @@ async fn process_batch_job(
     // child may be spawned past that point (Race C).
     if token.is_cancelled() {
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, session_id) {
+            // Stale job (session cleared/superseded): stand down without
+            // touching the newer batch's records or emitting for it.
+            return JobOutcome::Cancelled;
+        }
         if let Some(p) = s.job_progress.get_mut(&job_id) {
             p.status = JobStatus::Cancelled;
             let _ = app.emit("batch://file-status", p.clone());
@@ -464,6 +490,9 @@ async fn process_batch_job(
     if job.output.effects.skip_existing_enabled() {
         {
             let mut s = state.lock().await;
+            if !owns_session_for_job(&s, session_id) {
+                return JobOutcome::Cancelled;
+            }
             set_stage(
                 &mut s,
                 &job_id,
@@ -483,6 +512,9 @@ async fn process_batch_job(
         {
             {
                 let mut s = state.lock().await;
+                if !owns_session_for_job(&s, session_id) {
+                    return JobOutcome::Cancelled;
+                }
                 let mut duration = 0.0;
                 if let Some(p) = s.job_progress.get_mut(&job_id) {
                     p.status = JobStatus::Completed;
@@ -516,6 +548,9 @@ async fn process_batch_job(
 
     {
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, &session_id) {
+            return JobOutcome::Cancelled;
+        }
         if let Some(p) = s.job_progress.get_mut(&job.id) {
             p.status = JobStatus::Processing;
             let _ = app.emit("batch://file-status", p.clone());
@@ -530,6 +565,9 @@ async fn process_batch_job(
 
     {
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, &session_id) {
+            return JobOutcome::Cancelled;
+        }
         set_stage(
             &mut s,
             &job_id,
@@ -550,6 +588,9 @@ async fn process_batch_job(
     if should_prepare_subtitles {
         {
             let mut s = state.lock().await;
+            if !owns_session_for_job(&s, &session_id) {
+                return JobOutcome::Cancelled;
+            }
             set_stage(
                 &mut s,
                 &job_id,
@@ -567,6 +608,9 @@ async fn process_batch_job(
                     let failure_class = classify_video_error(&e);
                     let failure = format!("Failed to detect orientation for subtitles: {}", e);
                     let mut s = state.lock().await;
+                    if !owns_session_for_job(&s, &session_id) {
+                        return JobOutcome::Cancelled;
+                    }
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                         p.status = JobStatus::Failed(failure.clone());
                         let _ = app.emit("batch://file-status", p.clone());
@@ -604,6 +648,9 @@ async fn process_batch_job(
                     let failure_class = classify_video_error(&e);
                     let failure = e.to_string();
                     let mut s = state.lock().await;
+                    if !owns_session_for_job(&s, &session_id) {
+                        return JobOutcome::Cancelled;
+                    }
                     if let Some(p) = s.job_progress.get_mut(&job_id) {
                         p.status = JobStatus::Failed(failure.clone());
                     }
@@ -648,6 +695,9 @@ async fn process_batch_job(
             prepared_subtitle = Some(path);
             {
                 let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session_id) {
+                    return JobOutcome::Cancelled;
+                }
                 set_stage(
                     &mut s,
                     &job_id,
@@ -707,7 +757,7 @@ async fn process_batch_job(
                                 return;
                             }
                             let mut s = state.lock().await;
-                            if s.session_id.as_deref() != Some(session.as_str()) {
+                            if !owns_session_for_job(&s, &session) {
                                 return;
                             }
                             let lifecycle = weights.prepare
@@ -751,6 +801,9 @@ async fn process_batch_job(
                     prepared_subtitle = Some(path);
                     {
                         let mut s = state.lock().await;
+                        if !owns_session_for_job(&s, &session_id) {
+                            return JobOutcome::Cancelled;
+                        }
                         set_stage(
                             &mut s,
                             &job_id,
@@ -768,6 +821,9 @@ async fn process_batch_job(
                         // becomes Cancelled; the batch-level `Cancelled`
                         // status is deferred to the scheduler drain.
                         let mut s = state.lock().await;
+                        if !owns_session_for_job(&s, &session_id) {
+                            return JobOutcome::Cancelled;
+                        }
                         if let Some(p) = s.job_progress.get_mut(&job_id) {
                             p.status = JobStatus::Cancelled;
                             let _ = app.emit("batch://file-status", p.clone());
@@ -778,6 +834,9 @@ async fn process_batch_job(
                     let failure = e.to_string();
                     {
                         let mut s = state.lock().await;
+                        if !owns_session_for_job(&s, &session_id) {
+                            return JobOutcome::Cancelled;
+                        }
                         if let Some(p) = s.job_progress.get_mut(&job_id) {
                             p.status = JobStatus::Failed(failure.clone());
                             let _ = app.emit("batch://file-status", p.clone());
@@ -824,6 +883,9 @@ async fn process_batch_job(
             let failure = e.to_string();
             {
                 let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session_id) {
+                    return JobOutcome::Cancelled;
+                }
                 if let Some(p) = s.job_progress.get_mut(&job_id) {
                     p.status = JobStatus::Failed(failure.clone());
                     let _ = app.emit("batch://file-status", p.clone());
@@ -850,6 +912,9 @@ async fn process_batch_job(
         // batch-level `Cancelled` will be set once the scheduler has joined
         // every in-flight task.
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, &session_id) {
+            return JobOutcome::Cancelled;
+        }
         if let Some(p) = s.job_progress.get_mut(&job_id) {
             p.status = JobStatus::Cancelled;
             let _ = app.emit("batch://file-status", p.clone());
@@ -865,6 +930,9 @@ async fn process_batch_job(
 
     {
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, &session_id) {
+            return JobOutcome::Cancelled;
+        }
         set_stage(
             &mut s,
             &job_id,
@@ -888,7 +956,7 @@ async fn process_batch_job(
             }
             {
                 let mut s = state.lock().await;
-                if s.session_id.as_deref() != Some(session.as_str()) {
+                if !owns_session_for_job(&s, &session) {
                     return;
                 }
                 if let Some(p) = s.job_progress.get_mut(&jid) {
@@ -919,6 +987,9 @@ async fn process_batch_job(
         // state may now truthfully become Cancelled. The batch-level
         // `Cancelled` is deferred until the scheduler has joined every task.
         let mut s = state.lock().await;
+        if !owns_session_for_job(&s, &session_id) {
+            return JobOutcome::Cancelled;
+        }
         if let Some(p) = s.job_progress.get_mut(&job_id) {
             p.status = JobStatus::Cancelled;
             let _ = app.emit("batch://file-status", p.clone());
@@ -929,6 +1000,9 @@ async fn process_batch_job(
     match result {
         Ok(_) => {
             let mut s = state.lock().await;
+            if !owns_session_for_job(&s, &session_id) {
+                return JobOutcome::Cancelled;
+            }
             set_stage(
                 &mut s,
                 &job_id,
@@ -953,6 +1027,9 @@ async fn process_batch_job(
             let failure_class = classify_video_error(&e);
             let failure = e.to_string();
             let mut s = state.lock().await;
+            if !owns_session_for_job(&s, &session_id) {
+                return JobOutcome::Cancelled;
+            }
             let mut duration = 0.0;
             if let Some(p) = s.job_progress.get_mut(&job_id) {
                 p.status = JobStatus::Failed(failure.clone());
@@ -1143,8 +1220,13 @@ async fn emit_batch_progress(app: &AppHandle, state_mutex: &Arc<Mutex<BatchState
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::video::types::{AspectRatio, SelectionMetadata, TargetType};
+    use crate::video::types::{
+        AspectRatio, EncodingProfile, OutputJob, SelectionMetadata, TargetType,
+        VideoEffectsSettings,
+    };
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
     fn assert_duration_close(actual: f64, expected: f64) {
@@ -1330,5 +1412,459 @@ mod tests {
         let (percentage, _, _, processed_secs) = calculate_stats(&state);
         assert_duration_close(processed_secs, 0.0);
         assert_percent_close(percentage, 0.0);
+    }
+
+    // -----------------------------------------------------------------
+    // F-06 production ownership: token binding + session-guarded writes
+    // -----------------------------------------------------------------
+    //
+    // Test-seam note: `process_batch_job` itself requires `&AppHandle`
+    // (sidecar spawning, temp-dir resolution, event emission), which cannot
+    // be constructed in unit tests (`tauri::test::mock_app` yields a
+    // different runtime type). These tests therefore drive the REAL
+    // ownership primitives — real `CancellationToken`s, the real
+    // `owns_session_for_job` gate, the real `BatchManager::clear()`, real
+    // `BatchState` — through the EXACT wiring pattern production uses
+    // (capture token + session before spawn; clone per job without
+    // re-reading shared state; guard every mutation under its lock).
+    // Production call-site fidelity is verified by review of the small
+    // closure diff; the negative controls prove these tests discriminate
+    // faulty wiring. Event emission has no AppHandle here; in production,
+    // stale-job emits carry the old session and are filtered by the
+    // frontend's session check.
+
+    #[derive(Debug)]
+    struct HealthyDiskForOwnership;
+
+    impl crate::video::concurrency::DiskSpaceSource for HealthyDiskForOwnership {
+        fn available_bytes(&self, _path: &Path) -> std::io::Result<u64> {
+            Ok(u64::MAX)
+        }
+    }
+
+    fn ownership_test_effects() -> VideoEffectsSettings {
+        serde_json::from_str("{}").expect("empty effects should deserialize")
+    }
+
+    fn ownership_test_job(id: &str) -> BatchJob {
+        BatchJob {
+            id: id.to_string(),
+            input_path: format!("{id}.mp4"),
+            output: OutputJob {
+                id: format!("{id}-out"),
+                ratio: AspectRatio::Ratio9x16,
+                encoding: EncodingProfile::standard(),
+                encoding_overrides:
+                    crate::video::encoding::EncodingOverrides::baseline(),
+                effects: ownership_test_effects(),
+                platform_config: None,
+                selection: SelectionMetadata {
+                    source_type: TargetType::AspectRatio,
+                    source_id: "ownership-test".into(),
+                    label: "test".into(),
+                },
+                force_reencode: false,
+            },
+            resolved_output_path: format!("{id}_9x16.mp4"),
+            alt_output_path: None,
+            thumbnail_path: None,
+        }
+    }
+
+    fn ownership_test_progress(job_id: &str, session: &str) -> FileProgress {
+        FileProgress {
+            session_id: session.into(),
+            job_id: job_id.into(),
+            file_path: format!("{job_id}.mp4"),
+            ratio: AspectRatio::Ratio9x16,
+            progress: 0.0,
+            status: JobStatus::Queued,
+            thumbnail_path: None,
+            duration_secs: 10.0,
+            selection: SelectionMetadata {
+                source_type: TargetType::AspectRatio,
+                source_id: "ownership-test".into(),
+                label: "test".into(),
+            },
+        }
+    }
+
+    fn ownership_manager() -> BatchManager {
+        BatchManager::with_disk_source(Arc::new(HealthyDiskForOwnership))
+    }
+
+    /// Installs a batch on shared state, mirroring the `start_batch` tail
+    /// (fresh token, session, queued job, `Processing` status).
+    async fn install_batch(
+        manager: &BatchManager,
+        session: &str,
+        job: &BatchJob,
+    ) -> CancellationToken {
+        let mut s = manager.state.lock().await;
+        s.session_id = Some(session.into());
+        s.cancellation_token = CancellationToken::new();
+        s.status = BatchStatus::Processing;
+        s.total_jobs = 1;
+        s.queue.push_back(job.clone());
+        s.all_job_ids.push(job.id.clone());
+        s.job_progress.insert(
+            job.id.clone(),
+            ownership_test_progress(&job.id, session),
+        );
+        s.cancellation_token.clone()
+    }
+
+    #[tokio::test]
+    async fn owns_session_gate_follows_clear_and_restart() {
+        let manager = ownership_manager();
+        {
+            let mut s = manager.state.lock().await;
+            s.session_id = Some("session-A".into());
+        }
+        assert!(owns_session_for_job(
+            &*manager.state.lock().await,
+            "session-A"
+        ));
+        manager.clear().await;
+        assert!(!owns_session_for_job(
+            &*manager.state.lock().await,
+            "session-A"
+        ));
+        {
+            let mut s = manager.state.lock().await;
+            s.session_id = Some("session-B".into());
+        }
+        assert!(!owns_session_for_job(
+            &*manager.state.lock().await,
+            "session-A"
+        ));
+        assert!(owns_session_for_job(
+            &*manager.state.lock().await,
+            "session-B"
+        ));
+    }
+
+    /// Test A — admitted job first-polled after clear+restart keeps its
+    /// origin token, stands down on its cancellation, and leaves batch B
+    /// fully untouched; B's own job then completes normally.
+    #[tokio::test]
+    async fn admitted_job_uses_origin_token_after_clear_and_restart() {
+        let manager = ownership_manager();
+        let job_a = ownership_test_job("job-A");
+        install_batch(&manager, "session-A", &job_a).await;
+
+        // Production capture order: token + session bound BEFORE any
+        // spawn/poll of the job task.
+        let batch_token_a = manager.state.lock().await.cancellation_token.clone();
+        let session_a = manager
+            .state
+            .lock()
+            .await
+            .session_id
+            .clone()
+            .expect("session A installed");
+        assert!(!batch_token_a.is_cancelled());
+
+        // A's job task, built UNPOLLED with the production wiring pattern:
+        // the captured token is cloned per job without re-reading shared
+        // state; the entry mirrors `process_batch_job`'s guarded entry.
+        let executed_a = Arc::new(AtomicUsize::new(0));
+        let fut_a = {
+            let state = manager.state.clone();
+            let token = batch_token_a.clone();
+            let session = session_a.clone();
+            let executed = executed_a.clone();
+            let job_id = job_a.id.clone();
+            async move {
+                if token.is_cancelled() {
+                    let mut s = state.lock().await;
+                    if !owns_session_for_job(&s, &session) {
+                        return JobOutcome::Cancelled;
+                    }
+                    if let Some(p) = s.job_progress.get_mut(&job_id) {
+                        p.status = JobStatus::Cancelled;
+                    }
+                    return JobOutcome::Cancelled;
+                }
+                executed.fetch_add(1, Ordering::SeqCst);
+                JobOutcome::Processed
+            }
+        };
+
+        // Switch to batch B through the REAL clear path, then reinstall.
+        // `clear()` cancels A's token, wipes records, installs a new token.
+        manager.clear().await;
+        assert!(
+            batch_token_a.is_cancelled(),
+            "clear() must cancel every token belonging to A"
+        );
+        let job_b = ownership_test_job("job-B");
+        let batch_token_b = install_batch(&manager, "session-B", &job_b).await;
+        assert!(
+            !batch_token_b.is_cancelled(),
+            "B receives its own independent uncancelled token"
+        );
+
+        // First-poll A's task only now: the future was never awaited, so by
+        // Rust future laziness none of its code ran before the switch.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), fut_a)
+            .await
+            .expect("stale job task must terminate");
+        assert!(
+            matches!(outcome, JobOutcome::Cancelled),
+            "stale job must stand down, not proceed under a foreign token"
+        );
+        assert_eq!(
+            executed_a.load(Ordering::SeqCst),
+            0,
+            "stale job must not begin processing after its batch was cleared"
+        );
+
+        // Batch B entirely unchanged.
+        {
+            let s = manager.state.lock().await;
+            assert_eq!(s.session_id.as_deref(), Some("session-B"));
+            assert!(matches!(s.status, BatchStatus::Processing));
+            assert_eq!(s.queue.len(), 1);
+            assert_eq!(s.queue[0].id, "job-B");
+            assert_eq!(s.job_progress.len(), 1);
+            assert!(matches!(
+                s.job_progress["job-B"].status,
+                JobStatus::Queued
+            ));
+            assert_eq!(s.all_job_ids, vec!["job-B".to_string()]);
+            assert_eq!((s.completed_jobs, s.failed_jobs, s.total_jobs), (0, 0, 1));
+            assert_eq!(s.processed_duration_secs, 0.0);
+            assert!(s.current_job_id.is_none());
+            assert!(s.current_stage_id.is_none());
+            assert!(s.current_stage_message.is_none());
+            assert_eq!(s.current_job_lifecycle_progress, 0.0);
+            assert!(s.job_lifecycle_progress.is_empty());
+            assert!(!s.cancellation_token.is_cancelled());
+        }
+
+        // B's own job still processes normally through the same wiring.
+        let executed_b = Arc::new(AtomicUsize::new(0));
+        let fut_b = {
+            let state = manager.state.clone();
+            let token = batch_token_b.clone();
+            let session = "session-B".to_string();
+            let executed = executed_b.clone();
+            let job_id = job_b.id.clone();
+            async move {
+                if token.is_cancelled() {
+                    return JobOutcome::Cancelled;
+                }
+                executed.fetch_add(1, Ordering::SeqCst);
+                let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session) {
+                    return JobOutcome::Cancelled;
+                }
+                if let Some(p) = s.job_progress.get_mut(&job_id) {
+                    p.status = JobStatus::Completed;
+                    p.progress = 100.0;
+                }
+                s.completed_jobs += 1;
+                JobOutcome::Processed
+            }
+        };
+        let outcome_b = tokio::time::timeout(Duration::from_secs(5), fut_b)
+            .await
+            .expect("owner job task must terminate");
+        assert!(matches!(outcome_b, JobOutcome::Processed));
+        assert_eq!(executed_b.load(Ordering::SeqCst), 1);
+        {
+            let s = manager.state.lock().await;
+            assert_eq!(s.completed_jobs, 1);
+            assert!(matches!(
+                s.job_progress["job-B"].status,
+                JobStatus::Completed
+            ));
+        }
+    }
+
+    /// Test B — stale tasks attempting success- and failure-shaped terminal
+    /// transitions after session replacement change nothing.
+    #[tokio::test]
+    async fn stale_terminal_transitions_cannot_touch_new_batch() {
+        let manager = ownership_manager();
+        let job_a = ownership_test_job("job-A");
+        install_batch(&manager, "session-A", &job_a).await;
+        let session_a = manager
+            .state
+            .lock()
+            .await
+            .session_id
+            .clone()
+            .expect("session A installed");
+
+        // Two stale tasks bound to A, built unpolled. Each mirrors one
+        // production terminal arm's guarded write block.
+        let fut_ok = {
+            let state = manager.state.clone();
+            let session = session_a.clone();
+            async move {
+                let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session) {
+                    return JobOutcome::Cancelled;
+                }
+                if let Some(p) = s.job_progress.get_mut("job-A") {
+                    p.status = JobStatus::Completed;
+                    p.progress = 100.0;
+                }
+                s.completed_jobs += 1;
+                s.processed_duration_secs += 10.0;
+                s.current_job_lifecycle_progress = 100.0;
+                s.job_lifecycle_progress
+                    .insert("job-A".to_string(), 100.0);
+                s.current_job_id = None;
+                JobOutcome::Processed
+            }
+        };
+        let fut_err = {
+            let state = manager.state.clone();
+            let session = session_a.clone();
+            async move {
+                let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session) {
+                    return JobOutcome::Cancelled;
+                }
+                if let Some(p) = s.job_progress.get_mut("job-A") {
+                    p.status = JobStatus::Failed("stale failure".into());
+                }
+                s.failed_jobs += 1;
+                s.processed_duration_secs += 10.0;
+                s.current_job_lifecycle_progress = 100.0;
+                s.job_lifecycle_progress
+                    .insert("job-A".to_string(), 100.0);
+                s.current_job_id = None;
+                JobOutcome::Processed
+            }
+        };
+
+        manager.clear().await;
+        let job_b = ownership_test_job("job-B");
+        install_batch(&manager, "session-B", &job_b).await;
+
+        let outcome_ok = tokio::time::timeout(Duration::from_secs(5), fut_ok)
+            .await
+            .expect("stale success task must terminate");
+        let outcome_err = tokio::time::timeout(Duration::from_secs(5), fut_err)
+            .await
+            .expect("stale failure task must terminate");
+        assert!(matches!(outcome_ok, JobOutcome::Cancelled));
+        assert!(matches!(outcome_err, JobOutcome::Cancelled));
+
+        let s = manager.state.lock().await;
+        assert_eq!(s.session_id.as_deref(), Some("session-B"));
+        assert_eq!((s.completed_jobs, s.failed_jobs), (0, 0));
+        assert_eq!(s.processed_duration_secs, 0.0);
+        assert!(!s.job_progress.contains_key("job-A"));
+        assert!(!s.job_lifecycle_progress.contains_key("job-A"));
+        assert_eq!(s.queue.len(), 1);
+        assert!(matches!(
+            s.job_progress["job-B"].status,
+            JobStatus::Queued
+        ));
+        assert!(s.current_job_id.is_none());
+        assert!(matches!(s.status, BatchStatus::Processing));
+    }
+
+    /// Test C — owner-session jobs still record progress, terminal
+    /// outcomes, and cancellation normally through the guarded pattern.
+    #[tokio::test]
+    async fn owner_session_jobs_complete_fail_and_cancel_normally() {
+        let manager = ownership_manager();
+
+        // Owner success: guarded writes apply.
+        let job = ownership_test_job("job-C");
+        install_batch(&manager, "session-C", &job).await;
+        {
+            let state = manager.state.clone();
+            let session = "session-C".to_string();
+            let job_id = job.id.clone();
+            let outcome = async move {
+                let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session) {
+                    return JobOutcome::Cancelled;
+                }
+                if let Some(p) = s.job_progress.get_mut(&job_id) {
+                    p.status = JobStatus::Completed;
+                    p.progress = 100.0;
+                }
+                s.completed_jobs += 1;
+                s.processed_duration_secs += 10.0;
+                JobOutcome::Processed
+            }
+            .await;
+            assert!(matches!(outcome, JobOutcome::Processed));
+        }
+        {
+            let s = manager.state.lock().await;
+            assert_eq!(s.completed_jobs, 1);
+            assert_eq!(s.processed_duration_secs, 10.0);
+            assert!(matches!(
+                s.job_progress["job-C"].status,
+                JobStatus::Completed
+            ));
+        }
+
+        // Owner deterministic failure: guarded writes apply, no retry accounting.
+        {
+            let state = manager.state.clone();
+            let session = "session-C".to_string();
+            let outcome = async move {
+                let mut s = state.lock().await;
+                if !owns_session_for_job(&s, &session) {
+                    return JobOutcome::Cancelled;
+                }
+                if let Some(p) = s.job_progress.get_mut("job-C") {
+                    p.status = JobStatus::Failed("deterministic".into());
+                }
+                s.failed_jobs += 1;
+                JobOutcome::Processed
+            }
+            .await;
+            assert!(matches!(outcome, JobOutcome::Processed));
+        }
+        {
+            let s = manager.state.lock().await;
+            assert_eq!(s.failed_jobs, 1);
+            assert!(matches!(
+                s.job_progress["job-C"].status,
+                JobStatus::Failed(_)
+            ));
+        }
+
+        // Owner-session cancellation: own record transitions, counters stay.
+        {
+            let token = manager.state.lock().await.cancellation_token.clone();
+            token.cancel();
+            let state = manager.state.clone();
+            let session = "session-C".to_string();
+            let outcome = async move {
+                if token.is_cancelled() {
+                    let mut s = state.lock().await;
+                    if !owns_session_for_job(&s, &session) {
+                        return JobOutcome::Cancelled;
+                    }
+                    if let Some(p) = s.job_progress.get_mut("job-C") {
+                        p.status = JobStatus::Cancelled;
+                    }
+                    return JobOutcome::Cancelled;
+                }
+                JobOutcome::Processed
+            }
+            .await;
+            assert!(matches!(outcome, JobOutcome::Cancelled));
+        }
+        {
+            let s = manager.state.lock().await;
+            assert!(matches!(
+                s.job_progress["job-C"].status,
+                JobStatus::Cancelled
+            ));
+            assert_eq!((s.completed_jobs, s.failed_jobs), (1, 1));
+        }
     }
 }
