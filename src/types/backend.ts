@@ -361,10 +361,20 @@ export type PlatformConfig = {
 	targetWidth: number,
 	targetHeight: number,
 	enforceDimensions: boolean,
-	maxFrameRate?: number,
-	audioChannels?: number,
-	videoMaxRate?: string,
-	videoBufferSize?: string,
+	/**
+	 *  Clamp unexpectedly high automatic output frame rates without upsampling
+	 *  lower-frame-rate sources. Omitted means preserve the existing FPS policy.
+	 */
+	maxFrameRate?: number | null,
+	// Optional platform audio channel count. None preserves the source layout.
+	audioChannels?: number | null,
+	/**
+	 *  Optional codec-specific VBV ceiling. Applied only to H.264 outputs so
+	 *  CRF remains the quality control while limiting short-term bitrate peaks.
+	 */
+	videoMaxRate?: string | null,
+	// Required together with video_max_rate when a VBV ceiling is configured.
+	videoBufferSize?: string | null,
 };
 
 export type PlatformPreset = {

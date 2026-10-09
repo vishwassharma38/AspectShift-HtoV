@@ -7,7 +7,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -25,7 +25,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -43,7 +43,7 @@
     "encoding": {
       "crf": 20,
       "qualityPreset": "good",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
@@ -62,7 +62,7 @@
     "encoding": {
       "crf": 20,
       "qualityPreset": "good",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
@@ -84,7 +84,7 @@
     "encoding": {
       "crf": 20,
       "qualityPreset": "good",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "160k"
     },
     "platformConfig": {
@@ -103,7 +103,7 @@
     "encoding": {
       "crf": 22,
       "qualityPreset": "good",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
@@ -125,7 +125,7 @@
     "encoding": {
       "crf": 22,
       "qualityPreset": "good",
-      "speedPreset": "fast",
+      "speedPreset": "ultrafast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
