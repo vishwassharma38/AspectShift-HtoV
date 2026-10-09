@@ -125,9 +125,16 @@ pub fn build_ffmpeg_args(
         ]);
         // Platform upload specs commonly use 48 kHz AAC/Opus audio. Do not
         // alter ordinary aspect-ratio/custom exports or downmix channels.
-        if plan.platform_config.is_some() {
+        if let Some(config) = &plan.platform_config {
             args.push("-ar".to_string());
             args.push("48000".to_string());
+            // YouTube permits stereo or stereo + 5.1, so its preset leaves
+            // channel layout untouched. Other presets can explicitly request
+            // mono/stereo for the target platform's upload compatibility.
+            if let Some(channels) = config.audio_channels {
+                args.push("-ac".to_string());
+                args.push(channels.to_string());
+            }
         }
     }
 
@@ -310,6 +317,7 @@ mod tests {
             target_height: 1920,
             enforce_dimensions: true,
             max_frame_rate: Some(60),
+            audio_channels: Some(2),
             video_max_rate: Some("8M".to_string()),
             video_buffer_size: Some("16M".to_string()),
         });
@@ -342,6 +350,8 @@ mod tests {
         assert_eq!(args[buffer_pos + 1], "16M");
         let rate_pos = args.iter().position(|a| a == "-ar").unwrap();
         assert_eq!(args[rate_pos + 1], "48000");
+        let channels_pos = args.iter().position(|a| a == "-ac").unwrap();
+        assert_eq!(args[channels_pos + 1], "2");
         assert!(args.contains(&"-crf".to_string()));
         let fps_pos = args.iter().position(|a| a == "-fpsmax").unwrap();
         assert_eq!(args[fps_pos + 1], "60");
@@ -358,12 +368,15 @@ mod tests {
         assert_eq!(args[fps_pos + 1], "60");
         let audio_rate_pos = args.iter().position(|a| a == "-ar").unwrap();
         assert_eq!(args[audio_rate_pos + 1], "48000");
+        let channels_pos = args.iter().position(|a| a == "-ac").unwrap();
+        assert_eq!(args[channels_pos + 1], "2");
     }
 
     #[test]
     fn non_platform_exports_keep_existing_audio_rate_and_profile_behavior() {
         let args = build_args("output.mp4", None);
         assert!(!args.contains(&"-ar".to_string()));
+        assert!(!args.contains(&"-ac".to_string()));
         assert!(!args.contains(&"-profile:v".to_string()));
         assert!(!args.contains(&"-maxrate".to_string()));
         assert!(!args.contains(&"-bufsize".to_string()));
