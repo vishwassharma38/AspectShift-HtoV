@@ -361,6 +361,7 @@ export type PlatformConfig = {
 	targetWidth: number,
 	targetHeight: number,
 	enforceDimensions: boolean,
+	maxFrameRate: number | null,
 	videoMaxRate: string | null,
 	videoBufferSize: string | null,
 };
