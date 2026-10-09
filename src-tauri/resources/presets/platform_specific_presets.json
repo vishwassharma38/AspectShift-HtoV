@@ -114,7 +114,7 @@
   {
     "id": "reddit",
     "name": "Reddit",
-    "description": "Optimized for Reddit",
+    "description": "Optimized for Reddit (4:5 portrait)",
     "ratio": "ratio4x5",
     "encoding": {
       "crf": 22,
