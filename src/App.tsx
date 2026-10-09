@@ -1157,7 +1157,7 @@ export default function App() {
   const [refreshConfirmActiveCount, setRefreshConfirmActiveCount] = useState(0);
   const [aboutMetadata, setAboutMetadata] = useState({
     appName: "AspectShift-HtoV",
-    appVersion: "0.1.2",
+    appVersion: "0.1.3",
     tauriVersion: "2",
     identifier: "com.softwarefromvish.aspectshift-htov",
     buildMode: import.meta.env.MODE,
