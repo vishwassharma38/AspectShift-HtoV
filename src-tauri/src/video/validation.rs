@@ -29,6 +29,9 @@ pub fn validate_preset(preset: &PlatformPreset) -> Result<(), VideoError> {
         ));
     }
     validate_encoding_profile(&preset.encoding)?;
+    if let Some(config) = preset.platform_config.as_ref() {
+        validate_platform_rate_control(config)?;
+    }
     validate_platform_ratio(&preset.ratio, preset.platform_config.as_ref())
 }
 
@@ -332,10 +335,43 @@ pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
                 "Platform dimensions exceed maximum resolution".to_string(),
             ));
         }
+        validate_platform_rate_control(config)?;
     }
 
     // 4. Aspect Ratio Consistency
     validate_platform_ratio(&job.ratio, job.platform_config.as_ref())
+}
+
+fn validate_platform_rate_control(config: &PlatformConfig) -> Result<(), VideoError> {
+    match (&config.video_max_rate, &config.video_buffer_size) {
+        (None, None) => Ok(()),
+        (Some(max_rate), Some(buffer_size)) => {
+            validate_ffmpeg_rate_value(max_rate, "platformConfig.videoMaxRate")?;
+            validate_ffmpeg_rate_value(buffer_size, "platformConfig.videoBufferSize")
+        }
+        _ => Err(VideoError::InvalidInput(
+            "platformConfig.videoMaxRate and videoBufferSize must be provided together".to_string(),
+        )),
+    }
+}
+
+fn validate_ffmpeg_rate_value(value: &str, field: &str) -> Result<(), VideoError> {
+    let trimmed = value.trim();
+    let numeric = trimmed
+        .strip_suffix('M')
+        .or_else(|| trimmed.strip_suffix('m'))
+        .or_else(|| trimmed.strip_suffix('K'))
+        .or_else(|| trimmed.strip_suffix('k'))
+        .unwrap_or(trimmed);
+    let parsed = numeric.parse::<u32>().map_err(|_| {
+        VideoError::InvalidInput(format!("{field} must be a positive integer with optional K/M suffix"))
+    })?;
+    if parsed == 0 || trimmed.is_empty() {
+        return Err(VideoError::InvalidInput(format!(
+            "{field} must be greater than zero"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_platform_ratio(
