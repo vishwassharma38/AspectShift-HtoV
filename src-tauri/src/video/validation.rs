@@ -343,6 +343,14 @@ pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
 }
 
 fn validate_platform_rate_control(config: &PlatformConfig) -> Result<(), VideoError> {
+    if let Some(max_frame_rate) = config.max_frame_rate {
+        if !(1..=240).contains(&max_frame_rate) {
+            return Err(VideoError::InvalidInput(
+                "platformConfig.maxFrameRate must be between 1 and 240".to_string(),
+            ));
+        }
+    }
+
     match (&config.video_max_rate, &config.video_buffer_size) {
         (None, None) => Ok(()),
         (Some(max_rate), Some(buffer_size)) => {
@@ -413,6 +421,7 @@ mod tests {
             target_width: 1080,
             target_height: 1920,
             enforce_dimensions: true,
+            max_frame_rate: None,
             video_max_rate: None,
             video_buffer_size: None,
         }
@@ -421,6 +430,19 @@ mod tests {
     #[test]
     fn platform_rate_control_is_optional() {
         assert!(validate_platform_rate_control(&platform_config()).is_ok());
+    }
+
+    #[test]
+    fn platform_max_frame_rate_accepts_reasonable_caps_and_rejects_invalid_values() {
+        let mut config = platform_config();
+        config.max_frame_rate = Some(60);
+        assert!(validate_platform_rate_control(&config).is_ok());
+
+        config.max_frame_rate = Some(0);
+        assert!(validate_platform_rate_control(&config).is_err());
+
+        config.max_frame_rate = Some(241);
+        assert!(validate_platform_rate_control(&config).is_err());
     }
 
     #[test]
