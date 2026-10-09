@@ -195,6 +195,16 @@ pub fn build_ffmpeg_args(
     args.push("-pix_fmt".to_string());
     args.push("yuv420p".to_string());
 
+    // Clamp only unexpectedly high automatic output frame rates where an
+    // official platform upload specification sets a maximum. -fpsmax does not
+    // upsample low-FPS input (unlike forcing a fixed output -r).
+    if let Some(config) = &plan.platform_config {
+        if let Some(max_frame_rate) = config.max_frame_rate {
+            args.push("-fpsmax".to_string());
+            args.push(max_frame_rate.to_string());
+        }
+    }
+
     // Image overlays use infinite looped inputs (`-loop 1` / `-stream_loop -1`)
     // so a single frame (or GIF cycle) covers the whole render. Without
     // `-shortest` the output would follow the longest (infinite) input and
@@ -299,6 +309,7 @@ mod tests {
             target_width: 1080,
             target_height: 1920,
             enforce_dimensions: true,
+            max_frame_rate: Some(60),
             video_max_rate: Some("8M".to_string()),
             video_buffer_size: Some("16M".to_string()),
         });
@@ -332,6 +343,8 @@ mod tests {
         let rate_pos = args.iter().position(|a| a == "-ar").unwrap();
         assert_eq!(args[rate_pos + 1], "48000");
         assert!(args.contains(&"-crf".to_string()));
+        let fps_pos = args.iter().position(|a| a == "-fpsmax").unwrap();
+        assert_eq!(args[fps_pos + 1], "60");
     }
 
     #[test]
@@ -341,6 +354,8 @@ mod tests {
         assert!(!args.contains(&"-profile:v".to_string()));
         assert!(!args.contains(&"-maxrate".to_string()));
         assert!(!args.contains(&"-bufsize".to_string()));
+        let fps_pos = args.iter().position(|a| a == "-fpsmax").unwrap();
+        assert_eq!(args[fps_pos + 1], "60");
         let audio_rate_pos = args.iter().position(|a| a == "-ar").unwrap();
         assert_eq!(args[audio_rate_pos + 1], "48000");
     }
@@ -352,6 +367,7 @@ mod tests {
         assert!(!args.contains(&"-profile:v".to_string()));
         assert!(!args.contains(&"-maxrate".to_string()));
         assert!(!args.contains(&"-bufsize".to_string()));
+        assert!(!args.contains(&"-fpsmax".to_string()));
     }
 
     // --- Existing filter-graph tests (unchanged) ---
