@@ -30,7 +30,7 @@ pub fn validate_preset(preset: &PlatformPreset) -> Result<(), VideoError> {
     }
     validate_encoding_profile(&preset.encoding)?;
     if let Some(config) = preset.platform_config.as_ref() {
-        validate_platform_rate_control(config)?;
+        validate_platform_output_constraints(config)?;
     }
     validate_platform_ratio(&preset.ratio, preset.platform_config.as_ref())
 }
@@ -335,14 +335,22 @@ pub fn validate_output_job(job: &OutputJob) -> Result<(), VideoError> {
                 "Platform dimensions exceed maximum resolution".to_string(),
             ));
         }
-        validate_platform_rate_control(config)?;
+        validate_platform_output_constraints(config)?;
     }
 
     // 4. Aspect Ratio Consistency
     validate_platform_ratio(&job.ratio, job.platform_config.as_ref())
 }
 
-fn validate_platform_rate_control(config: &PlatformConfig) -> Result<(), VideoError> {
+fn validate_platform_output_constraints(config: &PlatformConfig) -> Result<(), VideoError> {
+    if let Some(audio_channels) = config.audio_channels {
+        if !(1..=2).contains(&audio_channels) {
+            return Err(VideoError::InvalidInput(
+                "platformConfig.audioChannels must be 1 (mono) or 2 (stereo)".to_string(),
+            ));
+        }
+    }
+
     if let Some(max_frame_rate) = config.max_frame_rate {
         if !(1..=240).contains(&max_frame_rate) {
             return Err(VideoError::InvalidInput(
@@ -413,7 +421,7 @@ fn validate_platform_ratio(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_effects, validate_platform_rate_control};
+    use super::{validate_effects, validate_platform_output_constraints};
     use crate::video::types::{PlatformConfig, VideoEffectsSettings};
 
     fn platform_config() -> PlatformConfig {
@@ -422,6 +430,7 @@ mod tests {
             target_height: 1920,
             enforce_dimensions: true,
             max_frame_rate: None,
+            audio_channels: None,
             video_max_rate: None,
             video_buffer_size: None,
         }
@@ -429,20 +438,31 @@ mod tests {
 
     #[test]
     fn platform_rate_control_is_optional() {
-        assert!(validate_platform_rate_control(&platform_config()).is_ok());
+        assert!(validate_platform_output_constraints(&platform_config()).is_ok());
+    }
+
+    #[test]
+    fn platform_audio_channels_accepts_mono_stereo_and_rejects_other_counts() {
+        let mut config = platform_config();
+        config.audio_channels = Some(1);
+        assert!(validate_platform_output_constraints(&config).is_ok());
+        config.audio_channels = Some(2);
+        assert!(validate_platform_output_constraints(&config).is_ok());
+        config.audio_channels = Some(6);
+        assert!(validate_platform_output_constraints(&config).is_err());
     }
 
     #[test]
     fn platform_max_frame_rate_accepts_reasonable_caps_and_rejects_invalid_values() {
         let mut config = platform_config();
         config.max_frame_rate = Some(60);
-        assert!(validate_platform_rate_control(&config).is_ok());
+        assert!(validate_platform_output_constraints(&config).is_ok());
 
         config.max_frame_rate = Some(0);
-        assert!(validate_platform_rate_control(&config).is_err());
+        assert!(validate_platform_output_constraints(&config).is_err());
 
         config.max_frame_rate = Some(241);
-        assert!(validate_platform_rate_control(&config).is_err());
+        assert!(validate_platform_output_constraints(&config).is_err());
     }
 
     #[test]
@@ -450,14 +470,14 @@ mod tests {
         let mut config = platform_config();
         config.video_max_rate = Some("25M".to_string());
         config.video_buffer_size = Some("25M".to_string());
-        assert!(validate_platform_rate_control(&config).is_ok());
+        assert!(validate_platform_output_constraints(&config).is_ok());
     }
 
     #[test]
     fn platform_rate_control_rejects_missing_pair_member() {
         let mut config = platform_config();
         config.video_max_rate = Some("8M".to_string());
-        let error = validate_platform_rate_control(&config)
+        let error = validate_platform_output_constraints(&config)
             .expect_err("maxrate without bufsize must fail");
         assert!(error.to_string().contains("must be provided together"));
     }
@@ -467,11 +487,11 @@ mod tests {
         let mut config = platform_config();
         config.video_max_rate = Some("8MB".to_string());
         config.video_buffer_size = Some("16M".to_string());
-        assert!(validate_platform_rate_control(&config).is_err());
+        assert!(validate_platform_output_constraints(&config).is_err());
 
         config.video_max_rate = Some("8M".to_string());
         config.video_buffer_size = Some("0M".to_string());
-        assert!(validate_platform_rate_control(&config).is_err());
+        assert!(validate_platform_output_constraints(&config).is_err());
     }
 
     fn default_effects() -> VideoEffectsSettings {
