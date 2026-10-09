@@ -7,7 +7,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "slow",
+      "speedPreset": "fast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -25,7 +25,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "slow",
+      "speedPreset": "fast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -42,9 +42,9 @@
     "ratio": "ratio1x1",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
-      "audioBitrate": "160k"
+      "qualityPreset": "good",
+      "speedPreset": "fast",
+      "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1080,
@@ -60,14 +60,16 @@
     "ratio": "ratio9x16",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
-      "audioBitrate": "160k"
+      "qualityPreset": "good",
+      "speedPreset": "fast",
+      "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1920,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "videoMaxRate": "25M",
+      "videoBufferSize": "25M"
     },
     "isBuiltin": true
   },
@@ -78,8 +80,8 @@
     "ratio": "ratio9x16",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "160k"
     },
     "platformConfig": {
@@ -96,14 +98,16 @@
     "ratio": "ratio16x9",
     "encoding": {
       "crf": 22,
-      "qualityPreset": "standard",
-      "speedPreset": "medium",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1280,
       "targetHeight": 720,
-      "enforceDimensions": false
+      "enforceDimensions": true,
+      "videoMaxRate": "8M",
+      "videoBufferSize": "16M"
     },
     "isBuiltin": true
   },
@@ -114,14 +118,14 @@
     "ratio": "ratio4x5",
     "encoding": {
       "crf": 22,
-      "qualityPreset": "standard",
-      "speedPreset": "medium",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
-      "targetWidth": 1080,
-      "targetHeight": 1350,
-      "enforceDimensions": false
+      "targetWidth": 1200,
+      "targetHeight": 1500,
+      "enforceDimensions": true
     },
     "isBuiltin": true
   }
