@@ -60,6 +60,10 @@ pub struct PlatformConfig {
     pub target_width: u32,
     pub target_height: u32,
     pub enforce_dimensions: bool,
+    /// Clamp unexpectedly high automatic output frame rates without upsampling
+    /// lower-frame-rate sources. Omitted means preserve the existing FPS policy.
+    #[serde(default)]
+    pub max_frame_rate: Option<u32>,
     /// Optional codec-specific VBV ceiling. Applied only to H.264 outputs so
     /// CRF remains the quality control while limiting short-term bitrate peaks.
     #[serde(default)]
