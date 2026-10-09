@@ -6,7 +6,7 @@
 
 ## Summary
 
-The presets now use an x264 `fast` speed preset instead of `slow`, have consistent quality labels for their selected CRF values, and explicitly use platform-sized frames. Platform exports with audio request 48 kHz audio; H.264 platform exports explicitly select High Profile; the existing `yuv420p` output and MP4 `+faststart` behavior remain intact.
+The presets now use an x264 `fast` speed preset instead of `slow`, have consistent quality labels for their selected CRF values, and explicitly use platform-sized frames. Platform exports with audio request 48 kHz audio; H.264 platform exports explicitly select High Profile; X and Instagram Reels cap unusually high output frame rates at 60 fps without upsampling lower-FPS sources. The existing `yuv420p` output and MP4 `+faststart` behavior remain intact.
 
 Two platform-targeted H.264 VBV ceilings are represented in the existing `PlatformConfig`: X's 720p 8 Mbps upper ceiling, and Instagram Reels Publishing API's 25 Mbps upper ceiling. FFmpeg receives `-maxrate` and `-bufsize` together with CRF, rather than conflicting CRF with a fixed average `-b:v` target. These ceilings constrain bitrate peaks; they do **not** guarantee that average bitrate will equal the platform's recommended upload bitrate.
 
@@ -19,9 +19,9 @@ This is intentionally a conservative H.264/MP4-oriented update. The app's curren
 | YouTube | 1920×1080 (16:9) | 18 / `high` | `fast` | 384 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
 | YouTube Shorts | 1080×1920 (9:16) | 18 / `high` | `fast` | 384 kb/s | Same upload encoding guidance as YouTube; vertical canvas |
 | Instagram Square | 1080×1080 (1:1) | 20 / `good` | `fast` | 128 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
-| Instagram Reels | 1080×1920 (9:16) | 20 / `good` | `fast` | 128 kb/s | H.264 VBV `-maxrate 25M -bufsize 25M`; 48 kHz AAC |
+| Instagram Reels | 1080×1920 (9:16) | 20 / `good` | `fast` | 128 kb/s | Maximum 60 fps; H.264 VBV `-maxrate 25M -bufsize 25M`; 48 kHz AAC |
 | TikTok | 1080×1920 (9:16) | 20 / `good` | `fast` | 160 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
-| X | 1280×720 (16:9) | 22 / `good` | `fast` | 128 kb/s | H.264 VBV `-maxrate 8M -bufsize 16M`; 48 kHz AAC |
+| X | 1280×720 (16:9) | 22 / `good` | `fast` | 128 kb/s | Maximum 60 fps; H.264 VBV `-maxrate 8M -bufsize 16M`; 48 kHz AAC |
 | Reddit | 1200×1500 (4:5 portrait) | 22 / `good` | `fast` | 128 kb/s | H.264 High Profile, 4:2:0, 48 kHz audio |
 
 **Common FFmpeg behavior:** H.264 output uses `libx264`; a `.webm` output uses the existing `libvpx-vp9` + `libopus` path. Platform exports with audio add `-ar 48000`; H.264 platform exports add `-profile:v high`. `-pix_fmt yuv420p` and MP4 `-movflags +faststart` are already part of the builder and remain so. Audio channels are not forcibly downmixed. If audio removal is enabled, audio codec/bitrate/sample-rate flags are not emitted.
@@ -42,7 +42,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 
 **Official guidance and limits:** Meta's Instagram Reels Publishing API specification lists MOV/MP4, H.264 or HEVC, AAC at 48 kHz, 23–60 fps, recommended 9:16, a maximum 25 Mb/s video bitrate and 128 kb/s audio bitrate. This is explicitly the **Reels API upload** specification; it must not be presented as a universal hard limit for every organic upload route. The square preset retains a conventional 1080×1080 canvas; Reels uses 1080×1920.
 
-**Preset choice:** CRF 20 is a quality/file-size compromise for 1080p social video. AAC at 128 kb/s and 48 kHz matches the API document. Reels gets a 25 Mb/s VBV ceiling with a 25 Mb buffer; the square preset does not inherit that ceiling as the cited limit is tied to Reels API guidance. `fast` reduces encode time.
+**Preset choice:** CRF 20 is a quality/file-size compromise for 1080p social video. AAC at 128 kb/s and 48 kHz matches the API document. Reels gets a 25 Mb/s VBV ceiling with a 25 Mb buffer; the square preset does not inherit that ceiling as the cited limit is tied to Reels API guidance. The Reels preset also uses `-fpsmax 60`: FFmpeg can clamp an unexpectedly high automatic output rate without upsampling lower-FPS footage. `fast` reduces encode time.
 
 **Trade-off:** Highly detailed or noisy footage may hit the Reels VBV ceiling and receive more quantization than unconstrained CRF would, which is the intended exchange for staying under a bitrate peak limit. This parameter limits peaks, not average bitrate.
 
@@ -58,7 +58,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 
 **Official guidance:** X Media Studio recommends 1280×720 landscape, H.264/AVC, 5–8 Mb/s video and AAC-LC stereo/mono, and supports up to 60 fps. Separate X Ads creative specs recommend 5–8 Mb/s for 720p; ad specifications are not automatically general-post requirements.
 
-**Preset choice:** 1280×720 is enforced instead of being shown as a nominal resolution while the layout is calculated from the source. CRF 22 plus `-maxrate 8M -bufsize 16M` retains CRF-based quality control while limiting peaks to the upper end of X's published 720p bitrate range. This is not a fixed average bitrate target, so average bitrate may be below 5 Mb/s on simple content or still vary with complexity. AAC at 128 kb/s and 48 kHz is the app's compatibility-oriented choice; X specifies AAC-LC but does not require this exact audio bitrate in its Media Studio page.
+**Preset choice:** 1280×720 is enforced instead of being shown as a nominal resolution while the layout is calculated from the source. CRF 22 plus `-maxrate 8M -bufsize 16M` retains CRF-based quality control while limiting peaks to the upper end of X's published 720p bitrate range. This is not a fixed average bitrate target, so average bitrate may be below 5 Mb/s on simple content or still vary with complexity. `-fpsmax 60` caps only high output rates and does not upsample ordinary 24/25/30 fps footage. AAC at 128 kb/s and 48 kHz is the app's compatibility-oriented choice; X specifies AAC-LC but does not require this exact audio bitrate in its Media Studio page.
 
 **Trade-off:** The ceiling may raise quantization on very complex/high-motion clips; in exchange it reduces excessive bitrate peaks. If a future dedicated ad-export mode is added, frame-rate capping/normalization should be a separate explicit policy: current exports preserve the source frame rate rather than silently changing it.
 
@@ -77,7 +77,7 @@ The values under `qualityPreset` are UI representatives, not a separate FFmpeg c
 - **Speed:** all seven built-ins move from x264 `slow` to `fast`. This is a deliberate turnaround-time optimization; actual speedup depends on source, CPU, filter work (subtitles/blur/overlays), and concurrent batch load.
 - **Pixel format/profile:** the existing output pixel format `yuv420p` is preserved. `-profile:v high` is explicit for H.264 platform jobs; X explicitly permits Baseline, Main, or High with 4:2:0, and YouTube lists High.
 - **Audio:** 48 kHz is emitted only for platform jobs with audio. The existing AAC/Opus codec selection remains bound to output extension. Channel count is preserved rather than forcing stereo, since YouTube permits stereo or stereo+5.1 and X accepts stereo/mono.
-- **FPS:** no frame-rate conversion is introduced; the existing path keeps the source frame rate. This aligns with YouTube's source-matched guidance and avoids low-value frame duplication.
+- **FPS:** YouTube, TikTok and Reddit preserve the source-FPS policy. X and Instagram Reels use FFmpeg `-fpsmax 60` because the applicable official documentation sets a 60 fps maximum. `-fpsmax` only clamps a higher automatically selected rate; unlike forced `-r`, it does not upsample sources below that ceiling. Reddit's 30 fps limit is from Reddit Ads creative rules and is not imposed on the generic organic-post preset.
 - **Container:** `+faststart` remains enabled for MP4. The output-format chooser is global today, not attached to individual platform presets. The built-ins therefore do not silently override a user's format choice; for the strongest documented upload compatibility, leave the app's output format at MP4. WebM intentionally uses the app's VP9/Opus implementation, and H.264-only options are omitted.
 
 ## Files changed
@@ -104,6 +104,7 @@ Platform documentation is the authority for platform-facing statements; ad and A
 - [Reddit Ads free-form ad specifications](https://business.reddithelp.com/s/article/free-form-ad-specifications) — ad-specific MP4/MOV, maximum file size/FPS and recommended portrait canvas.
 - [FFmpeg codecs documentation — libx264](https://ffmpeg.org/ffmpeg-codecs.html) — CRF, preset, profile, VBV-related options.
 - [FFmpeg formats documentation — MOV/MP4](https://ffmpeg.org/ffmpeg-formats.html) — `+faststart` moves MP4/MOV metadata to the start of the file.
+- [FFmpeg command-line video options](https://ffmpeg.org/ffmpeg.html) — `-fpsmax` clamps automatically selected output rates above a configured maximum.
 
 ## Verification status
 
