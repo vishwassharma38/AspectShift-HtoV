@@ -199,6 +199,7 @@ fn all_styles() -> [TextFontStyle; 10] {
     ]
 }
 
+#[cfg(debug_assertions)]
 fn source_font_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
