@@ -1800,6 +1800,10 @@ mod tests {
             target_width: 3840,
             target_height: 2160,
             enforce_dimensions: true,
+            max_frame_rate: None,
+            audio_channels: None,
+            video_max_rate: None,
+            video_buffer_size: None,
         });
         let cost = estimate_job_cost(&job);
         assert!(

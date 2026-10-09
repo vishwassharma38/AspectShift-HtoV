@@ -361,6 +361,10 @@ export type PlatformConfig = {
 	targetWidth: number,
 	targetHeight: number,
 	enforceDimensions: boolean,
+	maxFrameRate?: number,
+	audioChannels?: number,
+	videoMaxRate?: string,
+	videoBufferSize?: string,
 };
 
 export type PlatformPreset = {

@@ -7,7 +7,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "slow",
+      "speedPreset": "fast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -25,7 +25,7 @@
     "encoding": {
       "crf": 18,
       "qualityPreset": "high",
-      "speedPreset": "slow",
+      "speedPreset": "fast",
       "audioBitrate": "384k"
     },
     "platformConfig": {
@@ -42,14 +42,15 @@
     "ratio": "ratio1x1",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
-      "audioBitrate": "160k"
+      "qualityPreset": "good",
+      "speedPreset": "fast",
+      "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1080,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -60,14 +61,18 @@
     "ratio": "ratio9x16",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
-      "audioBitrate": "160k"
+      "qualityPreset": "good",
+      "speedPreset": "fast",
+      "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1920,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "videoMaxRate": "25M",
+      "videoBufferSize": "25M",
+      "maxFrameRate": 60,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -78,14 +83,15 @@
     "ratio": "ratio9x16",
     "encoding": {
       "crf": 20,
-      "qualityPreset": "high",
-      "speedPreset": "slow",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "160k"
     },
     "platformConfig": {
       "targetWidth": 1080,
       "targetHeight": 1920,
-      "enforceDimensions": true
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
@@ -96,32 +102,37 @@
     "ratio": "ratio16x9",
     "encoding": {
       "crf": 22,
-      "qualityPreset": "standard",
-      "speedPreset": "medium",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
       "targetWidth": 1280,
       "targetHeight": 720,
-      "enforceDimensions": false
+      "enforceDimensions": true,
+      "videoMaxRate": "8M",
+      "videoBufferSize": "16M",
+      "maxFrameRate": 60,
+      "audioChannels": 2
     },
     "isBuiltin": true
   },
   {
     "id": "reddit",
     "name": "Reddit",
-    "description": "Optimized for Reddit",
+    "description": "Optimized for Reddit (4:5 portrait)",
     "ratio": "ratio4x5",
     "encoding": {
       "crf": 22,
-      "qualityPreset": "standard",
-      "speedPreset": "medium",
+      "qualityPreset": "good",
+      "speedPreset": "fast",
       "audioBitrate": "128k"
     },
     "platformConfig": {
-      "targetWidth": 1080,
-      "targetHeight": 1350,
-      "enforceDimensions": false
+      "targetWidth": 1200,
+      "targetHeight": 1500,
+      "enforceDimensions": true,
+      "audioChannels": 2
     },
     "isBuiltin": true
   }
