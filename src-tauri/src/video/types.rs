@@ -64,6 +64,9 @@ pub struct PlatformConfig {
     /// lower-frame-rate sources. Omitted means preserve the existing FPS policy.
     #[serde(default)]
     pub max_frame_rate: Option<u32>,
+    /// Optional platform audio channel count. None preserves the source layout.
+    #[serde(default)]
+    pub audio_channels: Option<u8>,
     /// Optional codec-specific VBV ceiling. Applied only to H.264 outputs so
     /// CRF remains the quality control while limiting short-term bitrate peaks.
     #[serde(default)]
