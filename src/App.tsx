@@ -33,8 +33,7 @@ import type {
   EncodingProfile,
   FileProgress,
   FileReadiness,
-  LogoOptions,
-  LogoPosition,
+  ImageOverlaySettings,
   OrientationInfo,
   OutputFormat,
   OutputJob,
@@ -55,7 +54,7 @@ import type {
   VideoTransform,
 } from "./types/backend";
 import "./App.css";
-import { VideoCanvas } from "./components/VideoCanvas";
+import { PreviewHost } from "./components/PreviewHost";
 import { PresetsPanel, type DisplayPreset } from "./components/PresetsPanel";
 import { Header } from "./components/layout/Header";
 import { OnboardingModal } from "./components/modals/OnboardingModal";
@@ -78,8 +77,33 @@ import {
   isBrowserOnlyShortcut,
   isEditableShortcutTarget,
   isAppRefreshShortcut,
+  isExitPreviewFullscreenShortcut,
+  isPreviewPlayPauseShortcut,
   normalizeShortcutKey,
 } from "./utils/appShortcuts";
+import {
+  PLAYBACK_COMMAND_STORAGE_KEY,
+  POPOUT_SESSION_STORAGE_KEY,
+  POPOUT_STATE_EVENT_KEY,
+  PREVIEW_PLAYBACK_COMMAND_EVENT,
+  PREVIEW_POPOUT_APPLY_EVENT,
+  PREVIEW_POPOUT_CANCEL_EVENT,
+  PREVIEW_POPOUT_UPDATE_EVENT,
+  broadcastPopoutDraft,
+  clearPopoutSession,
+  closePopoutWindow,
+  emitPopoutEvent,
+  focusPopoutWindow,
+  isTauriRuntime,
+  readPlaybackCommandEvent,
+  rememberPopoutBounds,
+  setCurrentWindowFullscreen,
+  showPopoutWindow,
+  writePopoutSession,
+  type PopoutDraftUpdate,
+  type PreviewMode,
+  type PreviewPlaybackCommand,
+} from "./services/previewController";
 import {
   getMissingDependencies,
   hasRequiredDependencies,
@@ -103,6 +127,13 @@ import {
   resolveSubtitleOverlay,
   type ResolvedSubtitleOverlaySettings,
 } from "./utils/subtitleOverlay";
+import {
+  DEFAULT_IMAGE_OVERLAY,
+  normalizeImageOverlaySettings,
+  resolveImageOverlaySettings,
+  type ResolvedImageOverlay,
+  type ResolvedImageOverlaySettings,
+} from "./utils/imageOverlay";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -252,6 +283,7 @@ const EMPTY_ENCODING_OVERRIDES: EncodingOverrides = {
 const DEFAULT_EFFECTS: VideoEffectsSettings = {
   blur: false,
   whiteBackground: false,
+  backgroundColor: "#000000",
   overlays: null,
   subtitles: null,
   colorFilter: null,
@@ -261,11 +293,21 @@ const DEFAULT_EFFECTS: VideoEffectsSettings = {
   burnSubtitles: false,
   skipExisting: true,
   outputFormat: "mp4",
-  logo: null,
+  imageOverlay: DEFAULT_IMAGE_OVERLAY,
   textOverlay: DEFAULT_TEXT_OVERLAY,
   subtitleOverlay: DEFAULT_SUBTITLE_OVERLAY,
   transform: { rotate: 0, flip_h: false, flip_v: false },
 };
+
+const DEFAULT_BACKGROUND_COLOR = "#000000";
+
+function normalizeBackgroundColor(
+  value: string | null | undefined,
+): string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)
+    ? value
+    : DEFAULT_BACKGROUND_COLOR;
+}
 
 const NOTIFICATION_ANIMATION_MS = 370;
 const NOTIFICATION_DURATIONS: Record<UpdateNoticeTone, number> = {
@@ -407,25 +449,6 @@ function uiFlipsToTransform(
   return base;
 }
 
-function normalizeLogo(logo: LogoOptions | null): LogoOptions | null {
-  if (!logo || !logo.enabled || !logo.path) return null;
-  const clampLogoPosition = (value: number | null | undefined) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0.5;
-  };
-  return {
-    enabled: true,
-    position: logo.position,
-    opacity: Number(logo.opacity),
-    gap: Number(logo.gap),
-    scale: Number(logo.scale),
-    path: logo.path,
-    manualPosition: !!logo.manualPosition,
-    x: clampLogoPosition(logo.x),
-    y: clampLogoPosition(logo.y),
-  };
-}
-
 function deepClone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -440,12 +463,20 @@ function normalizeEffects(effects: VideoEffectsSettings): VideoEffectsSettings {
     ...effects,
     blur: whiteBackground ? false : !!effects.blur,
     whiteBackground,
-    logo: normalizeLogo(effects.logo ?? null),
+    backgroundColor: normalizeBackgroundColor(effects.backgroundColor),
+    imageOverlay: normalizeImageOverlaySettings(effects.imageOverlay),
     textOverlay: normalizeTextOverlay(effects.textOverlay),
     subtitleOverlay: normalizeSubtitleOverlay(effects.subtitleOverlay),
     transform: normalizeTransform(effects.transform),
   };
 }
+
+// Fine-positioning increment for arrow-key image nudging, in canonical image
+// coordinates (fraction of the video frame per axis — the same units mouse
+// dragging uses). 0.005 moves the image ~2px per press on a typical preview
+// size: small enough for precise placement, large enough that repeated
+// presses cover ground.
+const IMAGE_ARROW_NUDGE = 0.005;
 
 function parseBitrateKbps(value: string): number | null {
   const normalized = value.trim().toLowerCase();
@@ -715,11 +746,123 @@ export default function App() {
     },
     [],
   );
-  const handleLogoChange = useCallback((next: LogoOptions) => {
+  const imageOverlay = useMemo<ResolvedImageOverlaySettings>(
+    () => resolveImageOverlaySettings(effectsState.imageOverlay),
+    [effectsState.imageOverlay],
+  );
+  const handleImageOverlayChange = useCallback((next: ImageOverlaySettings) => {
     setEffectsState((current) => ({
       ...current,
-      logo: normalizeLogo(next),
+      imageOverlay: normalizeImageOverlaySettings(next),
     }));
+  }, []);
+  const selectedImage: ResolvedImageOverlay | null = useMemo(() => {
+    if (!imageOverlay.selectedOverlayId) return null;
+    return (
+      imageOverlay.overlays.find(
+        (overlay) => overlay.id === imageOverlay.selectedOverlayId,
+      ) ?? null
+    );
+  }, [imageOverlay.overlays, imageOverlay.selectedOverlayId]);
+  const hasSelectedImage = selectedImage !== null;
+  const updateSelectedImage = useCallback(
+    (patch: Partial<ResolvedImageOverlay>) => {
+      setEffectsState((current) => {
+        const currentOverlay = resolveImageOverlaySettings(
+          current.imageOverlay,
+        );
+        if (!currentOverlay.selectedOverlayId) return current;
+        return {
+          ...current,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentOverlay,
+            overlays: currentOverlay.overlays.map((overlay) =>
+              overlay.id === currentOverlay.selectedOverlayId
+                ? { ...overlay, ...patch }
+                : overlay,
+            ),
+          }),
+        };
+      });
+    },
+    [],
+  );
+  const handleNudgeSelectedImage = useCallback(
+    (dx: number, dy: number) => {
+      setEffectsState((current) => {
+        const currentOverlay = resolveImageOverlaySettings(
+          current.imageOverlay,
+        );
+        const selectedId = currentOverlay.selectedOverlayId;
+        if (!selectedId) return current;
+        return {
+          ...current,
+          imageOverlay: normalizeImageOverlaySettings({
+            ...currentOverlay,
+            overlays: currentOverlay.overlays.map((overlay) =>
+              overlay.id === selectedId
+                ? { ...overlay, x: overlay.x + dx, y: overlay.y + dy }
+                : overlay,
+            ),
+          }),
+        };
+      });
+    },
+    [],
+  );
+  const handleRemoveSelectedImage = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveImageOverlaySettings(current.imageOverlay);
+      const selectedId = currentOverlay.selectedOverlayId;
+      if (!selectedId) return current;
+      return {
+        ...current,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentOverlay,
+          overlays: currentOverlay.overlays.filter(
+            (overlay) => overlay.id !== selectedId,
+          ),
+          selectedOverlayId: null,
+        }),
+      };
+    });
+  }, []);
+  const handleDuplicateSelectedImage = useCallback(() => {
+    setEffectsState((current) => {
+      const currentOverlay = resolveImageOverlaySettings(current.imageOverlay);
+      const selectedId = currentOverlay.selectedOverlayId;
+      if (!selectedId) return current;
+      const source = currentOverlay.overlays.find(
+        (overlay) => overlay.id === selectedId,
+      );
+      if (!source) return current;
+      const id = generateId();
+      // Duplicate is an independent object: copy all properties, new ID,
+      // slight offset so it is visibly separate, then select the duplicate.
+      const duplicate: ResolvedImageOverlay = {
+        ...source,
+        id,
+        x: source.x + 0.05,
+        y: source.y + 0.05,
+        crop: { ...source.crop },
+      };
+      // Exclusive selection: duplicating an image clears any text selection
+      // so the bounding box and shortcuts follow the new duplicate only.
+      const currentText = resolveTextOverlay(current.textOverlay);
+      return {
+        ...current,
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentOverlay,
+          panelOpen: true,
+          overlays: [...currentOverlay.overlays, duplicate],
+          selectedOverlayId: id,
+        }),
+        textOverlay: normalizeTextOverlay({
+          ...currentText,
+          selectedLayerIds: [],
+        }),
+      };
+    });
   }, []);
   const selectedTextLayers = useMemo(
     () =>
@@ -771,9 +914,16 @@ export default function App() {
       const layer: TextLayerSettings = {
         ...sourceLayer,
         id,
-        x: Math.min(0.8, sourceLayer.x + offset),
-        y: Math.min(0.8, sourceLayer.y + offset),
+        // Unbounded overlay geometry: duplicated layers keep
+        // source + offset exactly. Never clamp back toward the frame;
+        // off-frame sources stay off-frame (plus offset).
+        x: sourceLayer.x + offset,
+        y: sourceLayer.y + offset,
       };
+      // Exclusive selection: adding/duplicating a text layer clears any
+      // image selection so the bounding box and shortcuts follow the new
+      // text layer only. This is also the Ctrl+D text-duplicate path.
+      const currentImages = resolveImageOverlaySettings(current.imageOverlay);
       return {
         ...current,
         textOverlay: normalizeTextOverlay({
@@ -782,7 +932,20 @@ export default function App() {
           layers: [...currentOverlay.layers, layer],
           selectedLayerIds: [id],
         }),
+        imageOverlay: normalizeImageOverlaySettings({
+          ...currentImages,
+          selectedOverlayId: null,
+        }),
       };
+    });
+    // Mirror the Add Image focus behavior: the Add button retains DOM focus
+    // (buttons count as editable shortcut targets), which would block
+    // Ctrl+D / Delete / arrows until the user clicks elsewhere. Blur so the
+    // newly selected text layer owns shortcuts immediately.
+    requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
     });
   }, []);
   const handleRemoveSelectedTextLayers = useCallback(() => {
@@ -817,6 +980,7 @@ export default function App() {
 
   // Custom preset builder
   const [newPresetName, setNewPresetName] = useState("");
+  const [imageCropEditing, setImageCropEditing] = useState(false);
 
   // Video / batch state
   const [orientation, setOrientation] = useState<OrientationInfo | null>(null);
@@ -851,6 +1015,65 @@ export default function App() {
   const [previewVolume, setPreviewVolume] = useState<number>(
     DEFAULT_PREVIEW_VOLUME,
   );
+
+  // ── Preview Controller (one preview system, multiple display modes) ──
+  // HARD ARCHITECTURAL INVARIANT:
+  // > There must only ever be one active preview renderer for the current
+  // > project. The pop-out window is a different host for the same preview
+  // > system, not a second preview implementation.
+  // `previewMode` is a display mode, not a second preview instance. The same
+  // `VideoCanvas` renderer (via `PreviewHost`) is mounted in whichever host
+  // is active; only one host is active at a time.
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("embedded");
+  // Dedicated borderless/fullscreen preview state, distinct from native
+  // Windows maximize. Esc restores the exact previous pop-out state and
+  // remains in pop-out mode.
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
+  const previewPrevMaximizedRef = useRef(false);
+  // One playback source of truth shared by every display mode. The preview
+  // plays by default; pop-out inherits the current state.
+  //
+  // PLAYBACK OWNERSHIP INVARIANT: this main-window state IS the single
+  // authoritative playback owner. `previewPlaying` + `previewCurrentTimeRef`
+  // (+ fixed `previewPlaybackRate`) own position/playing/rate/lifecycle.
+  // Only one host mounts `VideoCanvas` at a time, so only one `<video>`
+  // decoder ever advances. The pop-out renders this state and routes user
+  // playback actions back as commands on `PREVIEW_PLAYBACK_COMMAND_EVENT`;
+  // it never owns the clock. `currentTime` travels pop-out -> main only as
+  // a one-time handoff snapshot on Apply/Cancel/close, never as continuous
+  // chasing. Editing/state sync (`effects`, `previewVolume`,
+  // `previewLayout`, draft) is separate and untouched.
+  const [previewPlaying, setPreviewPlaying] = useState(true);
+  const [previewPlaybackRate] = useState(1);
+  const previewCurrentTimeRef = useRef(0);
+  // Reactive handoff snapshot for the embedded host's `initialTime` prop.
+  // The ref above is updated render-free via `onTimeUpdate` (~timeupdate
+  // rate, no re-render); this state changes only on discrete handoff events
+  // (pop-out open / Apply / Cancel / final-position arrival) so the
+  // remounted or already-mounted embedded video can seek exactly once via
+  // `VideoCanvas`' handoff correction. Never updated per frame.
+  const [embeddedRestoreTime, setEmbeddedRestoreTime] = useState(0);
+  // New source = new authoritative timeline: reset the handoff snapshot so
+  // neither host resumes the previous video's position (Test H). No
+  // pause/resume change; `previewPlaying` is untouched.
+  useEffect(() => {
+    previewCurrentTimeRef.current = 0;
+    setEmbeddedRestoreTime(0);
+  }, [previewFile]);
+  // Draft transaction: snapshot of committed effects/volume/guides taken at
+  // Pop Out time. Pop-out editing works against the draft (live `effectsState`);
+  // Apply commits it, Cancel / native X restores this snapshot.
+  const popoutCommittedRef = useRef<{
+    effects: VideoEffectsSettings;
+    previewVolume: number;
+    showGuides: boolean;
+    showSafeFrames: boolean;
+  } | null>(null);
+  const isPopoutActive = previewMode === "popout";
+  // Focus/visibility invariant: the pop-out's visibility/minimized state is
+  // controlled ONLY by the native Windows window manager. There is
+  // intentionally no blur-to-minimize / click-outside-to-hide logic anywhere
+  // in this feature.
   const [depsState, setDepsState] = useState<AppDepsState | null>(null);
   const [depsStateLoaded, setDepsStateLoaded] = useState(false);
   const [dependencyOperation, setDependencyOperation] =
@@ -934,7 +1157,7 @@ export default function App() {
   const [refreshConfirmActiveCount, setRefreshConfirmActiveCount] = useState(0);
   const [aboutMetadata, setAboutMetadata] = useState({
     appName: "AspectShift-HtoV",
-    appVersion: "0.1.2",
+    appVersion: "0.1.3",
     tauriVersion: "2",
     identifier: "com.softwarefromvish.aspectshift-htov",
     buildMode: import.meta.env.MODE,
@@ -946,12 +1169,8 @@ export default function App() {
   const volumeCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const firstRunSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const firstRunGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const firstRunSuccessTimerRef = useRef<number | null>(null);
+  const firstRunGapTimerRef = useRef<number | null>(null);
   const previewVolumeRef = useRef<HTMLDivElement | null>(null);
   const isAuthHydrating =
     !authState ||
@@ -1039,7 +1258,507 @@ export default function App() {
   const handleVolumeChange = useCallback((val: number) => {
     setPreviewVolume(val);
     setVolumeSliderActive(true);
+    if (popoutCommittedRef.current) {
+      // Keep the pop-out host in sync while the draft is being edited from
+      // either host; the committed snapshot itself is untouched.
+      broadcastPopoutDraft({ version: 1, previewVolume: val });
+      void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+        source: "main",
+        previewVolume: val,
+        playing: undefined,
+      });
+    }
   }, []);
+
+  const togglePreviewPlayback = useCallback(() => {
+    setPreviewPlaying((was) => {
+      const next = !was;
+      if (popoutCommittedRef.current) {
+        broadcastPopoutDraft({ version: 1, playing: next });
+        void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+          source: "main",
+          playing: next,
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  const handlePreviewTimeUpdate = useCallback((currentTime: number) => {
+    if (Number.isFinite(currentTime)) previewCurrentTimeRef.current = currentTime;
+  }, []);
+
+  const handleFocusPopout = useCallback(async () => {
+    await focusPopoutWindow();
+  }, []);
+
+  // Pop Out: switch the SAME preview system from the embedded host to the
+  // native Tauri pop-out window, preserving video, position, playing state,
+  // volume, overlays, selection, and preview frame. Only one host is active
+  // at a time — the embedded preview becomes hidden/inactive.
+  //
+  // The native window is opened FIRST and pop-out mode is entered only once
+  // it actually exists. On creation failure we stay in embedded mode instead
+  // of stranding the user on the placeholder with nowhere to edit.
+  const handlePopOut = useCallback(async () => {
+    if (previewMode === "popout" || previewMode === "fullscreen") {
+      await handleFocusPopout();
+      return;
+    }
+    if (!previewFile) return;
+    // Snapshot committed state for the draft transaction (deepClone is the
+    // existing building block; the draft is a transaction around the same
+    // overlay state, not a second overlay system).
+    popoutCommittedRef.current = {
+      effects: deepClone(effectsState),
+      previewVolume,
+      showGuides,
+      showSafeFrames,
+    };
+    writePopoutSession({
+      version: 1,
+      effects: deepClone(effectsState),
+      previewVolume,
+      playing: previewPlaying,
+      playbackRate: previewPlaybackRate,
+      currentTime: previewCurrentTimeRef.current,
+      videoSrc: previewFile,
+      orientation: orientation ? deepClone(orientation) : null,
+      previewLayout: previewLayout ? deepClone(previewLayout) : null,
+      showGuides,
+      showSafeFrames,
+      theme,
+      createdAt: Date.now(),
+    });
+    const hostOpened = await showPopoutWindow();
+    if (!hostOpened) {
+      popoutCommittedRef.current = null;
+      clearPopoutSession();
+      console.error(
+        "[preview-popout] the native pop-out window could not be created; staying in embedded mode. Open DevTools for the native error above.",
+      );
+      return;
+    }
+    setPreviewMode("popout");
+    setIsPreviewFullscreen(false);
+    await emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      effects: deepClone(effectsState),
+      previewVolume,
+      playing: previewPlaying,
+      currentTime: previewCurrentTimeRef.current,
+      previewLayout: previewLayout ? deepClone(previewLayout) : null,
+      showGuides,
+      showSafeFrames,
+      theme,
+    });
+  }, [
+    handleFocusPopout,
+    previewMode,
+    effectsState,
+    previewVolume,
+    previewPlaying,
+    previewPlaybackRate,
+    previewFile,
+    orientation,
+    previewLayout,
+    showGuides,
+    showSafeFrames,
+    theme,
+  ]);
+
+  // Apply: commit the draft, leave pop-out mode, and return to the regular
+  // preview which reflects exactly what was edited. Apply is the only
+  // explicit commit action.
+  const handleApplyPopout = useCallback(async () => {
+    popoutCommittedRef.current = null;
+    setIsPreviewFullscreen(false);
+    await setCurrentWindowFullscreen(false).catch(() => {});
+    setPreviewMode("embedded");
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({ kind: "apply", source: "main", at: Date.now() }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    await emitPopoutEvent(PREVIEW_POPOUT_APPLY_EVENT, { source: "main" });
+    await closePopoutWindow();
+    clearPopoutSession();
+  }, []);
+
+  // Cancel / native X: discard the draft, restore the pre-pop-out state,
+  // leave pop-out mode, and return to the regular preview exactly as it was
+  // before entering pop-out. X = leave pop-out without committing.
+  const handleCancelPopout = useCallback(async () => {
+    const committed = popoutCommittedRef.current;
+    if (committed) {
+      setEffectsState(committed.effects);
+      setPreviewVolume(committed.previewVolume);
+      setShowGuides(committed.showGuides);
+      setShowSafeFrames(committed.showSafeFrames);
+    }
+    popoutCommittedRef.current = null;
+    setIsPreviewFullscreen(false);
+    await setCurrentWindowFullscreen(false).catch(() => {});
+    setPreviewMode("embedded");
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({ kind: "cancel", source: "main", at: Date.now() }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    await emitPopoutEvent(PREVIEW_POPOUT_CANCEL_EVENT, { source: "main" });
+    await closePopoutWindow();
+    clearPopoutSession();
+  }, []);
+
+  const enterPreviewFullscreen = useCallback(async () => {
+    if (previewMode !== "popout" || isPreviewFullscreen) return;
+    const bounds = await rememberPopoutBounds();
+    previewPrevMaximizedRef.current = bounds.maximized;
+    setIsPreviewFullscreen(true);
+    setPreviewMode("fullscreen");
+    await setCurrentWindowFullscreen(true);
+  }, [previewMode, isPreviewFullscreen]);
+
+  const exitPreviewFullscreenRestorePopout = useCallback(async () => {
+    // Esc exits custom fullscreen and restores the exact previous pop-out
+    // state while remaining in pop-out mode (never drops to embedded).
+    if (previewMode !== "fullscreen" && !isPreviewFullscreen) return;
+    setIsPreviewFullscreen(false);
+    setPreviewMode("popout");
+    await setCurrentWindowFullscreen(false);
+    if (!previewPrevMaximizedRef.current && isTauriRuntime()) {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        if (await win.isMaximized().catch(() => false)) {
+          await win.unmaximize().catch(() => {});
+        }
+      } catch {
+        // Best-effort restore only.
+      }
+    }
+  }, [previewMode, isPreviewFullscreen]);
+
+  // While the pop-out hosts the preview, mirror the recomputed preview
+  // layout (owned by the main window's backend layout effect) so the pop-out
+  // never drifts. Edits themselves flow pop-out -> main via the listeners
+  // below; this direction carries derived layout + playback + view toggles.
+  useEffect(() => {
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    if (!popoutCommittedRef.current) return;
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({
+          kind: "update",
+          source: "main",
+          previewLayout,
+          previewVolume,
+          playing: previewPlaying,
+          showGuides,
+          showSafeFrames,
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      previewLayout,
+      previewVolume,
+      playing: previewPlaying,
+      showGuides,
+      showSafeFrames,
+    });
+  }, [previewLayout, previewVolume, previewPlaying, previewMode, showGuides, showSafeFrames]);
+
+  // Pop-out session listeners (main-window side): draft updates mirror into
+  // the live draft state, Apply commits, Cancel/X restores the snapshot.
+  //
+  // Playback ownership: `playing`/`currentTime` are NOT mirrored here.
+  // The pop-out routes playback intent via PREVIEW_PLAYBACK_COMMAND_EVENT
+  // (handled in the next effect); `currentTime` arrives only as a one-time
+  // handoff snapshot inside Apply/Cancel payloads (used to restore the
+  // embedded host exactly, never chased continuously).
+  useEffect(() => {
+    let disposed = false;
+    const seenAtRef = { current: 0 };
+
+    const applyHandoffPosition = (currentTime: unknown) => {
+      if (typeof currentTime !== "number" || !Number.isFinite(currentTime)) return;
+      const clamped = Math.max(0, currentTime);
+      previewCurrentTimeRef.current = clamped;
+      // Reactive so an already-remounted embedded host seeks exactly once
+      // via VideoCanvas' handoff correction (no loop, no polling).
+      setEmbeddedRestoreTime(clamped);
+    };
+
+    const applyRemoteUpdate = (payload: {
+      source?: string;
+      effects?: VideoEffectsSettings;
+      previewVolume?: number;
+      showGuides?: boolean;
+      showSafeFrames?: boolean;
+      at?: number;
+    } | null) => {
+      if (!payload || disposed) return;
+      if (payload.source !== "popout") return;
+      if (!popoutCommittedRef.current) return;
+      if (typeof payload.at === "number") {
+        if (payload.at <= seenAtRef.current) return;
+        seenAtRef.current = payload.at;
+      }
+      // Editing/state sync only. Playback fields from the pop-out are
+      // intentionally ignored here (obsolete two-player sync); playback
+      // intent arrives via the dedicated command channel below.
+      if (payload.effects && typeof payload.effects === "object") {
+        setEffectsState(payload.effects as VideoEffectsSettings);
+      }
+      if (typeof payload.previewVolume === "number") {
+        setPreviewVolume(
+          Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
+        );
+      }
+      if (typeof payload.showGuides === "boolean") {
+        setShowGuides(payload.showGuides);
+      }
+      if (typeof payload.showSafeFrames === "boolean") {
+        setShowSafeFrames(payload.showSafeFrames);
+      }
+    };
+
+    const applyRemoteApply = (handoffTime?: unknown) => {
+      if (disposed || !popoutCommittedRef.current) return;
+      // Draft is already mirrored live; Apply just commits it. Restore the
+      // authoritative position from the pop-out's one-time handoff snapshot
+      // BEFORE remounting the embedded host so it resumes exactly. The native
+      // pop-out host closes itself.
+      applyHandoffPosition(handoffTime);
+      popoutCommittedRef.current = null;
+      setIsPreviewFullscreen(false);
+      setPreviewMode("embedded");
+      clearPopoutSession();
+    };
+
+    const applyRemoteCancel = (handoffTime?: unknown) => {
+      if (disposed) return;
+      const committed = popoutCommittedRef.current;
+      if (committed) {
+        setEffectsState(committed.effects);
+        setPreviewVolume(committed.previewVolume);
+        setShowGuides(committed.showGuides);
+        setShowSafeFrames(committed.showSafeFrames);
+      }
+      // Discard the draft but keep the authoritative position handoff so the
+      // embedded host resumes where the pop-out left off (no jump).
+      applyHandoffPosition(handoffTime);
+      popoutCommittedRef.current = null;
+      setIsPreviewFullscreen(false);
+      setPreviewMode("embedded");
+      clearPopoutSession();
+    };
+
+    const readStateKey = () => {
+      try {
+        const raw = window.localStorage.getItem(POPOUT_STATE_EVENT_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as {
+          kind: string;
+          source: string;
+          effects?: VideoEffectsSettings;
+          previewVolume?: number;
+          playing?: boolean;
+          currentTime?: number;
+          at: number;
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === POPOUT_SESSION_STORAGE_KEY) return;
+      if (e.key !== POPOUT_STATE_EVENT_KEY) return;
+      const event = readStateKey();
+      if (!event || event.source !== "popout") return;
+      if (event.at <= seenAtRef.current) return;
+      seenAtRef.current = event.at;
+      if (event.kind === "update") applyRemoteUpdate(event);
+      else if (event.kind === "apply") {
+        if (event.effects) setEffectsState(event.effects);
+        if (typeof event.previewVolume === "number") {
+          setPreviewVolume(Math.max(0, Math.min(100, Math.round(event.previewVolume))));
+        }
+        applyRemoteApply(event.currentTime);
+      } else if (event.kind === "cancel") applyRemoteCancel(event.currentTime);
+    };
+    window.addEventListener("storage", onStorage);
+
+    let unsubs: Array<() => void> = [];
+    if (isTauriRuntime()) {
+      (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          const u1 = await listen(PREVIEW_POPOUT_UPDATE_EVENT, (ev) =>
+            applyRemoteUpdate({
+              ...(ev.payload as object),
+              at: Date.now(),
+            } as never),
+          );
+          const u2 = await listen(
+            PREVIEW_POPOUT_APPLY_EVENT,
+            (ev) => {
+              const payload = ev.payload as {
+                source?: string;
+                effects?: VideoEffectsSettings;
+                previewVolume?: number;
+                currentTime?: number;
+              } | null;
+              if (!payload || payload.source !== "popout") return;
+              if (payload.effects) setEffectsState(payload.effects);
+              if (typeof payload.previewVolume === "number") {
+                setPreviewVolume(
+                  Math.max(0, Math.min(100, Math.round(payload.previewVolume))),
+                );
+              }
+              applyRemoteApply(payload.currentTime);
+            },
+          );
+          const u3 = await listen(PREVIEW_POPOUT_CANCEL_EVENT, (ev) => {
+            const payload = ev.payload as {
+              source?: string;
+              currentTime?: number;
+            } | null;
+            if (!payload || payload.source !== "popout") return;
+            applyRemoteCancel(payload.currentTime);
+          });
+          if (disposed) {
+            u1();
+            u2();
+            u3();
+          } else {
+            unsubs = [u1, u2, u3];
+          }
+        } catch {
+          // Storage-event fallback covers browser use.
+        }
+      })();
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", onStorage);
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
+
+  // Broadcast draft edits made in the embedded host while popped out (e.g.
+  // settings-panel changes) so the pop-out host stays in sync. The committed
+  // snapshot is untouched; Cancel still restores it.
+  useEffect(() => {
+    if (!popoutCommittedRef.current) return;
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    const draft: PopoutDraftUpdate = { version: 1, effects: effectsState };
+    broadcastPopoutDraft(draft);
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      effects: effectsState,
+      at: Date.now(),
+    });
+  }, [effectsState, previewMode]);
+
+  // Authoritative playback command listener (pop-out -> main). The pop-out
+  // never toggles the clock itself; it sends intent here and this owner
+  // applies it to `previewPlaying`, which then pushes back to the pop-out
+  // as authoritative state on PREVIEW_POPOUT_UPDATE_EVENT. No polling, no
+  // per-frame updates: discrete commands only.
+  useEffect(() => {
+    let disposed = false;
+    const seenCommandAtRef = { current: 0 };
+
+    const applyCommand = (cmd: PreviewPlaybackCommand | null) => {
+      if (!cmd || disposed) return;
+      if (cmd.source !== "popout") return;
+      if (!popoutCommittedRef.current) return;
+      if (typeof cmd.at === "number") {
+        if (cmd.at <= seenCommandAtRef.current) return;
+        seenCommandAtRef.current = cmd.at;
+      }
+      if (cmd.command === "toggle") {
+        togglePreviewPlayback();
+      } else if (cmd.command === "play") {
+        setPreviewPlaying((was) => {
+          if (was) return was;
+          if (popoutCommittedRef.current) {
+            broadcastPopoutDraft({ version: 1, playing: true });
+            void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+              source: "main",
+              playing: true,
+            });
+          }
+          return true;
+        });
+      } else if (cmd.command === "pause") {
+        setPreviewPlaying((was) => {
+          if (!was) return was;
+          if (popoutCommittedRef.current) {
+            broadcastPopoutDraft({ version: 1, playing: false });
+            void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+              source: "main",
+              playing: false,
+            });
+          }
+          return false;
+        });
+      }
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== PLAYBACK_COMMAND_STORAGE_KEY) return;
+      applyCommand(readPlaybackCommandEvent());
+    };
+    window.addEventListener("storage", onStorage);
+
+    let unlisten: (() => void) | null = null;
+    if (isTauriRuntime()) {
+      (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          const u = await listen(PREVIEW_PLAYBACK_COMMAND_EVENT, (ev) => {
+            const payload = (ev.payload as Partial<PreviewPlaybackCommand>) ?? {};
+            // Preserve the sender's original `at` so the dual-channel
+            // delivery (Tauri event + storage event share one `at` per
+            // physical press) de-duplicates by exact match. Re-stamping with
+            // receive-time `Date.now()` would defeat that guard and
+            // double-toggle a single press (toggle is not idempotent).
+            const at =
+              typeof payload.at === "number" && Number.isFinite(payload.at)
+                ? payload.at
+                : Date.now();
+            applyCommand({
+              ...payload,
+              at,
+            } as PreviewPlaybackCommand);
+          });
+          if (disposed) u();
+          else unlisten = u;
+        } catch {
+          // Storage-event fallback covers browser use.
+        }
+      })();
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", onStorage);
+      unlisten?.();
+    };
+  }, [togglePreviewPlayback]);
 
   useEffect(() => {
     if (!volumeSliderActive) return;
@@ -1071,6 +1790,14 @@ export default function App() {
     };
     const onPointerUp = () => {
       setVolumeSliderInteracting(false);
+      // If a volume drag ends outside the Volume control, collapse
+      // immediately instead of waiting for the fallback timer.
+      if (
+        previewVolumeRef.current &&
+        !previewVolumeRef.current.matches(":hover")
+      ) {
+        setVolumeSliderActive(false);
+      }
     };
 
     window.addEventListener("pointerdown", onPointerDown);
@@ -1483,7 +2210,7 @@ export default function App() {
 
         updateDependencyOperation("verifying");
         const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
-          scan_source: "post_download",
+          scanSource: "post_download",
         });
         setDepsState(refreshed);
         updateDependencyOperation("completed");
@@ -1538,7 +2265,7 @@ export default function App() {
       updateDependencyOperation("checking");
       setDepsInstallMessage("Checking dependency health...");
       const refreshed = await invoke<AppDepsState>("rescan_dependencies", {
-        scan_source: "manual",
+        scanSource: "manual",
       });
       setDepsState(refreshed);
       updateDependencyOperation("completed");
@@ -2241,6 +2968,32 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Single global Space implementation owned by the preview controller:
+      // Space toggles play/pause in embedded, pop-out, and fullscreen hosts
+      // (same underlying preview state). Protected from editable fields.
+      // One physical press = one toggle: held Space fires repeated `keydown`
+      // events (OS auto-repeat) which must not toggle.
+      if (isPreviewPlayPauseShortcut(event)) {
+        if (event.repeat) {
+          event.preventDefault();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        togglePreviewPlayback();
+        return;
+      }
+      // Esc exits custom fullscreen and restores the exact previous pop-out
+      // state while remaining in pop-out mode (never closes the pop-out).
+      if (
+        isExitPreviewFullscreenShortcut(event) &&
+        (previewMode === "fullscreen" || isPreviewFullscreen)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void exitPreviewFullscreenRestorePopout();
+        return;
+      }
       if (isAppRefreshShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2280,14 +3033,95 @@ export default function App() {
         return;
       }
 
+      // Ctrl+D duplicates the currently selected overlay. Images duplicate
+      // via the image path; text layers duplicate via the existing Add Text
+      // path (copies the selected layer, offsets, selects the duplicate).
+      // No new shortcuts are introduced (no copy/paste, undo).
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        normalizeShortcutKey(event) === "d" &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        if (hasSelectedImage || hasSelectedTextLayer) {
+          event.preventDefault();
+          event.stopPropagation();
+          // Each duplicates only its own selected objects, mirroring Delete.
+          // Selection is exclusive so normally only one branch fires.
+          if (hasSelectedImage) {
+            handleDuplicateSelectedImage();
+          }
+          if (hasSelectedTextLayer) {
+            handleAddTextLayer();
+          }
+          return;
+        }
+      }
+
       if (
         event.key === "Delete" &&
-        hasSelectedTextLayer &&
+        (hasSelectedTextLayer || hasSelectedImage) &&
         !isEditableShortcutTarget(event.target)
       ) {
         event.preventDefault();
         event.stopPropagation();
-        handleRemoveSelectedTextLayers();
+        // Image and text systems stay separate: each deletes only its own
+        // selected objects.
+        if (hasSelectedImage) {
+          handleRemoveSelectedImage();
+        }
+        if (hasSelectedTextLayer) {
+          handleRemoveSelectedTextLayers();
+        }
+        return;
+      }
+
+      // Arrow keys fine-position the selected overlays by one deterministic
+      // canonical increment per press. Plain arrows only (no modifiers), and
+      // never while an editable control (slider, input, button, text
+      // editing, ...) has focus, so native control behavior is preserved.
+      // Images and selected text layers share the increment and move through
+      // their own canonical x/y.
+      if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        (event.key === "ArrowUp" ||
+          event.key === "ArrowDown" ||
+          event.key === "ArrowLeft" ||
+          event.key === "ArrowRight") &&
+        (hasSelectedImage || hasSelectedTextLayer) &&
+        !isEditableShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        let dx = 0;
+        let dy = 0;
+        switch (event.key) {
+          case "ArrowLeft":
+            dx = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowRight":
+            dx = IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowUp":
+            dy = -IMAGE_ARROW_NUDGE;
+            break;
+          case "ArrowDown":
+            dy = IMAGE_ARROW_NUDGE;
+            break;
+        }
+        if (hasSelectedImage) {
+          handleNudgeSelectedImage(dx, dy);
+        }
+        if (hasSelectedTextLayer) {
+          updateSelectedTextLayers((layer) => ({
+            x: layer.x + dx,
+            y: layer.y + dy,
+          }));
+        }
         return;
       }
 
@@ -2301,11 +3135,21 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    exitPreviewFullscreenRestorePopout,
+    handleAddTextLayer,
     handleCheckForUpdates,
+    handleDuplicateSelectedImage,
+    handleNudgeSelectedImage,
     handleRefreshApp,
+    handleRemoveSelectedImage,
     handleRemoveSelectedTextLayers,
     handleToggleSettings,
+    hasSelectedImage,
     hasSelectedTextLayer,
+    isPreviewFullscreen,
+    previewMode,
+    togglePreviewPlayback,
+    updateSelectedTextLayers,
   ]);
 
   useEffect(() => {
@@ -2568,6 +3412,36 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [theme]);
 
+  // ── Pop-out theme sync (theme-only) ──────────────────────────
+  // The pop-out is a separate WebView with its own document, so the theme
+  // effect above cannot reach it. Mirror the authoritative `theme` to the
+  // open pop-out over the existing pop-out channels (Tauri event primary,
+  // localStorage fallback). Theme-only payload: no playback, position,
+  // overlay, geometry, or lifecycle fields, so nothing else is disturbed.
+  // No close/reopen/refresh/recreate: the pop-out applies `data-theme`
+  // in place.
+  useEffect(() => {
+    if (previewMode !== "popout" && previewMode !== "fullscreen") return;
+    if (!popoutCommittedRef.current) return;
+    try {
+      window.localStorage.setItem(
+        POPOUT_STATE_EVENT_KEY,
+        JSON.stringify({
+          kind: "update",
+          source: "main",
+          theme,
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      // Best-effort only.
+    }
+    void emitPopoutEvent(PREVIEW_POPOUT_UPDATE_EVENT, {
+      source: "main",
+      theme,
+    });
+  }, [theme, previewMode]);
+
   // ── Init ──────────────────────────────────────────────────
   useEffect(() => {
     loadConfig();
@@ -2610,38 +3484,24 @@ export default function App() {
       );
 
       if (
-        config.logoPath ||
-        config.logoOpacity !== null ||
-        config.logoManualPosition !== null ||
-        config.logoX !== null ||
-        config.logoY !== null ||
+        config.imageOverlay !== null ||
         config.textOverlay !== null ||
         config.subtitleOverlay !== null ||
         config.blur !== null ||
         config.whiteBackground !== null ||
+        config.backgroundColor !== null ||
         config.blurSigma !== null
       ) {
         setEffectsState((prev) => ({
           ...prev,
-          logo: config.logoPath
-            ? {
-                enabled: true,
-                path: config.logoPath,
-                opacity: config.logoOpacity ?? 1.0,
-                position:
-                  config.logoPosition ?? prev.logo?.position ?? "bottom_right",
-                gap: prev.logo?.gap ?? 20,
-                scale: prev.logo?.scale ?? 0.15,
-                manualPosition:
-                  config.logoManualPosition ?? prev.logo?.manualPosition ?? false,
-                x: config.logoX ?? prev.logo?.x ?? 0.5,
-                y: config.logoY ?? prev.logo?.y ?? 0.5,
-              }
-            : null,
+          imageOverlay: normalizeImageOverlaySettings(config.imageOverlay),
           textOverlay: normalizeTextOverlay(config.textOverlay),
           subtitleOverlay: normalizeSubtitleOverlay(config.subtitleOverlay),
           blur: config.whiteBackground ? false : (config.blur ?? prev.blur),
           whiteBackground: config.whiteBackground ?? prev.whiteBackground,
+          backgroundColor: normalizeBackgroundColor(
+            config.backgroundColor ?? prev.backgroundColor,
+          ),
           blurSigma: config.blurSigma ?? prev.blurSigma,
         }));
       }
@@ -2662,10 +3522,13 @@ export default function App() {
       }
 
       // Register asset protocol scope for all previously saved paths
+      const savedImagePaths = (config.imageOverlay?.overlays ?? [])
+        .map((overlay) => overlay.path)
+        .filter((p): p is string => typeof p === "string" && p.length > 0);
       const savedPaths = [
         config.lastInputDir,
         config.lastOutputDir,
-        config.logoPath,
+        ...savedImagePaths,
       ].filter((p): p is string => typeof p === "string" && p.length > 0);
 
       for (const p of savedPaths) {
@@ -2704,16 +3567,12 @@ export default function App() {
         lastPresetId: null,
         selectedRatioIds: selectedRatios,
         selectedPresetIds: selectedPresetIds,
-        logoPath: effectsState.logo?.path || null,
-        logoOpacity: effectsState.logo?.opacity ?? null,
-        logoPosition: effectsState.logo?.position ?? null,
-        logoManualPosition: effectsState.logo?.manualPosition ?? null,
-        logoX: effectsState.logo?.x ?? null,
-        logoY: effectsState.logo?.y ?? null,
+        imageOverlay: normalizeImageOverlaySettings(effectsState.imageOverlay),
         textOverlay: normalizeTextOverlay(effectsState.textOverlay),
         subtitleOverlay: normalizeSubtitleOverlay(effectsState.subtitleOverlay),
         blur: effectsState.blur ?? null,
         whiteBackground: effectsState.whiteBackground ?? null,
+        backgroundColor: normalizeBackgroundColor(effectsState.backgroundColor),
         blurSigma: effectsState.blurSigma ?? null,
         enableSubfolders: enableSubfolders,
         previewVolume: previewVolume,
@@ -2730,11 +3589,12 @@ export default function App() {
     outputDir,
     selectedRatios,
     selectedPresetIds,
-    effectsState.logo,
+    effectsState.imageOverlay,
     effectsState.textOverlay,
     effectsState.subtitleOverlay,
     effectsState.blur,
     effectsState.whiteBackground,
+    effectsState.backgroundColor,
     effectsState.blurSigma,
     enableSubfolders,
     lastInputDir,
@@ -2925,7 +3785,7 @@ export default function App() {
             }
             dependencyRescanTimerRef.current = setTimeout(() => {
               invoke<AppDepsState>("rescan_dependencies", {
-                scan_source: "post_download",
+                scanSource: "post_download",
               })
                 .then((state) => {
                   setDepsState(state);
@@ -3193,34 +4053,67 @@ export default function App() {
     [addLog],
   );
 
-  const handlePickLogo = async () => {
+  const handlePickImage = async () => {
     try {
       const sel = await open({
         multiple: false,
         filters: [
-          { name: "Image", extensions: ["png", "jpg", "jpeg", "svg", "webp"] },
+          {
+            name: "Image",
+            extensions: ["png", "jpg", "jpeg", "svg", "webp", "gif"],
+          },
         ],
       });
       if (sel && typeof sel === "string") {
-        setEffectsState((prev) => ({
-          ...prev,
-          logo: {
-            enabled: true,
-            position: prev.logo?.position ?? "bottom_right",
-            opacity: prev.logo?.opacity ?? 1,
-            gap: prev.logo?.gap ?? 20,
-            scale: prev.logo?.scale ?? 0.15,
-            path: sel,
-            manualPosition: prev.logo?.manualPosition ?? false,
-            x: prev.logo?.x ?? 0.5,
-            y: prev.logo?.y ?? 0.5,
-          },
-        }));
+        const id = generateId();
+        setEffectsState((prev) => {
+          const currentOverlay = resolveImageOverlaySettings(prev.imageOverlay);
+          // Exclusive selection: adding an image clears any text selection.
+          const currentText = resolveTextOverlay(prev.textOverlay);
+          return {
+            ...prev,
+            imageOverlay: normalizeImageOverlaySettings({
+              ...currentOverlay,
+              panelOpen: true,
+              overlays: [
+                ...currentOverlay.overlays,
+                {
+                  id,
+                  path: sel,
+                  x: 0.5,
+                  y: 0.5,
+                  scale: 0.25,
+                  rotation: 0,
+                  opacity: 1,
+                  flipHorizontal: false,
+                  flipVertical: false,
+                  crop: { x: 0, y: 0, width: 1, height: 1 },
+                },
+              ],
+              selectedOverlayId: id,
+            }),
+            textOverlay: normalizeTextOverlay({
+              ...currentText,
+              selectedLayerIds: [],
+            }),
+          };
+        });
+        setImageCropEditing(false);
+        // The "+ Add Image" button retains DOM focus after the file picker
+        // closes, and buttons count as editable shortcut targets, so image
+        // shortcuts (Ctrl+D / Delete) stay blocked until the user clicks the
+        // preview. Blur replicates the focus state of a normal canvas click
+        // without touching the shortcut architecture.
+        requestAnimationFrame(() => {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+        });
         await invoke("allow_path_scope", { path: sel }).catch(() => {});
-        addLog(`Logo loaded: ${basename(sel)}`, "info");
+        addLog(`Image added: ${basename(sel)}`, "info");
       }
     } catch (e) {
-      addLog(`Logo picker error: ${errorMessage(e)}`, "error");
+      addLog(`Image picker error: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -3443,11 +4336,37 @@ export default function App() {
     // effective configuration exactly as displayed when saved. It keeps no
     // parent-preset reference, so later changes to built-in presets never
     // mutate it. Transient overrides themselves are not persisted.
+    // Freshness guard: `encodingState` is the last *completed* backend
+    // preview, debounced ~120 ms behind the controls and sticky when a
+    // preview fails (errors swallowed). Re-resolve for the CURRENT
+    // baseline+overrides here so Save can never persist a stale display
+    // value; on failure abort instead of saving stale data.
+    let effective: EncodingProfile;
+    try {
+      const res = await invoke<EncodingPreviewResponse>(
+        "resolve_encoding_preview",
+        {
+          request: {
+            baseline: activeBaseline,
+            overrides: { ...manualEncodingOverrides },
+            outputFormat: effectsState.outputFormat ?? "mp4",
+            removeAudio: !!effectsState.removeAudio,
+          },
+        },
+      );
+      effective = res.effective;
+    } catch (e) {
+      addLog(
+        `Save preset failed: could not resolve current encoding (${errorMessage(e)})`,
+        "error",
+      );
+      return;
+    }
     const p: CustomPreset = {
-      id: Date.now().toString(),
+      id: generateId(),
       name: newPresetName.trim(),
       ratio,
-      encoding: deepClone(encodingState),
+      encoding: deepClone(effective),
     };
     try {
       await invoke("save_preset", { preset: p });
@@ -3843,7 +4762,7 @@ export default function App() {
                         </div>
                       )}
                       <div className="toggle-row">
-                        <span className="toggle-label">White Background</span>
+                        <span className="toggle-label">Background Color</span>
                         <Toggle
                           checked={!!effectsState.whiteBackground}
                           onChange={(v) =>
@@ -3855,6 +4774,35 @@ export default function App() {
                           }
                         />
                       </div>
+                      {!!effectsState.whiteBackground && (
+                        <div className="text-color-row mt-2">
+                          <label
+                            className="input-label"
+                            htmlFor="background-color"
+                          >
+                            Color
+                          </label>
+                          <input
+                            id="background-color"
+                            className="text-color-input"
+                            type="color"
+                            value={normalizeBackgroundColor(
+                              effectsState.backgroundColor,
+                            )}
+                            onChange={(e) =>
+                              setEffectsState({
+                                ...effectsState,
+                                backgroundColor: e.target.value,
+                              })
+                            }
+                          />
+                          <span className="text-color-value">
+                            {normalizeBackgroundColor(
+                              effectsState.backgroundColor,
+                            ).toUpperCase()}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="settings-group">
@@ -4195,126 +5143,184 @@ export default function App() {
 
                     <div className="settings-group">
                       <div className="settings-group-title">Overlay</div>
-                      <div className="toggle-row mb-2">
-                        <span className="toggle-label">Enable Logo</span>
+                      <div className="toggle-row mb-2 image-settings-panel">
+                        <span className="toggle-label">Add Image</span>
                         <Toggle
-                          checked={!!effectsState.logo?.enabled}
-                          onChange={(v) =>
-                            setEffectsState({
-                              ...effectsState,
-                              logo: v
+                          checked={imageOverlay.panelOpen}
+                          onChange={(panelOpen) =>
+                            handleImageOverlayChange(
+                              panelOpen
                                 ? {
-                                    enabled: true,
-                                    position:
-                                      effectsState.logo?.position ??
-                                      "bottom_right",
-                                    opacity: effectsState.logo?.opacity ?? 1,
-                                    gap: effectsState.logo?.gap ?? 20,
-                                    scale: effectsState.logo?.scale ?? 0.15,
-                                    path: effectsState.logo?.path ?? null,
-                                    manualPosition:
-                                      effectsState.logo?.manualPosition ?? false,
-                                    x: effectsState.logo?.x ?? 0.5,
-                                    y: effectsState.logo?.y ?? 0.5,
+                                    ...imageOverlay,
+                                    panelOpen,
                                   }
-                                : null,
-                            })
+                                : DEFAULT_IMAGE_OVERLAY,
+                            )
                           }
                         />
                       </div>
-                      {effectsState.logo?.enabled && (
-                        <>
+                      {imageOverlay.panelOpen && (
+                        <div className="text-overlay-controls image-settings-panel">
+                          <button
+                            className="btn btn-primary btn-sm btn-full"
+                            onClick={handlePickImage}
+                          >
+                            + Add Image
+                          </button>
+                          <div className="text-overlay-hint mt-2">
+                            {selectedImage
+                              ? `Selected Image: ${basename(selectedImage.path) || "Untitled"}`
+                              : imageOverlay.overlays.length > 0
+                                ? "No image selected — click an image on the preview to select it."
+                                : "No image selected — add one to get started."}
+                          </div>
                           <div
-                            className="logo-upload-zone"
-                            onClick={handlePickLogo}
+                            className={`image-settings-body${selectedImage ? "" : " is-disabled"}`}
+                            aria-disabled={!selectedImage}
                           >
-                            {effectsState.logo.path ? (
-                              <img
-                                className="logo-preview-thumb"
-                                src={convertFileSrc(effectsState.logo.path)}
-                                alt="logo"
+                            <div className="slider-row mt-2">
+                              <span className="text-xs">Opacity</span>
+                              <input
+                                className="slider"
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={selectedImage?.opacity ?? 1}
+                                disabled={!selectedImage}
+                                onChange={(e) =>
+                                  updateSelectedImage({
+                                    opacity: Number(e.target.value),
+                                  })
+                                }
                               />
-                            ) : (
-                              <span style={{ fontSize: 25 }}>🖼</span>
-                            )}{" "}
-                            <div className="logo-upload-text">
-                              <strong>
-                                {effectsState.logo.path
-                                  ? basename(effectsState.logo.path)
-                                  : "No logo"}
-                              </strong>{" "}
-                              Click to change
+                              <span className="slider-value">
+                                {Math.round(
+                                  (selectedImage?.opacity ?? 1) * 100,
+                                )}
+                                %
+                              </span>
                             </div>
+                            <div className="flex gap-6 mt-2">
+                              <button
+                                className={`btn btn-sm flex-1${selectedImage?.flipHorizontal ? " btn-primary" : ""}`}
+                                aria-pressed={
+                                  selectedImage?.flipHorizontal ?? false
+                                }
+                                disabled={!selectedImage}
+                                onClick={() =>
+                                  updateSelectedImage({
+                                    flipHorizontal:
+                                      !selectedImage?.flipHorizontal,
+                                  })
+                                }
+                              >
+                                Flip Horizontally
+                              </button>
+                              <button
+                                className={`btn btn-sm flex-1${selectedImage?.flipVertical ? " btn-primary" : ""}`}
+                                aria-pressed={
+                                  selectedImage?.flipVertical ?? false
+                                }
+                                disabled={!selectedImage}
+                                onClick={() =>
+                                  updateSelectedImage({
+                                    flipVertical: !selectedImage?.flipVertical,
+                                  })
+                                }
+                              >
+                                Flip Vertically
+                              </button>
+                            </div>
+                            <div className="settings-group-title mt-2">
+                              Crop
+                            </div>
+                            <button
+                              className="btn btn-ghost btn-sm btn-full"
+                              disabled={!selectedImage}
+                              onClick={() => setImageCropEditing((v) => !v)}
+                            >
+                              {imageCropEditing ? "Close Crop" : "Edit Crop"}
+                            </button>
+                            {imageCropEditing && (
+                              <div className="text-overlay-controls mt-2">
+                                {(
+                                  [
+                                    ["x", "Left", 0, 1, 0.01],
+                                    ["y", "Top", 0, 1, 0.01],
+                                    ["width", "Width", 0.01, 1, 0.01],
+                                    ["height", "Height", 0.01, 1, 0.01],
+                                  ] as const
+                                ).map(([key, label, min, max, step]) => (
+                                  <div className="slider-row mt-2" key={key}>
+                                    <span className="text-xs">{label}</span>
+                                    <input
+                                      className="slider"
+                                      type="range"
+                                      min={min}
+                                      max={max}
+                                      step={step}
+                                      value={
+                                        selectedImage?.crop[key] ??
+                                        (key === "width" || key === "height"
+                                          ? 1
+                                          : 0)
+                                      }
+                                      disabled={!selectedImage}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value);
+                                        if (!Number.isFinite(value)) return;
+                                        if (!selectedImage) return;
+                                        updateSelectedImage({
+                                          crop: {
+                                            ...selectedImage.crop,
+                                            [key]: value,
+                                          },
+                                        });
+                                      }}
+                                    />
+                                    <span className="slider-value">
+                                      {Math.round(
+                                        (selectedImage?.crop[key] ??
+                                          (key === "width" ||
+                                          key === "height"
+                                            ? 1
+                                            : 0)) * 100,
+                                      )}
+                                      %
+                                    </span>
+                                  </div>
+                                ))}
+                                <button
+                                  className="btn btn-ghost btn-sm btn-full mt-2"
+                                  disabled={!selectedImage}
+                                  onClick={() =>
+                                    updateSelectedImage({
+                                      crop: {
+                                        x: 0,
+                                        y: 0,
+                                        width: 1,
+                                        height: 1,
+                                      },
+                                    })
+                                  }
+                                >
+                                  Reset Crop
+                                </button>
+                              </div>
+                            )}
+                            <button
+                              className="btn btn-ghost btn-sm btn-full mt-2 text-remove-btn"
+                              disabled={!selectedImage}
+                              onClick={handleRemoveSelectedImage}
+                            >
+                              Delete Image
+                            </button>
                           </div>
-                          <select
-                            className="input select mt-2"
-                            value={effectsState.logo.position}
-                            onChange={(e) =>
-                              setEffectsState({
-                                ...effectsState,
-                                logo: {
-                                  ...effectsState.logo!,
-                                  position: e.target.value as LogoPosition,
-                                  manualPosition: false,
-                                },
-                              })
-                            }
-                          >
-                            <option value="top_left">Top Left</option>
-                            <option value="top_right">Top Right</option>
-                            <option value="bottom_left">Bottom Left</option>
-                            <option value="bottom_right">Bottom Right</option>
-                          </select>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Opacity</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="0"
-                              max="1"
-                              step="0.05"
-                              value={effectsState.logo.opacity}
-                              onChange={(e) =>
-                                setEffectsState({
-                                  ...effectsState,
-                                  logo: {
-                                    ...effectsState.logo!,
-                                    opacity: parseFloat(e.target.value),
-                                  },
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {Math.round(effectsState.logo.opacity * 100)}%
-                            </span>
-                          </div>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Scale</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="0.05"
-                              max="0.5"
-                              step="0.01"
-                              value={effectsState.logo.scale}
-                              onChange={(e) =>
-                                setEffectsState({
-                                  ...effectsState,
-                                  logo: {
-                                    ...effectsState.logo!,
-                                    scale: parseFloat(e.target.value),
-                                  },
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {Math.round(effectsState.logo.scale * 100)}%
-                            </span>
-                          </div>
-                        </>
+                        </div>
                       )}
 
-                      <div className="toggle-row">
+                      <div className="toggle-row text-settings-panel">
                         <span className="toggle-label">Add Text</span>
                         <Toggle
                           checked={textOverlay.panelOpen}
@@ -4331,11 +5337,7 @@ export default function App() {
                         />
                       </div>
                       {textOverlay.panelOpen && (
-                        <div className="text-overlay-controls">
-                          <div className="text-overlay-hint">
-                            Use A to add a layer. Click text to select or edit;
-                            drag to move.
-                          </div>
+                        <div className="text-overlay-controls text-settings-panel">
                           <label className="input-label" htmlFor="text-style">
                             Style
                           </label>
@@ -4393,7 +5395,9 @@ export default function App() {
                                     type="button"
                                     className={`text-format-btn text-format-${property}${primaryTextLayer?.[property] ? " active" : ""}`}
                                     aria-label={label}
-                                    aria-pressed={!!primaryTextLayer?.[property]}
+                                    aria-pressed={
+                                      !!primaryTextLayer?.[property]
+                                    }
                                     title={label}
                                     disabled={!hasSelectedTextLayer}
                                     onClick={() =>
@@ -4425,27 +5429,9 @@ export default function App() {
                               }
                             />
                             <span className="text-color-value">
-                              {(primaryTextLayer?.color ?? "#ffffff").toUpperCase()}
-                            </span>
-                          </div>
-                          <div className="slider-row mt-2">
-                            <span className="text-xs">Size</span>
-                            <input
-                              className="slider"
-                              type="range"
-                              min="12"
-                              max="240"
-                              step="1"
-                              value={primaryTextLayer?.fontSize ?? 48}
-                              disabled={!hasSelectedTextLayer}
-                              onChange={(e) =>
-                                updateSelectedTextLayers({
-                                  fontSize: Number(e.target.value),
-                                })
-                              }
-                            />
-                            <span className="slider-value">
-                              {primaryTextLayer?.fontSize ?? 48}px
+                              {(
+                                primaryTextLayer?.color ?? "#ffffff"
+                              ).toUpperCase()}
                             </span>
                           </div>
                           <div className="slider-row mt-2">
@@ -4465,7 +5451,10 @@ export default function App() {
                               }
                             />
                             <span className="slider-value">
-                              {Math.round((primaryTextLayer?.opacity ?? 1) * 100)}%
+                              {Math.round(
+                                (primaryTextLayer?.opacity ?? 1) * 100,
+                              )}
+                              %
                             </span>
                           </div>
                           <button
@@ -4514,8 +5503,7 @@ export default function App() {
                           ...manualEncodingOverrides,
                           qualityPreset,
                           crf: null,
-                          qualityAuthority:
-                            "qualityPreset" as QualityAuthority,
+                          qualityAuthority: "qualityPreset" as QualityAuthority,
                         };
                         setManualEncodingOverrides(next);
                         scheduleEncodingPreview(
@@ -4543,8 +5531,7 @@ export default function App() {
                         max="51"
                         value={
                           manualEncodingOverrides.qualityAuthority ===
-                            "manualCrf" &&
-                          manualEncodingOverrides.crf != null
+                            "manualCrf" && manualEncodingOverrides.crf != null
                             ? manualEncodingOverrides.crf
                             : encodingState.crf
                         }
@@ -4559,8 +5546,7 @@ export default function App() {
                             ...prev,
                             crf,
                             qualityPreset: null,
-                            qualityAuthority:
-                              "manualCrf" as QualityAuthority,
+                            qualityAuthority: "manualCrf" as QualityAuthority,
                           }));
                         }}
                       />
@@ -4579,9 +5565,7 @@ export default function App() {
                         manualEncodingOverrides.speedPreset ??
                         encodingState.speedPreset
                       }
-                      disabled={
-                        (effectsState.outputFormat ?? "mp4") === "webm"
-                      }
+                      disabled={(effectsState.outputFormat ?? "mp4") === "webm"}
                       onChange={(e) => {
                         const speedPreset = e.target.value;
                         setManualEncodingOverrides((prev) => ({
@@ -4797,124 +5781,224 @@ export default function App() {
                     Safe Areas
                   </button>
                 </div>
-                <VideoCanvas
-                  videoSrc={previewFile}
-                  previewLayout={previewLayout}
-                  effects={effectsState}
-                  onTextOverlayChange={handleTextOverlayChange}
-                  onSubtitleOverlayChange={handleSubtitleOverlayChange}
-                  onLogoChange={handleLogoChange}
-                  orientation={orientation}
-                  previewVolume={previewVolume}
-                  showGuides={showGuides}
-                  showSafeFrames={showSafeFrames}
-                />
-                <div
-                  className="preview-volume"
-                  ref={previewVolumeRef}
-                  aria-label="Preview volume"
-                  data-slider-active={volumeSliderActive ? "true" : undefined}
-                  onMouseEnter={() => {
-                    setVolumeSliderHovering(true);
-                    setVolumeSliderActive(true);
-                  }}
-                  onMouseLeave={() => setVolumeSliderHovering(false)}
-                  onFocusCapture={() => {
-                    setVolumeSliderFocusWithin(true);
-                    setVolumeSliderActive(true);
-                  }}
-                  onBlurCapture={(e) => {
-                    const nextTarget = e.relatedTarget as Node | null;
-                    if (
-                      nextTarget &&
-                      previewVolumeRef.current?.contains(nextTarget)
-                    ) {
-                      return;
-                    }
-                    setVolumeSliderFocusWithin(false);
-                  }}
-                >
-                  <div className="preview-volume-slider-wrap">
-                    <input
-                      className="preview-volume-slider"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={previewVolume}
-                      onChange={(e) =>
-                        handleVolumeChange(Number(e.target.value))
+                {isPopoutActive ||
+                previewMode === "fullscreen" ? (
+                  // Only one host is active at a time: while the pop-out
+                  // hosts the SAME preview system, the embedded preview is
+                  // hidden/inactive (no second renderer is mounted here).
+                  <div
+                    className="preview-popped-out-placeholder"
+                    data-testid="preview-popped-out-placeholder"
+                  >
+                    <div className="preview-popped-out-card">
+                      <div className="preview-popped-out-title">
+                        Preview in pop-out window
+                      </div>
+                      <p className="preview-popped-out-text">
+                        {isTauriRuntime()
+                          ? "The same preview is now hosted in the “AspectShift - Preview” window. Edit overlays there, then Apply or Cancel."
+                          : "The same preview is now hosted in the pop-out window. Edit overlays there, then Apply or Cancel."}
+                      </p>
+                      <div className="preview-popped-out-actions">
+                        <button
+                          type="button"
+                          className="btn btn-xs"
+                          onClick={() => void handleFocusPopout()}
+                        >
+                          Focus pop-out
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-xs"
+                          onClick={() =>
+                            void enterPreviewFullscreen().catch(() => {})
+                          }
+                          disabled={previewMode === "fullscreen"}
+                          title="Enter fullscreen (distinct from maximize)"
+                        >
+                          Fullscreen
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => void handleCancelPopout()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-xs"
+                          onClick={() => void handleApplyPopout()}
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <PreviewHost
+                    mode="embedded"
+                    videoSrc={previewFile}
+                    previewLayout={previewLayout}
+                    effects={effectsState}
+                    onTextOverlayChange={handleTextOverlayChange}
+                    onSubtitleOverlayChange={handleSubtitleOverlayChange}
+                    onImageOverlayChange={handleImageOverlayChange}
+                    orientation={orientation}
+                    previewVolume={previewVolume}
+                    showGuides={showGuides}
+                    showSafeFrames={showSafeFrames}
+                    playing={previewPlaying}
+                    playbackRate={previewPlaybackRate}
+                    initialTime={embeddedRestoreTime}
+                    onTimeUpdate={handlePreviewTimeUpdate}
+                  />
+                )}
+                <div className="preview-volume">
+                  <div
+                    className="preview-volume-control"
+                    ref={previewVolumeRef}
+                    aria-label="Preview volume"
+                    data-slider-active={volumeSliderActive ? "true" : undefined}
+                    onMouseEnter={() => {
+                      setVolumeSliderHovering(true);
+                      setVolumeSliderActive(true);
+                    }}
+                    onMouseLeave={() => {
+                      setVolumeSliderHovering(false);
+                      // Instagram-like auto-collapse: leaving the entire
+                      // Volume control collapses the slider immediately
+                      // (unless mid-drag, which stays open until release).
+                      if (!volumeSliderInteracting) {
+                        setVolumeSliderActive(false);
                       }
-                      onPointerDown={() => {
-                        cancelVolumeCollapse();
-                        setVolumeSliderInteracting(true);
-                        setVolumeSliderActive(true);
-                      }}
-                      onPointerUp={() => {
-                        setVolumeSliderInteracting(false);
-                      }}
-                      onKeyDown={() => {
-                        cancelVolumeCollapse();
-                        setVolumeSliderActive(true);
-                      }}
-                      onKeyUp={() => {
-                        setVolumeSliderInteracting(false);
-                      }}
-                      aria-label="Preview volume slider"
-                      style={
-                        { "--vol": `${previewVolume}%` } as React.CSSProperties
+                    }}
+                    onFocusCapture={() => {
+                      setVolumeSliderFocusWithin(true);
+                      setVolumeSliderActive(true);
+                    }}
+                    onBlurCapture={(e) => {
+                      const nextTarget = e.relatedTarget as Node | null;
+                      if (
+                        nextTarget &&
+                        previewVolumeRef.current?.contains(nextTarget)
+                      ) {
+                        return;
                       }
-                    />
+                      setVolumeSliderFocusWithin(false);
+                    }}
+                  >
+                    <div className="preview-volume-slider-wrap">
+                      <input
+                        className="preview-volume-slider"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={previewVolume}
+                        onChange={(e) =>
+                          handleVolumeChange(Number(e.target.value))
+                        }
+                        onPointerDown={() => {
+                          cancelVolumeCollapse();
+                          setVolumeSliderInteracting(true);
+                          setVolumeSliderActive(true);
+                        }}
+                        onPointerUp={() => {
+                          setVolumeSliderInteracting(false);
+                        }}
+                        onKeyDown={() => {
+                          cancelVolumeCollapse();
+                          setVolumeSliderActive(true);
+                        }}
+                        onKeyUp={() => {
+                          setVolumeSliderInteracting(false);
+                        }}
+                        aria-label="Preview volume slider"
+                        style={
+                          {
+                            "--vol": `${previewVolume}%`,
+                          } as React.CSSProperties
+                        }
+                      />
+                    </div>
+                    <button
+                      className="preview-volume-btn"
+                      onClick={() => {
+                        cancelVolumeCollapse();
+                        handleVolumeChange(
+                          previewVolume > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
+                        );
+                      }}
+                      aria-label={
+                        previewVolume === 0 ? "Unmute preview" : "Mute preview"
+                      }
+                      title={`Preview volume: ${previewVolume}%`}
+                    >
+                      {previewVolume === 0 ? (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="lucide lucide-volume-x"
+                        >
+                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                          <line x1="22" x2="16" y1="9" y2="15" />
+                          <line x1="16" x2="22" y1="9" y2="15" />
+                        </svg>
+                      ) : (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="lucide lucide-volume-2"
+                        >
+                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                          <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                        </svg>
+                      )}
+                    </button>
                   </div>
                   <button
-                    className="preview-volume-btn"
-                    onClick={() => {
-                      cancelVolumeCollapse();
-                      setVolumeSliderActive(true);
-                      setPreviewVolume((v) =>
-                        v > 0 ? 0 : DEFAULT_PREVIEW_VOLUME,
-                      );
-                    }}
-                    aria-label={
-                      previewVolume === 0 ? "Unmute preview" : "Mute preview"
+                    className="preview-volume-btn preview-popout-btn"
+                    onClick={() => void handlePopOut()}
+                    disabled={!previewFile || isPopoutActive}
+                    aria-label="Pop out preview"
+                    title={
+                      isPopoutActive
+                        ? "Preview is popped out"
+                        : "Pop out preview (1082 × 642)"
                     }
-                    title={`Preview volume: ${previewVolume}%`}
                   >
-                    {previewVolume === 0 ? (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="lucide lucide-volume-x"
-                      >
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                        <line x1="22" x2="16" y1="9" y2="15" />
-                        <line x1="16" x2="22" y1="9" y2="15" />
-                      </svg>
-                    ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="lucide lucide-volume-2"
-                      >
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                      </svg>
-                    )}
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="lucide lucide-external-link"
+                    >
+                      <path d="M15 3h6v6" />
+                      <path d="M10 14 21 3" />
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V8a2 2 0 0 1 2-2h6" />
+                    </svg>
                   </button>
                 </div>
                 {orientation && (

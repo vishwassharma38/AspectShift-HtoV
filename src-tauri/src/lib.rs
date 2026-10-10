@@ -81,6 +81,14 @@ async fn reinstall_dependencies(
 pub fn run() {
     dotenv().ok();
 
+    #[cfg(target_os = "windows")]
+    // Windows/WebView2 can render UI colors with an incorrect warm/yellow tint.
+    // Force sRGB to keep the app's UI colors rendering correctly.
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--force-color-profile=srgb",
+    );
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -178,4 +186,60 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod capability_config_tests {
+    /// Guards the shape of `capabilities/default.json` against unrecognized
+    /// top-level keys.
+    ///
+    /// What this test establishes: the file parses as JSON and uses only keys
+    /// recognized by Tauri's `Capability` struct (`identifier`, `description`,
+    /// `remote`, `local`, `windows`, `webviews`, `permissions`, `platforms`;
+    /// `$schema` is an editor hint, not a Tauri field). Unknown keys are
+    /// silently ignored by Tauri at parse time, so a typo or an invented
+    /// section (e.g. a top-level `commands.allow` list) would take no effect
+    /// while looking authoritative.
+    ///
+    /// What this test does NOT establish: runtime IPC authorization. Tauri
+    /// does not gate local application commands (`#[tauri::command]`
+    /// invocations from the local webview) on capability-file entries when
+    /// the app defines no permission manifest; the `permissions` array governs
+    /// plugin/core APIs. Do not read this test as proof that any command is
+    /// "allowed" at runtime.
+    const RECOGNIZED_TOP_LEVEL_KEYS: &[&str] = &[
+        "$schema",
+        "identifier",
+        "description",
+        "remote",
+        "local",
+        "windows",
+        "webviews",
+        "permissions",
+        "platforms",
+    ];
+
+    #[test]
+    fn default_capability_uses_only_recognized_top_level_keys() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest_dir)
+            .join("capabilities")
+            .join("default.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).expect("capabilities/default.json must be valid JSON");
+        let object = json
+            .as_object()
+            .expect("capabilities/default.json must be a JSON object");
+        let unknown: Vec<&String> = object
+            .keys()
+            .filter(|key| !RECOGNIZED_TOP_LEVEL_KEYS.contains(&key.as_str()))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "capabilities/default.json contains top-level keys Tauri does not \
+             recognize (they are silently ignored at parse time): {unknown:?}"
+        );
+    }
 }

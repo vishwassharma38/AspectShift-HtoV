@@ -1,4 +1,5 @@
 use crate::subtitles::SubtitleSegment;
+use crate::video::overlay_geometry::{to_video_x, to_video_y};
 use crate::video::types::VideoError;
 use std::fs;
 use std::path::Path;
@@ -21,6 +22,19 @@ pub struct AssStyle {
     pub play_res_y: u32,
     pub play_res_x: u32,
     pub position: Option<(f32, f32)>,
+    /// Horizontal inter-character spacing in script pixels. Mirrors the
+    /// preview `letterSpacing` for the styles that use it; 0 otherwise.
+    /// Previously hardcoded to 0, which dropped minimal/cyberpunk/gaming
+    /// spacing in the export.
+    pub spacing: f32,
+    /// Z-rotation in degrees (ASS `\frz` convention: positive =
+    /// counter-clockwise) about the center anchor (`\an5` + `\pos`).
+    /// Callers convert from the preview CSS `rotate()` convention (positive
+    /// = clockwise) via `ass_angle_for_text_rotation()` (negation);
+    /// subtitles always use 0. The writer serializes verbatim — it must not
+    /// negate. This differs from the image pipeline, where FFmpeg `rotate`
+    /// is clockwise-positive like CSS and needs no negation.
+    pub angle: f32,
 }
 
 impl Default for AssStyle {
@@ -43,7 +57,27 @@ impl Default for AssStyle {
             play_res_y: 1080,
             play_res_x: 1920,
             position: None,
+            spacing: 0.0,
+            angle: 0.0,
         }
+    }
+}
+
+/// Formats an ASS float column (Spacing/Outline/Shadow) without trailing
+/// noise: whole numbers stay `0`/`3`, fractional values keep up to 2
+/// decimals (`1.92`). libass parses both forms.
+fn format_ass_float(value: f32) -> String {
+    if !value.is_finite() {
+        return "0".to_string();
+    }
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded == rounded.round() {
+        format!("{}", rounded as i32)
+    } else {
+        format!("{rounded:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -73,7 +107,7 @@ pub fn write_ass(
     body.push_str("[V4+ Styles]\n");
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     body.push_str(&format!(
-        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,0,0,1,{},{},{},20,20,{},1\n\n",
+        "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},{},1,{},{},{},20,20,{},1\n\n",
         style.name,
         style.font_name,
         style.font_size,
@@ -84,6 +118,8 @@ pub fn write_ass(
         if style.italic { -1 } else { 0 },
         if style.underline { -1 } else { 0 },
         if style.strikethrough { -1 } else { 0 },
+        format_ass_float(style.spacing),
+        format_ass_float(style.angle),
         style.outline,
         style.shadow,
         style.alignment,
@@ -101,8 +137,11 @@ pub fn write_ass(
         let end = format_ass_timestamp(segment.end_ms);
         let text = segment.text.trim().replace('\n', "\\N");
         let text = if let Some((x, y)) = style.position {
-            let position_x = (x.clamp(0.0, 1.0) * style.play_res_x as f32).round() as u32;
-            let position_y = (y.clamp(0.0, 1.0) * style.play_res_y as f32).round() as u32;
+            // Phase 4: canonical video-space position → signed video pixels.
+            // No geometry clamp: off-canvas values stay off-canvas and the
+            // frame clips visibility. Signed `i32` preserves negatives.
+            let position_x = to_video_x(x, style.play_res_x).round() as i32;
+            let position_y = to_video_y(y, style.play_res_y).round() as i32;
             format!(
                 "{{\\an{}\\pos({position_x},{position_y})}}{text}",
                 style.alignment
@@ -156,12 +195,17 @@ pub fn write_text_overlays_ass(
         .unwrap_or((1920, 1080));
     body.push_str(&format!("PlayResX: {}\n", play_res_x));
     body.push_str(&format!("PlayResY: {}\n", play_res_y));
-    body.push_str("ScaledBorderAndShadow: yes\n\n");
+    body.push_str("ScaledBorderAndShadow: yes\n");
+    // Match the freeform preview (`white-space: pre`): explicit `\N` breaks
+    // lines, but long lines clip at the frame instead of auto-wrapping.
+    // Subtitle output (`write_ass`) intentionally keeps the default smart
+    // wrapping because auto subtitles rely on it.
+    body.push_str("WrapStyle: 2\n\n");
     body.push_str("[V4+ Styles]\n");
     body.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
     for (_, style, _, _) in layers {
         body.push_str(&format!(
-            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,0,0,1,{},{},5,0,0,0,1\n",
+            "Style: {},{},{},{},&H000000FF,{},{},{},{},{},{},100,100,{},{},1,{},{},5,0,0,0,1\n",
             style.name,
             style.font_name,
             style.font_size,
@@ -172,6 +216,8 @@ pub fn write_text_overlays_ass(
             if style.italic { -1 } else { 0 },
             if style.underline { -1 } else { 0 },
             if style.strikethrough { -1 } else { 0 },
+            format_ass_float(style.spacing),
+            format_ass_float(style.angle),
             style.outline,
             style.shadow,
         ));
@@ -184,8 +230,11 @@ pub fn write_text_overlays_ass(
 
     let end = format_ass_timestamp(duration_ms.max(10));
     for (index, (text, style, x, y)) in layers.iter().enumerate() {
-        let position_x = (x.clamp(0.0, 1.0) * style.play_res_x as f32).round() as u32;
-        let position_y = (y.clamp(0.0, 1.0) * style.play_res_y as f32).round() as u32;
+        // Phase 4: canonical video-space position → signed video pixels.
+        // Center anchor (`\an5`) preserved. No geometry clamp: off-canvas
+        // values stay off-canvas and the frame clips visibility.
+        let position_x = to_video_x(*x, style.play_res_x).round() as i32;
+        let position_y = to_video_y(*y, style.play_res_y).round() as i32;
         body.push_str(&format!(
             "Dialogue: {index},0:00:00.00,{end},{},,0,0,0,,{{\\an5\\pos({position_x},{position_y})}}{}\n",
             style.name,
@@ -224,6 +273,88 @@ mod tests {
         assert!(content.contains("-1,-1,-1,-1,100,100"));
         assert!(content.contains("\\pos(480,810)"));
         assert!(content.contains("Hello\\N\\{world\\}"));
+    }
+
+    #[test]
+    fn text_overlay_ass_disables_auto_wrap_like_preview() {
+        // Preview uses `white-space: pre` (explicit breaks only); the export
+        // must not auto-wrap long lines but clip at the frame instead.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_wrap_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("WrapStyle: 2"));
+    }
+
+    #[test]
+    fn subtitle_ass_keeps_default_smart_wrapping() {
+        // Auto subtitles rely on wrapping; only the freeform text path opts
+        // out via WrapStyle 2.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_subtitle_wrap_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            ..AssStyle::default()
+        };
+        let segments = vec![SubtitleSegment {
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "Hello".to_string(),
+            words: Vec::new(),
+        }];
+        write_ass(&path, &segments, &style).expect("subtitle ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(!content.contains("WrapStyle: 2"));
+    }
+
+    #[test]
+    fn text_overlay_ass_serializes_letter_spacing() {
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_spacing_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            spacing: 1.92,
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("100,100,1.92,0,1"));
+    }
+
+    #[test]
+    fn text_overlay_ass_serializes_layer_rotation_as_angle() {
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_angle_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            angle: 15.5,
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(&path, &[("Hello", &style, 0.5, 0.5)], 5_000)
+            .expect("rotated text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("100,100,0,15.5,1"));
     }
 
     #[test]
@@ -271,6 +402,7 @@ mod tests {
         let cases = [
             ("this is text one", "this is text one"),
             ("Add Text", "Add Text"),
+            ("I love you Akari", "I love you Akari"),
             ("It's 10:30, Vish!", "It's 10:30, Vish!"),
             ("100% ready", "100% ready"),
             ("hello: world", "hello: world"),
@@ -291,6 +423,70 @@ mod tests {
         }
         assert!(!content.contains("enotxet"));
         assert!(!content.contains("this is text oneAdd Text"));
+    }
+
+    #[test]
+    fn text_overlay_ass_preserves_signed_off_canvas_positions() {
+        // Phase 4: off-canvas centers must serialize as signed video-space
+        // coordinates (never clamped, never wrapped as unsigned).
+        // Default PlayRes is 1920x1080: -0.1*1920 = -192, 1.1*1920 = 2112.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_text_overlay_offcanvas_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            name: "TextOverlay1".to_string(),
+            ..AssStyle::default()
+        };
+        write_text_overlays_ass(
+            &path,
+            &[("Left", &style, -0.1, 0.5), ("Right", &style, 1.1, 0.5)],
+            5_000,
+        )
+        .expect("off-canvas text overlay ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("\\pos(-192,540)"));
+        assert!(content.contains("\\pos(2112,540)"));
+        assert!(
+            !content.contains("4294967"),
+            "negative coordinates must not wrap as unsigned"
+        );
+    }
+
+    #[test]
+    fn subtitle_ass_manual_position_preserves_signed_off_canvas() {
+        // Phase 4: same signed-coordinate requirement for manual subtitles.
+        // -0.1*1920 = -192, 1.1*1080 = 1188.
+        let path = std::env::temp_dir().join(format!(
+            "aspectshift_subtitle_offcanvas_{}.ass",
+            uuid::Uuid::new_v4()
+        ));
+        let style = AssStyle {
+            font_name: "Fira Sans".to_string(),
+            alignment: 5,
+            play_res_x: 1920,
+            play_res_y: 1080,
+            position: Some((-0.1, 1.1)),
+            ..AssStyle::default()
+        };
+        let segments = vec![SubtitleSegment {
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "Hello".to_string(),
+            words: Vec::new(),
+        }];
+
+        write_ass(&path, &segments, &style).expect("subtitle ASS should be written");
+        let content = std::fs::read_to_string(&path).expect("ASS should be readable");
+        let _ = std::fs::remove_file(path);
+
+        assert!(content.contains("\\an5\\pos(-192,1188)"));
+        assert!(
+            !content.contains("4294967"),
+            "negative coordinates must not wrap as unsigned"
+        );
     }
 
     #[test]

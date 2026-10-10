@@ -170,6 +170,65 @@ export function isEditableShortcutTarget(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * Global preview Play/Pause shortcut: `Space`.
+ *
+ * Single implementation owned by the preview controller / application level
+ * (not by embedded- vs pop-out-specific code). The underlying preview state
+ * is the same regardless of display mode.
+ *
+ * Protected from firing while the user is typing in an editable field (or
+ * editing a canvas text overlay).
+ */
+export function isPreviewPlayPauseShortcut(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return false;
+  }
+  const isSpace = event.key === " " || event.code === "Space";
+  if (!isSpace) return false;
+  if (isEditableShortcutTarget(event.target)) return false;
+  if (!(event.target instanceof HTMLElement)) return true;
+  // Canvas text overlays are plain divs (contentEditable only while editing);
+  // never steal Space/Enter while one is focused — the overlay owns it.
+  if (
+    event.target.closest(
+      '.canvas-text-overlay, .canvas-text-overlay-wrap, [contenteditable="true"]',
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Custom preview fullscreen exit: `Esc`.
+ *
+ * Distinct from native Windows maximize. Esc exits the dedicated
+ * borderless/fullscreen preview state and restores the exact previous
+ * pop-out window state while remaining in pop-out mode.
+ */
+export function isExitPreviewFullscreenShortcut(
+  event: KeyboardEvent,
+): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return false;
+  }
+  if (event.key !== "Escape") return false;
+  if (isEditableShortcutTarget(event.target)) {
+    // Text-overlay editing owns Escape (cancel editing); it handles and
+    // stops propagation itself, so the global fullscreen exit must yield.
+    if (!(event.target instanceof HTMLElement)) return false;
+    if (
+      event.target.closest(
+        '.canvas-text-overlay, [contenteditable="true"]',
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function isAppPrimaryShortcut(event: KeyboardEvent): boolean {
   const key = normalizeShortcutKey(event);
 

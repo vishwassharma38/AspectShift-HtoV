@@ -30,13 +30,7 @@ pub fn resolve_output_path(
         platform: platform_tag,
         blur: target.job.effects.blur_enabled(),
         white_background: target.job.effects.white_background_enabled(),
-        logo: target
-            .job
-            .effects
-            .logo
-            .as_ref()
-            .map(|l| l.enabled)
-            .unwrap_or(false),
+        image: target.job.effects.image_overlay_enabled(),
         text: target.job.effects.text_overlay_enabled(),
         subtitles: target.job.effects.burn_subtitles_enabled()
             || target.job.effects.export_subtitles_enabled()

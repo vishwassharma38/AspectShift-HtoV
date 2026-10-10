@@ -116,12 +116,17 @@ pub fn calculate_ass_style(
         blur_enabled,
         subtitle_overlay,
     );
-    let font_name = crate::video::text_fonts::family(&subtitle_overlay.font_style).ass_name;
+    let text_font = crate::video::text_fonts::family(&subtitle_overlay.font_style);
 
     AssStyle {
         name: "Professional".to_string(),
-        font_name: font_name.to_string(),
-        font_size: metrics.font_size,
+        font_name: text_font.ass_name.to_string(),
+        // Same em-vs-win-cell correction as text overlays. `metrics.font_size`
+        // (used by the preview layout) keeps its em meaning; only the ASS
+        // value is upscaled.
+        font_size: ((metrics.font_size as f32 * text_font.ass_cell_ratio)
+            .round()
+            .max(1.0)) as u32,
         primary_colour: hex_to_ass_colour(&subtitle_overlay.color, subtitle_overlay.opacity),
         outline_colour: hex_to_ass_colour(
             &subtitle_overlay.outline_color,
@@ -145,6 +150,43 @@ pub fn calculate_ass_style(
         position: subtitle_overlay
             .manual_position
             .then_some((subtitle_overlay.x, subtitle_overlay.y)),
+        // Subtitle preview has no `letterSpacing`; keep ASS spacing at 0.
+        spacing: 0.0,
+        // Subtitles have no rotation interaction; keep ASS angle at 0.
+        angle: 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_ass_style;
+    use crate::video::types::SubtitleOverlaySettings;
+
+    #[test]
+    fn subtitle_ass_font_size_uses_win_cell_correction() {
+        // Preview keeps the em meaning; only the ASS export is upscaled.
+        // Clean/Fira Sans ratio is 1.2: explicit 48 -> ASS 58.
+        let overlay = SubtitleOverlaySettings {
+            font_style: crate::video::types::TextFontStyle::Clean,
+            font_size: Some(48),
+            ..SubtitleOverlaySettings::default()
+        };
+        let style = calculate_ass_style(1280, 720, 720, false, &overlay);
+        assert_eq!(style.font_size, 58);
+        assert_eq!(style.spacing, 0.0);
+    }
+
+    #[test]
+    fn subtitle_ass_bungee_correction_matches_text_path() {
+        // Retro/Bungee ratio is 2.574: explicit 48 -> ASS 124, same as the
+        // text-overlay conversion for the same nominal size.
+        let overlay = SubtitleOverlaySettings {
+            font_style: crate::video::types::TextFontStyle::Retro,
+            font_size: Some(48),
+            ..SubtitleOverlaySettings::default()
+        };
+        let style = calculate_ass_style(1280, 720, 720, false, &overlay);
+        assert_eq!(style.font_size, 124);
     }
 }
 

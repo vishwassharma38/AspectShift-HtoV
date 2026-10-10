@@ -1,10 +1,22 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window and the preview pop-out host (same preview system, multiple window hosts)",
+  "windows": ["main", "aspectshift-preview"],
   "permissions": [
     "core:default",
+    "core:window:allow-create",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-fullscreen",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:webview:allow-create-webview-window",
     "opener:default",
     "dialog:default",
     "shell:default",
@@ -25,32 +37,5 @@
         }
       ]
     }
-  ],
-  "commands": {
-    "allow": [
-      "detect_orientation",
-      "convert_to_ratio",
-      "check_file_ready",
-      "start_batch",
-      "cancel_batch",
-      "get_batch_status",
-      "clear_batch",
-      "open_output_folder",
-      "get_all_presets",
-      "get_builtin_platform_presets",
-      "get_all_aspect_ratio_targets",
-      "save_preset",
-      "delete_preset",
-      "get_encoding_metadata",
-      "resolve_encoding_preview",
-      "get_dependency_state",
-      "rescan_dependencies",
-      "install_dependency",
-      "reinstall_dependencies",
-      "get_auth_state",
-      "activate_license",
-      "refresh_license",
-      "clear_license"
-    ]
-  }
+  ]
 }

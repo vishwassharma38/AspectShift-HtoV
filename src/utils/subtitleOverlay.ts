@@ -39,6 +39,19 @@ function clampFinite(
     : fallback;
 }
 
+/**
+ * Phase 4: free-positioned overlay coordinates accept any finite value.
+ * The video frame clips visibility instead of bounding geometry, so x/y
+ * are validated as finite (NaN/Infinity fall back) but never clamped.
+ */
+function finiteOr(
+  value: number | null | undefined,
+  fallback: number,
+): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 function optionalInt(
   value: number | null | undefined,
   min: number,
@@ -79,8 +92,8 @@ export function normalizeSubtitleOverlay(
       1,
       DEFAULT_SUBTITLE_OVERLAY.opacity,
     ),
-    x: clampFinite(resolved.x, 0, 1, DEFAULT_SUBTITLE_OVERLAY.x),
-    y: clampFinite(resolved.y, 0, 1, DEFAULT_SUBTITLE_OVERLAY.y),
+    x: finiteOr(resolved.x, DEFAULT_SUBTITLE_OVERLAY.x),
+    y: finiteOr(resolved.y, DEFAULT_SUBTITLE_OVERLAY.y),
     outlineColor: /^#[0-9a-f]{6}$/i.test(resolved.outlineColor)
       ? resolved.outlineColor
       : DEFAULT_SUBTITLE_OVERLAY.outlineColor,

@@ -76,9 +76,20 @@ pub fn build_ffmpeg_args(
 
     let mut args = vec!["-i".to_string(), input.to_string()];
 
-    if let Some(logo) = &plan.logo {
+    // Each image overlay is an independent input (`[1:v]`, `[2:v]`, ...).
+    // Static images loop so a single frame covers the whole render; GIFs
+    // (animated image overlays) loop as an animation layer while the video
+    // continues underneath.
+    for image in &plan.images {
+        if image.is_gif {
+            args.push("-stream_loop".to_string());
+            args.push("-1".to_string());
+        } else {
+            args.push("-loop".to_string());
+            args.push("1".to_string());
+        }
         args.push("-i".to_string());
-        args.push(logo.path.clone());
+        args.push(image.path.clone());
     }
 
     let use_filter_complex = uses_complex_graph(&final_filter_graph);
@@ -112,11 +123,31 @@ pub fn build_ffmpeg_args(
             "-b:a".to_string(),
             plan.encoding.audio_bitrate.clone(),
         ]);
+        // Platform upload specs commonly use 48 kHz AAC/Opus audio. Do not
+        // alter ordinary aspect-ratio/custom exports or downmix channels.
+        if let Some(config) = &plan.platform_config {
+            args.push("-ar".to_string());
+            args.push("48000".to_string());
+            // YouTube permits stereo or stereo + 5.1, so its preset leaves
+            // channel layout untouched. Other presets can explicitly request
+            // mono/stereo for the target platform's upload compatibility.
+            if let Some(channels) = config.audio_channels {
+                args.push("-ac".to_string());
+                args.push(channels.to_string());
+            }
+        }
     }
 
     let codec = get_video_codec(output);
     args.push("-c:v".to_string());
     args.push(codec.to_string());
+
+    // H.264 High Profile is the documented upload profile for YouTube and is
+    // also accepted by X and common MP4/MOV social upload workflows.
+    if codec == "libx264" && plan.platform_config.is_some() {
+        args.push("-profile:v".to_string());
+        args.push("high".to_string());
+    }
 
     if supports_crf(codec) {
         args.push("-crf".to_string());
@@ -126,6 +157,24 @@ pub fn build_ffmpeg_args(
     if supports_preset(codec) {
         args.push("-preset".to_string());
         args.push(plan.encoding.speed_preset.clone());
+    }
+
+    // Constrained CRF uses VBV maxrate/buffer together; it limits peaks without
+    // replacing CRF with a target average bitrate. These fields are populated
+    // only for platform presets whose official guidance warrants a ceiling.
+    // The current platform bitrate ceilings are H.264-specific; do not inject
+    // them into VP9/Opus output where the rate-control mode differs.
+    if codec == "libx264" {
+        if let Some(config) = &plan.platform_config {
+            if let (Some(max_rate), Some(buffer_size)) =
+                (&config.video_max_rate, &config.video_buffer_size)
+            {
+                args.push("-maxrate".to_string());
+                args.push(max_rate.clone());
+                args.push("-bufsize".to_string());
+                args.push(buffer_size.clone());
+            }
+        }
     }
 
     // Optional `-threads` override, exposed as a *capability* retained for
@@ -153,6 +202,27 @@ pub fn build_ffmpeg_args(
     args.push("-pix_fmt".to_string());
     args.push("yuv420p".to_string());
 
+    // Clamp only unexpectedly high automatic output frame rates where an
+    // official platform upload specification sets a maximum. -fpsmax does not
+    // upsample low-FPS input (unlike forcing a fixed output -r).
+    if let Some(config) = &plan.platform_config {
+        if let Some(max_frame_rate) = config.max_frame_rate {
+            args.push("-fpsmax".to_string());
+            args.push(max_frame_rate.to_string());
+        }
+    }
+
+    // Image overlays use infinite looped inputs (`-loop 1` / `-stream_loop -1`)
+    // so a single frame (or GIF cycle) covers the whole render. Without
+    // `-shortest` the output would follow the longest (infinite) input and
+    // FFmpeg would never exit: progress would clamp at 100% while the job
+    // stayed `Processing` (lifecycle 95/100) and the queue never completed.
+    // `-shortest` ends encoding at the main video length, preserving GIF
+    // looping while letting FFmpeg terminate normally.
+    if !plan.images.is_empty() {
+        args.push("-shortest".to_string());
+    }
+
     args.extend_from_slice(&["-y".to_string(), output.to_string()]);
 
     args
@@ -174,6 +244,7 @@ mod tests {
             effects: VideoEffectsSettings {
                 blur: None,
                 white_background: None,
+                background_color: None,
                 overlays: None,
                 subtitles: None,
                 color_filter: None,
@@ -183,14 +254,45 @@ mod tests {
                 burn_subtitles: None,
                 skip_existing: None,
                 output_format: None,
-                logo: None,
+                image_overlay: crate::video::types::ImageOverlaySettings::default(),
                 text_overlay: TextOverlaySettings::default(),
                 subtitle_overlay: SubtitleOverlaySettings::default(),
                 transform: None,
             },
             platform_config: None,
-            logo: None,
+            images: Vec::new(),
         }
+    }
+
+    fn test_plan_with_images() -> RenderPlan {
+        let mut plan = test_plan();
+        plan.images = vec![
+            crate::video::types::ImagePreset {
+                path: "a.png".to_string(),
+                x: 0.5,
+                y: 0.5,
+                scale: 0.25,
+                rotation: 0.0,
+                opacity: 1.0,
+                flip_h: false,
+                flip_v: false,
+                crop: crate::video::types::ImageCrop::default(),
+                is_gif: false,
+            },
+            crate::video::types::ImagePreset {
+                path: "b.gif".to_string(),
+                x: 0.3,
+                y: 0.7,
+                scale: 0.2,
+                rotation: 0.0,
+                opacity: 0.9,
+                flip_h: false,
+                flip_v: false,
+                crop: crate::video::types::ImageCrop::default(),
+                is_gif: true,
+            },
+        ];
+        plan
     }
 
     fn build_args(output: &str, threads_per_job: Option<usize>) -> Vec<String> {
@@ -206,6 +308,79 @@ mod tests {
             None,
             threads_per_job,
         )
+    }
+
+    fn platform_test_plan() -> RenderPlan {
+        let mut plan = test_plan();
+        plan.platform_config = Some(crate::video::types::PlatformConfig {
+            target_width: 1080,
+            target_height: 1920,
+            enforce_dimensions: true,
+            max_frame_rate: Some(60),
+            audio_channels: Some(2),
+            video_max_rate: Some("8M".to_string()),
+            video_buffer_size: Some("16M".to_string()),
+        });
+        plan
+    }
+
+    fn build_platform_args(output: &str) -> Vec<String> {
+        let plan = platform_test_plan();
+        build_ffmpeg_args(
+            "input.mp4",
+            output,
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn platform_h264_exports_use_high_profile_48khz_and_vbv_ceiling() {
+        let args = build_platform_args("output.mp4");
+        let profile_pos = args.iter().position(|a| a == "-profile:v").unwrap();
+        assert_eq!(args[profile_pos + 1], "high");
+        let rate_pos = args.iter().position(|a| a == "-maxrate").unwrap();
+        assert_eq!(args[rate_pos + 1], "8M");
+        let buffer_pos = args.iter().position(|a| a == "-bufsize").unwrap();
+        assert_eq!(args[buffer_pos + 1], "16M");
+        let rate_pos = args.iter().position(|a| a == "-ar").unwrap();
+        assert_eq!(args[rate_pos + 1], "48000");
+        let channels_pos = args.iter().position(|a| a == "-ac").unwrap();
+        assert_eq!(args[channels_pos + 1], "2");
+        assert!(args.contains(&"-crf".to_string()));
+        let fps_pos = args.iter().position(|a| a == "-fpsmax").unwrap();
+        assert_eq!(args[fps_pos + 1], "60");
+    }
+
+    #[test]
+    fn platform_vp9_export_does_not_receive_h264_profile_or_vbv_flags() {
+        let args = build_platform_args("output.webm");
+        assert!(args.contains(&"libvpx-vp9".to_string()));
+        assert!(!args.contains(&"-profile:v".to_string()));
+        assert!(!args.contains(&"-maxrate".to_string()));
+        assert!(!args.contains(&"-bufsize".to_string()));
+        let fps_pos = args.iter().position(|a| a == "-fpsmax").unwrap();
+        assert_eq!(args[fps_pos + 1], "60");
+        let audio_rate_pos = args.iter().position(|a| a == "-ar").unwrap();
+        assert_eq!(args[audio_rate_pos + 1], "48000");
+        let channels_pos = args.iter().position(|a| a == "-ac").unwrap();
+        assert_eq!(args[channels_pos + 1], "2");
+    }
+
+    #[test]
+    fn non_platform_exports_keep_existing_audio_rate_and_profile_behavior() {
+        let args = build_args("output.mp4", None);
+        assert!(!args.contains(&"-ar".to_string()));
+        assert!(!args.contains(&"-ac".to_string()));
+        assert!(!args.contains(&"-profile:v".to_string()));
+        assert!(!args.contains(&"-maxrate".to_string()));
+        assert!(!args.contains(&"-bufsize".to_string()));
+        assert!(!args.contains(&"-fpsmax".to_string()));
     }
 
     // --- Existing filter-graph tests (unchanged) ---
@@ -336,5 +511,69 @@ mod tests {
         let codec_pos = args.iter().position(|a| a == "-c:v").unwrap();
         let threads_pos = args.iter().position(|a| a == "-threads").unwrap();
         assert!(threads_pos > codec_pos, "-threads must appear after -c:v");
+    }
+
+    #[test]
+    fn image_inputs_are_added_as_independent_looped_inputs() {
+        let plan = test_plan_with_images();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // Static image loops a single frame; GIF loops as animation layer.
+        assert!(args.contains(&"a.png".to_string()));
+        assert!(args.contains(&"b.gif".to_string()));
+        assert!(args.contains(&"-loop".to_string()));
+        assert!(args.contains(&"-stream_loop".to_string()));
+    }
+
+    #[test]
+    fn image_renders_terminate_at_main_video_length() {
+        // Looped image inputs are infinite; without `-shortest` FFmpeg would
+        // never exit (per-video 100% via clamped out_time, job stuck at
+        // lifecycle 95/100, queue never completes).
+        let plan = test_plan_with_images();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            args.contains(&"-shortest".to_string()),
+            "image renders must emit -shortest, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn non_image_renders_do_not_emit_shortest() {
+        let plan = test_plan();
+        let args = build_ffmpeg_args(
+            "input.mp4",
+            "output.mp4",
+            "null",
+            &plan,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !args.contains(&"-shortest".to_string()),
+            "non-image renders must not change termination behavior, got: {args:?}"
+        );
     }
 }

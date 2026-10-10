@@ -38,16 +38,12 @@ export type AppConfig = {
 	lastPresetId: string | null,
 	selectedRatioIds: AspectRatio[],
 	selectedPresetIds: string[],
-	logoPath: string | null,
-	logoOpacity: number | null,
-	logoPosition: LogoPosition | null,
-	logoManualPosition: boolean | null,
-	logoX: number | null,
-	logoY: number | null,
+	imageOverlay: ImageOverlaySettings | null,
 	textOverlay: TextOverlaySettings | null,
 	subtitleOverlay: SubtitleOverlaySettings | null,
 	blur: boolean | null,
 	whiteBackground: boolean | null,
+	backgroundColor: string | null,
 	blurSigma: number | null,
 	enableSubfolders: boolean | null,
 	previewVolume: number | null,
@@ -262,6 +258,57 @@ export type FileReadiness = {
 	estimatedDurationSecs: number,
 };
 
+/**
+ *  Crop region as fractions of the source image dimensions.
+ * 
+ *  `x/y` is the top-left of the visible region, `width/height` its size.
+ *  Default `{0,0,1,1}` means the full source image is visible.
+ *  Crop is independent from transform (position/scale/rotation/flip):
+ *  `source -> crop -> flip -> scale -> rotation -> position -> frame clipping`.
+ */
+export type ImageCrop = {
+	x?: number,
+	y?: number,
+	width: number,
+	height: number,
+};
+
+/**
+ *  A single independent image object on the video canvas.
+ * 
+ *  Canonical geometry is unbounded video-space: `x/y` is the center anchor
+ *  (any finite value, including outside `0..1`; the frame only clips
+ *  visibility), `scale` is the width as a fraction of the video width,
+ *  `rotation` is degrees. `path` is the source file (static image or GIF;
+ *  GIFs are image overlays, not a separate domain).
+ */
+export type ImageOverlay = {
+	id?: string,
+	path?: string,
+	x: number,
+	y: number,
+	scale: number,
+	rotation?: number,
+	opacity: number,
+	flipHorizontal?: boolean,
+	flipVertical?: boolean,
+	crop?: ImageCrop,
+};
+
+/**
+ *  Image-overlay collection with single selection.
+ * 
+ *  `selected_overlay_id` is a single ID (not a list): clicking an image
+ *  selects it, clicking another switches selection, the panel edits the
+ *  selected image. No image list lives in the panel; the canvas is the
+ *  object browser.
+ */
+export type ImageOverlaySettings = {
+	panelOpen?: boolean,
+	overlays?: ImageOverlay[],
+	selectedOverlayId?: string | null,
+};
+
 export type JobStatus = "queued" | "pending" | "processing" | "completed" | { error: string } | "cancelled";
 
 export type LicenseTier = "community" | "pro";
@@ -271,20 +318,6 @@ export type LicenseTier = "community" | "pro";
  *  These must stay in sync.
  */
 export type LicenseTierWire = "community" | "pro";
-
-export type LogoOptions = {
-	enabled?: boolean,
-	position: LogoPosition,
-	opacity: number,
-	gap: number,
-	scale: number,
-	path: string | null,
-	manualPosition?: boolean,
-	x: number,
-	y: number,
-};
-
-export type LogoPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
 export type OrientationInfo = {
 	width: number,
@@ -328,6 +361,20 @@ export type PlatformConfig = {
 	targetWidth: number,
 	targetHeight: number,
 	enforceDimensions: boolean,
+	/**
+	 *  Clamp unexpectedly high automatic output frame rates without upsampling
+	 *  lower-frame-rate sources. Omitted means preserve the existing FPS policy.
+	 */
+	maxFrameRate?: number | null,
+	// Optional platform audio channel count. None preserves the source layout.
+	audioChannels?: number | null,
+	/**
+	 *  Optional codec-specific VBV ceiling. Applied only to H.264 outputs so
+	 *  CRF remains the quality control while limiting short-term bitrate peaks.
+	 */
+	videoMaxRate?: string | null,
+	// Required together with video_max_rate when a VBV ceiling is configured.
+	videoBufferSize?: string | null,
 };
 
 export type PlatformPreset = {
@@ -357,8 +404,6 @@ export type PreviewRenderLayout = {
 	foregroundFrameWidth: number,
 	foregroundFrameHeight: number,
 	blurSigma: number,
-	logoWidth: number | null,
-	logoGap: number | null,
 	subtitle: SubtitleLayoutMetrics,
 };
 
@@ -456,6 +501,7 @@ export type TextLayerSettings = {
 	opacity: number,
 	x: number,
 	y: number,
+	rotation?: number,
 	outlineEnabled: boolean,
 	outlineColor: string,
 	outlineWidth: number,
@@ -512,6 +558,7 @@ export type UpdateEntitlementCheckStatus = "update_available" | "no_update" | "n
 export type VideoEffectsSettings = {
 	blur: boolean | null,
 	whiteBackground: boolean | null,
+	backgroundColor: string | null,
 	overlays: string[] | null,
 	subtitles: string | null,
 	colorFilter: string | null,
@@ -521,7 +568,7 @@ export type VideoEffectsSettings = {
 	burnSubtitles: boolean | null,
 	skipExisting: boolean | null,
 	outputFormat: OutputFormat | null,
-	logo: LogoOptions | null,
+	imageOverlay?: ImageOverlaySettings,
 	textOverlay?: TextOverlaySettings,
 	subtitleOverlay?: SubtitleOverlaySettings,
 	transform: VideoTransform | null,

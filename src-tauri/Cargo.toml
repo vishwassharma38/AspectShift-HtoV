@@ -1,6 +1,6 @@
 [package]
 name = "aspectshift-htov"
-version = "0.1.2"
+version = "0.1.3"
 description = "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows."
 edition = "2021"
 authors = ["Vishwas Sharma"]
@@ -17,8 +17,8 @@ InternalName = "AspectShift-HtoV"
 OriginalFilename = "AspectShift-HtoV.exe"
 LegalCopyright = "Copyright © 2026 Vishwas Sharma"
 
-ProductVersion = "0.1.2"
-FileVersion = "0.1.2"
+ProductVersion = "0.1.3"
+FileVersion = "0.1.3"
 
 Comments = "Professional batch video converter for aspect ratio transformation, platform presets, and creator workflows."
 
@@ -67,6 +67,9 @@ hex = "0.4"
 rand = "0.8"
 dotenvy = "0.15"
 sysinfo = "0.39"
+
+[dev-dependencies]
+ttf-parser = "0.25"
 
 [features]
 dev-auth = []

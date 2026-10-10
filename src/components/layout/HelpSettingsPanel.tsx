@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 const DEVELOPER_NAME = "Vishwas Sharma";
 const DEVELOPER_EMAIL = "vishwassharma38@gmail.com";
 const SUPPORT_EMAIL = "support@aspectshift-htov.com";
-const INSTAGRAM_URL = "https://www.instagram.com/aspectshift_htov/";
+const INSTAGRAM_URL = "https://www.instagram.com/xghostfreak/";
 
 function MailIcon() {
   return (

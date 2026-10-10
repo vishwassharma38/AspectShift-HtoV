@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to publish, for example v0.1.2"
+        description: "Release tag to publish, for example v0.1.3"
         required: true
         type: string
   push:
@@ -80,3 +80,46 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Publish stable installer filename
+        # Tauri v2 has no configuration option for the NSIS installer output
+        # filename (NsisConfig only covers template, images, install mode,
+        # languages, compression, etc.), so the versioned build output is
+        # copied to the stable asset name after the build. The copy is
+        # byte-identical, which preserves the Authenticode signature applied
+        # at build time. Updater artifacts (.nsis.zip, .sig, latest.json)
+        # are never renamed or touched by this step.
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          nsis_dir="src-tauri/target/release/bundle/nsis"
+          stable_name="AspectShift-HtoV-Setup.exe"
+          # Locate the versioned NSIS installer produced by the Tauri build.
+          # The stable filename cannot match this pattern, so a re-run can
+          # never mistake a previous copy for fresh build output.
+          mapfile -t installers < <(ls "$nsis_dir"/AspectShift-HtoV_*_x64-setup.exe 2>/dev/null || true)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one NSIS installer in $nsis_dir, found ${#installers[@]}."
+            ls -la "$nsis_dir" || true
+            exit 1
+          fi
+          src="${installers[0]}"
+          dest="$nsis_dir/$stable_name"
+          if [ -e "$dest" ]; then
+            echo "::error::Destination $dest already exists; refusing to overwrite."
+            exit 1
+          fi
+          cp "$src" "$dest"
+          echo "Copied $(basename "$src") to $stable_name."
+          # Replace a previously published stable asset explicitly instead of
+          # silently overwriting it, then upload the renamed installer to the
+          # same version-specific release tag.
+          if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx "$stable_name"; then
+            echo "Removing previously published $stable_name from release $RELEASE_TAG."
+            gh release delete-asset "$RELEASE_TAG" "$stable_name" --yes
+          fi
+          gh release upload "$RELEASE_TAG" "$dest"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx "$stable_name"
+          echo "Verified $stable_name is attached to release $RELEASE_TAG."

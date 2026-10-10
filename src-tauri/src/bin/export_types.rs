@@ -18,10 +18,10 @@ use aspectshift_htov_lib::video::{
     types::{
         AppConfig, AspectRatio, AspectRatioTarget, BatchJobSettings, BatchProgress,
         ConversionRequestDTO, CustomPreset, EncodingProfile, FileProgress, FileReadiness,
-        JobStatus, LogoOptions, LogoPosition, OrientationInfo, OutputFormat, OutputJob,
-        PlatformConfig, PlatformPreset, PreviewLayoutRequest, StructuredError,
-        SubtitleOverlaySettings, TextFontStyle, TextLayerSettings, TextOverlaySettings,
-        VideoEffectsSettings, VideoPresetDTO, VideoTransform,
+        ImageCrop, ImageOverlay, ImageOverlaySettings, JobStatus, OrientationInfo,
+        OutputFormat, OutputJob, PlatformConfig, PlatformPreset, PreviewLayoutRequest,
+        StructuredError, SubtitleOverlaySettings, TextFontStyle, TextLayerSettings,
+        TextOverlaySettings, VideoEffectsSettings, VideoPresetDTO, VideoTransform,
     },
 };
 use specta::TypeCollection;
@@ -29,6 +29,15 @@ use specta_typescript::{BigIntExportBehavior, Typescript};
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Contract caveats (intentional, do not "fix"):
+    // - Rust `u8/u32/usize/u64/i32/f32/f64` all export as TS `number`
+    //   (`BigIntExportBehavior::Number` below). Precision loss above 2^53
+    //   is irrelevant for the counts/sizes crossing this boundary.
+    // - `Option<T>` with `#[serde(default)]` exports as optional (`?`);
+    //   missing and `null` both deserialize to `None`.
+    // - `VideoProgress.ratio` (FFmpeg event payload) is a free `String`
+    //   label, while `FileProgress.ratio` is the typed `AspectRatio` enum;
+    //   the shared name is historical, not a type error.
     let types = TypeCollection::default()
         .register::<AspectRatio>()
         .register::<EncodingProfile>()
@@ -40,10 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<EncodingPreviewRequest>()
         .register::<EncodingPreviewResponse>()
         .register::<OutputFormat>()
-        .register::<LogoPosition>()
         .register::<PlatformConfig>()
         .register::<VideoTransform>()
-        .register::<LogoOptions>()
+        .register::<ImageCrop>()
+        .register::<ImageOverlay>()
+        .register::<ImageOverlaySettings>()
         .register::<TextFontStyle>()
         .register::<TextLayerSettings>()
         .register::<TextOverlaySettings>()

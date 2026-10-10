@@ -30,8 +30,8 @@
 //! Ten levels give meaningful coverage across the CRF 0–51 slider instead of
 //! three widely separated choices. Anchors consolidate values the repo
 //! already used:
-//! - `high → 18` (all `aspect_ratio_presets.json` entries, YouTube/Shorts
-//!   presets; x264 visually-transparent neighborhood)
+//! - `high → 18` (YouTube/Shorts presets;
+//!   x264 visually-transparent neighborhood)
 //! - `standard → 23` (`EncodingProfile::standard()`, x264 default)
 //! - `lossless → 0` (x264 lossless mode, covers the slider floor)
 //! - `very_high → 14` (archive grade), `good → 21` (high-quality streaming
@@ -419,7 +419,7 @@ pub fn is_passthrough_allowed(
     remove_audio_enabled: bool,
     burn_subtitles_enabled: bool,
     text_overlay_enabled: bool,
-    has_logo: bool,
+    has_images: bool,
     has_transform: bool,
     force_reencode: bool,
 ) -> bool {
@@ -432,7 +432,7 @@ pub fn is_passthrough_allowed(
         && !remove_audio_enabled
         && !burn_subtitles_enabled
         && !text_overlay_enabled
-        && !has_logo
+        && !has_images
         && !has_transform
 }
 
@@ -621,6 +621,7 @@ mod tests {
         VideoEffectsSettings {
             blur: None,
             white_background: None,
+            background_color: None,
             overlays: None,
             subtitles: None,
             color_filter: None,
@@ -630,7 +631,7 @@ mod tests {
             burn_subtitles: None,
             skip_existing: None,
             output_format: None,
-            logo: None,
+            image_overlay: crate::video::types::ImageOverlaySettings::default(),
             text_overlay: TextOverlaySettings::default(),
             subtitle_overlay: SubtitleOverlaySettings::default(),
             transform: None,
@@ -643,7 +644,7 @@ mod tests {
             encoding,
             effects,
             platform_config: None,
-            logo: None,
+            images: Vec::new(),
         }
     }
 

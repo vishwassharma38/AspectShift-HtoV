@@ -1515,10 +1515,23 @@ html.theme-transitioning *::after {
   right: var(--space-md);
   bottom: var(--space-md);
   display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 96;
+}
+
+/* Volume-only interaction area: the Volume button plus its slider. The
+   slider is absolutely positioned above the button (see below), so this
+   container shrink-wraps the 34px button and sits snug beside the Pop-Out
+   button with no dead space in between. The Pop-Out button is a sibling
+   here (same visual row, Pop-Out stays rightmost and untouched), so
+   hovering it never counts as hovering the Volume control. */
+.preview-volume-control {
+  position: relative;
+  display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-xs);
-  z-index: 96;
 }
 
 .preview-volume-btn {
@@ -1546,8 +1559,21 @@ html.theme-transitioning *::after {
   transform: translateY(-1px);
 }
 
+/* The slider floats centered above the Volume button instead of taking
+   part in the row layout, so the button sits directly beside Pop-Out.
+   padding-bottom keeps a seamless hover bridge between button and slider
+   (it is part of the wrap, so :hover never drops mid-transition);
+   content-box guards the app-wide border-box reset so the padding cannot
+   clip the 88px slider. */
 .preview-volume-slider-wrap {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: content-box;
+  width: 88px;
   height: 0;
+  padding-bottom: var(--space-xs);
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
@@ -1556,8 +1582,8 @@ html.theme-transitioning *::after {
     opacity 0.18s ease;
 }
 
-.preview-volume:hover .preview-volume-slider-wrap,
-.preview-volume:focus-within .preview-volume-slider-wrap {
+.preview-volume-control:hover .preview-volume-slider-wrap,
+.preview-volume-control:focus-within .preview-volume-slider-wrap {
   height: 88px;
   opacity: 1;
   pointer-events: auto;
@@ -1605,11 +1631,17 @@ html.theme-transitioning *::after {
   box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-/* Force-open the slider while the user is actively adjusting volume,
-   even if the mouse has already left the container. */
-.preview-volume[data-slider-active="true"] .preview-volume-slider-wrap {
+/* Force-open the slider while the user is actively adjusting volume
+   (dragging), even if the pointer has momentarily left the Volume control.
+   The slider collapses as soon as the pointer leaves the Volume control
+   area outside of an active drag. NOTE: transform must repeat the base
+   centering (translateX(-50%)) — a transform here replaces the base
+   rule's transform instead of adding to it. */
+.preview-volume-control[data-slider-active="true"]
+  .preview-volume-slider-wrap {
+  height: 88px;
   clip-path: inset(0% 0 0 0 round 999px);
-  transform: translateY(0);
+  transform: translateX(-50%);
   opacity: 1;
   pointer-events: auto;
 }
@@ -1947,6 +1979,26 @@ html.theme-transitioning *::after {
   gap: 4px;
 }
 
+/* Image settings: permanently expanded body; selection only toggles
+   enabled/disabled. Add Image stays outside this wrapper so it remains
+   usable when no image is selected. */
+.image-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.image-settings-body.is-disabled {
+  opacity: 0.5;
+  filter: saturate(0.6);
+  pointer-events: none;
+}
+
+.slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .text-overlay-hint {
   margin-bottom: 6px;
   color: var(--text-muted);
@@ -2089,6 +2141,115 @@ html.theme-transitioning *::after {
 .canvas-text-overlay.is-editing {
   outline: 1px dashed rgba(255, 255, 255, 0.8);
   outline-offset: 5px;
+}
+
+/* ── Image Overlay (Add Image canvas objects) ─────────────── */
+.canvas-image-overlay {
+  outline: none;
+}
+
+.canvas-image-overlay:active {
+  cursor: grabbing !important;
+}
+
+.canvas-image-selection-outline {
+  position: absolute;
+  inset: -6px;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-image-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  touch-action: none;
+}
+
+.canvas-image-handle-nw {
+  left: -12px;
+  top: -12px;
+  cursor: nwse-resize;
+}
+
+.canvas-image-handle-n {
+  left: 50%;
+  top: -12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.canvas-image-handle-ne {
+  right: -12px;
+  top: -12px;
+  cursor: nesw-resize;
+}
+
+.canvas-image-handle-w {
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.canvas-image-handle-e {
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.canvas-image-handle-sw {
+  left: -12px;
+  bottom: -12px;
+  cursor: nesw-resize;
+}
+
+.canvas-image-handle-s {
+  left: 50%;
+  bottom: -12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.canvas-image-handle-se {
+  right: -12px;
+  bottom: -12px;
+  cursor: nwse-resize;
+}
+
+.canvas-image-rotate-handle {
+  position: absolute;
+  left: 50%;
+  bottom: -38px;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  touch-action: none;
+  user-select: none;
+}
+
+.canvas-image-rotate-handle:active {
+  cursor: grabbing !important;
 }
 
 /* ── Slider ───────────────────────────────────────────────── */
@@ -2866,4 +3027,293 @@ html.theme-transitioning *::after {
     bottom: 10px;
     width: calc(100% - 20px);
   }
+}
+
+/* ── Pop-Out Video Preview (one preview system, multiple hosts) ──
+   The pop-out window is a different host for the same VideoCanvas renderer,
+   not a second preview implementation. Embedded preview is hidden/inactive
+   while the pop-out hosts the preview. */
+.preview-volume-btn-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-volume-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.preview-popped-out-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.preview-popped-out-card {
+  max-width: 420px;
+  text-align: center;
+  padding: 24px;
+  border-radius: 12px;
+  border: 1px dashed var(--border);
+  background: var(--bg-card);
+}
+
+.preview-popped-out-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.preview-popped-out-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.preview-popped-out-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Pop-out native-window root: preview surface only, no app shell. */
+.preview-popout-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  overflow: hidden;
+  position: relative;
+}
+
+.preview-popout-root.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.preview-popout-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 16px 8px;
+}
+
+.preview-popout-root.is-fullscreen .preview-popout-stage {
+  padding: 0;
+}
+
+/* Default frame corners (windowed pop-out and embedded preview). */
+.video-canvas-box {
+  border-radius: 10px;
+}
+
+/* True fullscreen: no rounded corners anywhere on the video frame. This
+   rule only works because the radius is no longer set inline on the box
+   (inline styles beat stylesheets). */
+.preview-popout-root.is-fullscreen .video-canvas-box {
+  border-radius: 0;
+}
+
+.preview-popout-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-wrap: wrap;
+  /* Auto-hide/reveal animation: downward slide + fade while the footer's
+     layout slot collapses (max-height/padding/border driven by the measured
+     --popout-footer-full-h), so the stage/video smoothly fills the freed
+     space. Removing the hidden class reverses the same transition (the
+     reveal) back to the exact normal position. */
+  max-height: var(--popout-footer-full-h, 240px);
+  overflow: hidden;
+  transition: transform 0.22s ease, opacity 0.22s ease, max-height 0.22s ease,
+    padding-top 0.22s ease, padding-bottom 0.22s ease, border-top-width 0.22s ease;
+}
+
+/* Hidden state: footer slides down and fades while its slot collapses to
+   zero, letting the stage fill the window. Pointer events are disabled so
+   the reveal strip receives the hover. */
+.preview-popout-root.is-controls-hidden .preview-popout-footer {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Bottom reveal zone: dedicated invisible hover strip anchored to the
+   bottom of the pop-out root (inside the window, element-based so it
+   follows resizes and fullscreen). Mounted only while controls are hidden,
+   so it can never sit above visible clickable controls or block video
+   interaction outside its small bottom footprint. */
+.preview-popout-reveal-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.preview-popout-playback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.preview-popout-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.preview-popout-volume-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  font-size: 10px;
+}
+
+/* Pop-out chip-button icons: same inline Lucide pattern as the main window
+   (stroke currentColor), sized for the small btn-xs chip (14px matches the
+   existing preset-icon sizing). Shape/padding/border/hover/active/disabled
+   all come from the existing .btn.btn-xs — only icon sizing is set here. */
+.preview-popout-playback .btn svg.lucide {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Pop-out volume slider: horizontal counterpart of the existing
+   .preview-volume-slider. Same theme tokens (var(--accent) fill,
+   var(--progress-bg) track), same 12px accent thumb with glow, same hover
+   scale — so day/night follow automatically with no new theme. */
+.preview-popout-volume-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 120px;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.preview-popout-volume-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--vol, 20%),
+    var(--progress-bg) var(--vol, 20%),
+    var(--progress-bg) 100%
+  );
+}
+
+.preview-popout-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.preview-popout-volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.preview-popout-volume-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--progress-bg);
+}
+
+.preview-popout-volume-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.preview-popout-volume-slider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.preview-popout-volume-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.preview-popout-volume-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.preview-popout-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.preview-popout-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-popout-empty-card {
+  max-width: 420px;
+  margin: auto;
+  text-align: center;
+  padding: 32px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.preview-popout-empty-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.preview-popout-empty-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
 }
