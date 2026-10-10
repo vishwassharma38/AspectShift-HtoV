@@ -54,28 +54,37 @@ jobs:
           releaseBody: |
             ## AspectShift-HtoV ${{ env.RELEASE_TAG }}
 
-            This update adds more customization controls for video overlays, improves subtitle editing, and fixes preview accuracy in the processing queue.
+            This update adds a detachable preview window, replaces the single logo with flexible multi-image overlays, makes text and subtitle placement match the final video, adds a background color choice, expands export quality controls, and tunes platform presets to better match upload guidance with quicker default encoding settings.
 
             ### New Features
 
-            - Added support for custom fonts in videos.
-            - Added subtitle customization options:
-              - Change subtitle font style.
-              - Change subtitle color.
-              - Toggle subtitle visibility.
-              - Manually drag and adjust subtitle position.
-            - Added support for dragging and repositioning logo overlays anywhere on the video canvas.
+            - Detachable preview window: open the preview in a separate resizable window with the same video, overlays, and tools. Changes stay as a draft until you choose Apply; closing the window discards the draft.
+            - Multi-image overlays replace the single logo: add up to 128 images, place them anywhere including partly off-frame, resize with corner and edge handles, rotate with the round handle, flip horizontally or vertically, crop inside the image, adjust opacity, and use animated GIFs as moving overlays.
+            - Faster image editing on the canvas: duplicate an image with an offset, nudge with arrow keys, duplicate with Ctrl+D, and remove with Delete. Adding images stays available even when no image is selected.
+            - Text overlays work like images: resize directly on the canvas to change size, rotate freely, drag anywhere without snapping back, and duplicate without shifting toward the frame.
+            - Background Color picker: choose any color for the empty bars around the video instead of only white. Defaults to black, and older settings still load.
+            - More export quality choices: 10 levels from highest quality to smallest file (previously 3), with clearer speed and audio-bitrate options and a live preview of the effective settings.
+
+            ### Improvements
+
+            - What you see matches the exported video: text size and overlay and subtitle positions in the preview now match the saved file, including corrected text rendering and preview scaling.
+            - Free placement for everything: text, images, and manually positioned subtitles accept any position, including outside the frame; the frame only clips what is visible.
+            - Platform presets retuned for uploads and quicker defaults: YouTube (16:9), YouTube Shorts (vertical), Instagram Square, Instagram Reels (vertical), TikTok (vertical), X (landscape 720p), and Reddit (4:5 portrait) now use correct canvas sizes, stereo audio where expected, and quicker default encoding settings. Reels and X include upload-friendly frame-rate and bitrate ceilings that only limit unusually high values and never raise low frame rates. Reddit is clarified as 4:5 portrait.
+            - Clearer export guidance: combinations that do not apply (for example speed choices for WebM output, or audio bitrate when audio is removed) show a warning and are handled safely; invalid quality or override combinations are stopped before rendering with a clear message instead of failing mid-render.
+            - Safer saving: custom presets and app settings with clearly invalid values (such as out-of-range volume or blur strength, or conflicting background options) are rejected at save time, while previously saved files still open.
+            - Batch rendering rework: the queue can now work on more than one video at a time within safe limits checked fresh at each batch start, falling back to one-at-a-time when system information is unclear; it also holds back new jobs when disk space runs low and retries once when a render fails only because system resources were exhausted.
+            - Batch queue reliability: clearing a batch and starting a new one no longer mixes progress or results from the previous run; subtitle temporary files are cleaned up after rendering; quick jobs are no longer stuck behind very heavy ones.
+            - Preview shortcuts: Space plays or pauses in either preview view (and no longer repeats when held, nor steals typing while editing text); Esc leaves the full-screen preview and restores the previous window state.
+            - Pop-out polish: single playback owner so audio never doubles, first frame waits until the picture is ready, volume slider opens only over the Volume control and stays open while dragging, window follows the app theme, and controls auto-hide with a bottom reveal zone.
+            - Windows color correctness: app colors no longer show a warm or yellow tint.
 
             ### Fixes
 
-            - Fixed the video orientation/rotation thumbnail issue in the processing queue.
-            - The processing queue now displays the corrected post-processing thumbnail instead of the original pre-processing thumbnail.
-            - Queue previews now more accurately match the final processed video output.
-
-            ### Notification Improvements
-
-            - Improved license-related notification messages.
-            - Revoked licenses, refunded licenses, and disallowed entitlements now display clear, specific messages instead of the generic notification used in v0.1.1.
+            - Fixed exported text looking a different size than the preview.
+            - Fixed very large text shifting the video in the preview; the frame now clips without becoming scrollable.
+            - Fixed the volume slider opening when hovering the Pop-Out button.
+            - Fixed duplicate text layers being pulled back toward the frame.
+            - Fixed preset quality labels so displayed names match the actual output quality.
 
           releaseDraft: false
           prerelease: false
